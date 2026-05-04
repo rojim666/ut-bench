@@ -33,4 +33,7 @@ docker_build*
 
 # Generated temp files (obsolete)
 tbody_content.txt
-opencode.json
+opencode.json3
+
+# GStack
+.codebuddy/skills/gstack
