@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,13 +26,16 @@ const (
 // It deliberately mirrors RunEntry's log + subscribe shape so the SSE handler
 // can reuse the same pattern.
 type BuildJob struct {
-	BuildID   string        `json:"build_id"`
-	ImageName string        `json:"image_name"`
-	Status    BuildStatus   `json:"status"`
-	StartedAt time.Time     `json:"started_at"`
-	EndedAt   *time.Time    `json:"ended_at,omitempty"`
-	Error     string        `json:"error,omitempty"`
-	Done      chan struct{} `json:"-"`
+	BuildID    string            `json:"build_id"`
+	Target     string            `json:"target"`
+	Dockerfile string            `json:"dockerfile,omitempty"`
+	ImageName  string            `json:"image_name"`
+	BuildArgs  map[string]string `json:"build_args,omitempty"`
+	Status     BuildStatus       `json:"status"`
+	StartedAt  time.Time         `json:"started_at"`
+	EndedAt    *time.Time        `json:"ended_at,omitempty"`
+	Error      string            `json:"error,omitempty"`
+	Done       chan struct{}     `json:"-"`
 
 	logs   []string
 	mu     sync.RWMutex
@@ -142,6 +147,13 @@ type BuildManager struct {
 	projectRoot string
 }
 
+type BuildProfile struct {
+	Target     string
+	ImageName  string
+	Dockerfile string
+	BuildArgs  map[string]string
+}
+
 // NewBuildManager creates a BuildManager rooted at projectRoot (the directory
 // containing Dockerfile).
 func NewBuildManager(projectRoot string) *BuildManager {
@@ -151,17 +163,28 @@ func NewBuildManager(projectRoot string) *BuildManager {
 	}
 }
 
-// Submit starts `docker build -t <imageName> <projectRoot>` in a goroutine and
+// Submit starts `docker build -f <dockerfile> -t <imageName> <projectRoot>` in a goroutine and
 // returns the BuildJob immediately. The caller should subscribe to Done or to
 // the log stream to observe progress.
-func (m *BuildManager) Submit(imageName string) *BuildJob {
+func (m *BuildManager) Submit(profile BuildProfile) *BuildJob {
 	id := "build_" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	target := strings.TrimSpace(profile.Target)
+	if target == "" {
+		target = "eval"
+	}
+	dockerfile := strings.TrimSpace(profile.Dockerfile)
+	if dockerfile == "" {
+		dockerfile = "Dockerfile"
+	}
 	job := &BuildJob{
-		BuildID:   id,
-		ImageName: imageName,
-		Status:    BuildPending,
-		StartedAt: time.Now(),
-		Done:      make(chan struct{}),
+		BuildID:    id,
+		Target:     target,
+		Dockerfile: dockerfile,
+		ImageName:  profile.ImageName,
+		BuildArgs:  copyStringMap(profile.BuildArgs),
+		Status:     BuildPending,
+		StartedAt:  time.Now(),
+		Done:       make(chan struct{}),
 	}
 	m.mu.Lock()
 	m.jobs[id] = job
@@ -199,7 +222,8 @@ func (m *BuildManager) execute(job *BuildJob) {
 	job.Status = BuildRunning
 	job.mu.Unlock()
 
-	job.appendLog(fmt.Sprintf("[%s] docker build -t %s %s", logTS(), job.ImageName, m.projectRoot))
+	buildArgs := dockerBuildArgs(job, m.projectRoot)
+	job.appendLog(fmt.Sprintf("[%s] docker %s", logTS(), redactBuildArgs(buildArgs)))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
@@ -207,7 +231,8 @@ func (m *BuildManager) execute(job *BuildJob) {
 	job.cancel = cancel
 	job.mu.Unlock()
 
-	cmd := exec.CommandContext(ctx, "docker", "build", "-t", job.ImageName, m.projectRoot)
+	cmd := exec.CommandContext(ctx, "docker", buildArgs...)
+	hideCommandWindow(cmd)
 	lw := &buildLineWriter{job: job}
 	cmd.Stdout = lw
 	cmd.Stderr = lw
@@ -234,5 +259,57 @@ func (m *BuildManager) execute(job *BuildJob) {
 		job.appendLog(fmt.Sprintf("[%s] BUILD FAILED: %v", logTS(), err))
 	} else {
 		job.appendLog(fmt.Sprintf("[%s] build completed", logTS()))
+	}
+}
+
+func dockerBuildArgs(job *BuildJob, projectRoot string) []string {
+	args := []string{"build", "-f", job.Dockerfile, "-t", job.ImageName}
+	keys := make([]string, 0, len(job.BuildArgs))
+	for key := range job.BuildArgs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := strings.TrimSpace(job.BuildArgs[key])
+		if value == "" {
+			continue
+		}
+		args = append(args, "--build-arg", key+"="+value)
+	}
+	args = append(args, projectRoot)
+	return args
+}
+
+func redactBuildArgs(args []string) string {
+	return strings.Join(args, " ")
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func defaultBuildProfile(target string, cfg DockerConfig) (BuildProfile, error) {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "", "eval", "evaluation":
+		return BuildProfile{
+			Target:     "eval",
+			ImageName:  cfg.EffectiveEvalImage(),
+			Dockerfile: "Dockerfile",
+		}, nil
+	case "agent", "agents", "sandbox":
+		return BuildProfile{
+			Target:     "agent",
+			ImageName:  defaultAgentImageName,
+			Dockerfile: "docker/agents/Dockerfile",
+		}, nil
+	default:
+		return BuildProfile{}, fmt.Errorf("unknown build target: %s (supported: eval, agent)", target)
 	}
 }

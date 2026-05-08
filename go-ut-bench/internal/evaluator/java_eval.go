@@ -1,3 +1,7 @@
+// java_eval.go 提供 Java 语言单元测试评测功能
+// 使用 Maven 进行编译和测试执行
+// 使用 JaCoCo 进行覆盖率收集
+// 使用 PITest 进行变异测试
 package evaluator
 
 import (
@@ -12,8 +16,8 @@ import (
 	"time"
 )
 
-const defaultTestTimeoutSeconds = 180
-
+// javaPomTemplate Maven POM 模板
+// 包含 JUnit 5、JaCoCo、PITest 等必要插件配置
 const javaPomTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -137,6 +141,18 @@ const javaPomTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </project>
 `
 
+// prepareJavaWorkspace 准备 Java 评测工作区
+// 创建 Maven 项目结构，复制源码和测试文件，生成 pom.xml
+//
+// 参数:
+//   - testPath: 生成的测试文件路径
+//   - samplePath: 源码文件路径
+//
+// 返回值:
+//   - string: 工作目录路径（失败时为空）
+//   - string: 测试文件名（失败时为错误信息）
+//   - string: 源码文件名
+//   - string: 主类名
 func prepareJavaWorkspace(testPath, samplePath string) (string, string, string, string) {
 	testSource, err := os.ReadFile(testPath)
 	if err != nil {
@@ -203,7 +219,7 @@ func prepareJavaWorkspace(testPath, samplePath string) (string, string, string, 
 		return "", "", "", fmt.Sprintf("failed to write test: %s", err)
 	}
 
-	pomContent := fmt.Sprintf(javaPomTemplate, primaryClassName+"*", classNames[0]+"Test", 5000)
+	pomContent := fmt.Sprintf(javaPomTemplate, primaryClassName+"*", testClassName, 5000)
 	pomPath := filepath.Join(workdir, "pom.xml")
 	if err := os.WriteFile(pomPath, []byte(pomContent), 0o644); err != nil {
 		_ = os.RemoveAll(workdir)
@@ -228,7 +244,7 @@ func extractClassNameFromSource(source string) string {
 }
 
 func extractTestClassNameFromTest(test string) string {
-	classPattern := regexp.MustCompile(`(?:public\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*Test)`)
+	classPattern := regexp.MustCompile(`(?:public\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)`)
 	match := classPattern.FindStringSubmatch(test)
 	if match != nil && len(match) > 1 {
 		return match[1]
@@ -238,80 +254,185 @@ func extractTestClassNameFromTest(test string) string {
 
 func extractAllClassNamesFromSource(source string) []string {
 	typePattern := regexp.MustCompile(`(?m)(?:^|\n)\s*(?:public\s+|private\s+|protected\s+)?(?:abstract\s+|final\s+|static\s+)*\b(?:class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
+	allMatches := typePattern.FindAllStringSubmatchIndex(source, -1)
+	depths := computeBraceDepths(source)
+
 	seen := make(map[string]bool)
 	out := make([]string, 0)
-	for _, match := range typePattern.FindAllStringSubmatch(source, -1) {
-		if len(match) < 2 {
+	for _, match := range allMatches {
+		if len(match) < 4 {
 			continue
 		}
-		name := match[1]
-		if seen[name] {
-			continue
+		pos := match[0]
+		if pos < len(depths) && depths[pos] == 0 {
+			name := source[match[2]:match[3]]
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
 		}
-		seen[name] = true
-		out = append(out, name)
 	}
 	return out
 }
 
 func splitJavaSourceByClasses(source string) map[string]string {
 	typePattern := regexp.MustCompile(`(?m)(?:^|\n)\s*(?:public\s+|private\s+|protected\s+)?(?:abstract\s+|final\s+|static\s+)*\b(?:class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
-	decls := typePattern.FindAllStringSubmatchIndex(source, -1)
+	allMatches := typePattern.FindAllStringSubmatchIndex(source, -1)
+	if len(allMatches) == 0 {
+		return map[string]string{}
+	}
+
+	// 计算每个匹配位置的 brace depth，只保留 depth == 0 的顶层类
+	type classDecl struct {
+		name  string
+		start int
+	}
+	decls := make([]classDecl, 0, len(allMatches))
+	depths := computeBraceDepths(source)
+	for _, match := range allMatches {
+		if len(match) < 4 {
+			continue
+		}
+		pos := match[0]
+		if pos < len(depths) && depths[pos] == 0 {
+			decls = append(decls, classDecl{name: source[match[2]:match[3]], start: pos})
+		}
+	}
+
 	if len(decls) == 0 {
 		return map[string]string{}
 	}
 
-	firstStart := decls[0][0]
+	firstStart := decls[0].start
 	header := strings.TrimSpace(source[:firstStart])
 
 	result := make(map[string]string)
-	for i, match := range decls {
-		if len(match) < 4 {
-			continue
-		}
-		className := source[match[2]:match[3]]
-		start := match[0]
+	for i, decl := range decls {
+		start := decl.start
 		for start < len(source) && (source[start] == '\n' || source[start] == '\r') {
 			start++
 		}
 		end := len(source)
 		if i+1 < len(decls) {
-			end = decls[i+1][0]
+			end = decls[i+1].start
 		}
 		classSource := strings.TrimSpace(source[start:end])
 		if header != "" {
 			classSource = header + "\n\n" + classSource
 		}
-		result[className] = classSource
+		result[decl.name] = classSource
 	}
 	return result
 }
 
+// computeBraceDepths 返回 source 中每个字符位置对应的 brace depth。
+// depth 在遇到 '{' 时递增，遇到 '}' 时递减。字符串和注释内的花括号被忽略。
+func computeBraceDepths(source string) []int {
+	depths := make([]int, len(source))
+	depth := 0
+	inString := false
+	var stringChar byte
+	inLineComment := false
+	inBlockComment := false
+
+	for i := 0; i < len(source); i++ {
+		c := source[i]
+		if inLineComment {
+			if c == '\n' {
+				inLineComment = false
+			}
+		} else if inBlockComment {
+			if c == '*' && i+1 < len(source) && source[i+1] == '/' {
+				inBlockComment = false
+			}
+		} else if inString {
+			if c == '\\' {
+				i++
+			} else if c == stringChar {
+				inString = false
+			}
+		} else {
+			if c == '/' && i+1 < len(source) {
+				if source[i+1] == '/' {
+					inLineComment = true
+				} else if source[i+1] == '*' {
+					inBlockComment = true
+				}
+			} else if c == '"' || c == '\'' {
+				inString = true
+				stringChar = c
+			} else if c == '{' {
+				depth++
+			} else if c == '}' {
+				depth--
+			}
+		}
+		depths[i] = depth
+	}
+	return depths
+}
+
+// javaCompileCheck 检查 Java 测试代码是否能编译通过
+// 使用 Maven test-compile 命令检查编译
+//
+// 参数:
+//   - workdir: 工作目录（包含 pom.xml 和 src 目录）
+//
+// 返回值:
+//   - bool: 编译是否通过
+//   - string: 编译错误信息（成功时为空）
 func javaCompileCheck(workdir string) (bool, string) {
-	runCtx, cancel := context.WithTimeout(context.Background(), defaultTestTimeoutSeconds*time.Second)
+	compileTimeout := defaultTestTimeoutSeconds * 3
+	runCtx, cancel := context.WithTimeout(context.Background(), time.Duration(compileTimeout)*time.Second)
 	defer cancel()
 	output, err := runCommandWithProcessGroupKill(runCtx, "mvn", []string{"test-compile", "-q"}, workdir, nil)
 	if runCtx.Err() != nil {
-		return false, fmt.Sprintf("java compile timed out after %ds", defaultTestTimeoutSeconds)
+		return false, fmt.Sprintf("java compile timed out after %ds", compileTimeout)
 	}
-	if err == nil {
-		return true, ""
+	if err != nil {
+		return false, trimErr(string(output), 2000)
 	}
-	return false, trimErr(string(output), 2000)
+
+	// 编译成功后，预下载 Surefire 插件运行时依赖。
+	// mvn test-compile 不触发 Surefire，首次 mvn test 会下载其依赖导致超时。
+	preCtx, preCancel := context.WithTimeout(context.Background(), time.Duration(compileTimeout)*time.Second)
+	_, _ = runCommandWithProcessGroupKill(preCtx, "mvn",
+		[]string{"dependency:copy", "-Dartifact=org.apache.maven.surefire:surefire-api:3.1.2", "-q"}, workdir, nil)
+	preCancel()
+
+	return true, ""
 }
 
+// executeJavaTests 执行 Java 测试（使用默认超时）
+// 使用 Maven test 命令运行 JUnit 测试
 func executeJavaTests(workdir string) (bool, string, int) {
 	return executeJavaTestsWithTimeout(workdir, defaultTestTimeoutSeconds)
 }
 
+// executeJavaTestsWithTimeout 执行 Java 测试（指定超时时间）
+// 使用 Maven test 命令运行 JUnit 测试
+//
+// 参数:
+//   - workdir: 工作目录
+//   - timeoutSeconds: 超时时间（秒）
+//
+// 返回值:
+//   - bool: 测试是否通过
+//   - string: 测试输出或错误信息
+//   - int: 执行耗时（毫秒）
 func executeJavaTestsWithTimeout(workdir string, timeoutSeconds int) (bool, string, int) {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = defaultTestTimeoutSeconds
 	}
+	// 首次运行 Maven 需要下载 Surefire 等插件依赖，确保最低超时时间
+	const minJavaTestTimeout = 300
+	if timeoutSeconds < minJavaTestTimeout {
+		timeoutSeconds = minJavaTestTimeout
+	}
 	started := time.Now()
 	runCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
-	output, err := runCommandWithProcessGroupKill(runCtx, "mvn", []string{"test", "-q"}, workdir, nil)
+	output, err := runCommandWithProcessGroupKill(runCtx, "mvn", []string{"test"}, workdir, nil)
 	latency := int(time.Since(started).Milliseconds())
 	if runCtx.Err() != nil {
 		return false, fmt.Sprintf("java test timed out after %ds", timeoutSeconds), latency
@@ -326,6 +447,15 @@ func stripANSICodes(s string) string {
 	return regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(s, "")
 }
 
+// parseJavaTestCounts 解析 Maven test 输出中的测试结果计数
+// 从 "Tests run:" 行统计通过和失败数
+//
+// 参数:
+//   - output: Maven test 输出内容
+//
+// 返回值:
+//   - *int: 通过的测试数
+//   - *int: 总测试数
 func parseJavaTestCounts(output string) (*int, *int) {
 	clean := stripANSICodes(output)
 
@@ -381,6 +511,17 @@ func parseIntOrZero(s string) int {
 	return result
 }
 
+// collectJavaCoverage 收集 Java 测试覆盖率数据
+// 从 JaCoCo XML 报告解析行覆盖率和分支覆盖率
+//
+// 参数:
+//   - workdir: 工作目录
+//   - className: 目标类名（用于过滤）
+//
+// 返回值:
+//   - float64: 行覆盖率（0-1）
+//   - float64: 分支覆盖率（0-1）
+//   - string: 错误信息（成功时为空）
 func collectJavaCoverage(workdir, className string) (float64, float64, string) {
 	jacocoXML := filepath.Join(workdir, "target", "site", "jacoco", "jacoco.xml")
 	if _, err := os.Stat(jacocoXML); err != nil {
@@ -462,9 +603,25 @@ func parseJacocoXML(content, className string) (float64, float64, string) {
 	return 0, 0, "class not found in coverage report"
 }
 
+// collectJavaMutation 执行 Java 变异测试
+// 使用 PITest 工具对源码进行变异并计算变异得分
+//
+// 参数:
+//   - ctx: 上下文
+//   - workdir: 工作目录
+//   - className: 目标类名
+//   - timeoutSeconds: 超时时间（秒）
+//   - testPassRate: 测试通过率（用于判断是否运行变异测试）
+//   - testPassed: 通过的测试数
+//   - testTotal: 总测试数
+//
+// 返回值:
+//   - float64: 变异得分（0-1）
+//   - mutationStats: 变异统计数据
+//   - string: 错误信息（成功时为空）
 func collectJavaMutation(ctx context.Context, workdir, className string, timeoutSeconds int, testPassRate *float64, testPassed, testTotal int) (float64, mutationStats, string) {
 	if timeoutSeconds <= 0 {
-		timeoutSeconds = 120
+		timeoutSeconds = MutationTimeoutSeconds
 	}
 
 	fmt.Printf("        [MUTATION] Java PITest 开始 | 类名: %s | 超时: %ds\n", className, timeoutSeconds)
@@ -479,9 +636,6 @@ func collectJavaMutation(ctx context.Context, workdir, className string, timeout
 	} else if testPassRate != nil {
 		total = 100
 		passed = int(math.Round(*testPassRate * float64(total)))
-		if passed == 0 && *testPassRate > 0 {
-			passed = 1
-		}
 		if passed > total {
 			passed = total
 		}

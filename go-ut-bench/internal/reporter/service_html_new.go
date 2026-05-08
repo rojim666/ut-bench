@@ -1,3 +1,5 @@
+// reporter/service_html_new.go 提供 HTML 报告生成功能
+// 构建洞察区域、图表、样式表等 HTML 内容
 package reporter
 
 import (
@@ -6,6 +8,59 @@ import (
 
 	"go-ut-bench/internal/contracts"
 )
+
+func buildRuntimeSummarySection(summary contracts.RuntimeSummary) string {
+	if summary.EvaluatorEnvFingerprint == "" && len(summary.SandboxProviders) == 0 && len(summary.SandboxImages) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`<div class="section" id="runtime-summary">
+  <h2>运行时拓扑 Runtime Topology</h2>
+  <div class="grid-2">`)
+	b.WriteString(fmt.Sprintf(`
+    <div class="panel">
+      <h3>评测执行面</h3>
+      <div style="font-size:13px;line-height:1.7;">
+        <div><strong>环境指纹:</strong> <code>%s</code></div>
+        <div><strong>Agent 框架:</strong> %s</div>
+      </div>
+    </div>`,
+		escapeHTML(defaultDash(summary.EvaluatorEnvFingerprint)),
+		escapeHTML(summarizeList(summary.AgentFrameworks, 8)),
+	))
+	b.WriteString(fmt.Sprintf(`
+    <div class="panel">
+      <h3>Agent 沙箱面</h3>
+      <div style="font-size:13px;line-height:1.7;">
+        <div><strong>Provider:</strong> %s</div>
+        <div><strong>镜像:</strong> %s</div>
+        <div><strong>Docker 沙箱样本:</strong> %d</div>
+        <div><strong>本地沙箱样本:</strong> %d</div>
+      </div>
+    </div>`,
+		escapeHTML(summarizeList(summary.SandboxProviders, 8)),
+		escapeHTML(summarizeList(summary.SandboxImages, 6)),
+		summary.DockerBackedSubjects,
+		summary.LocalBackedSubjects,
+	))
+	b.WriteString(`  </div>`)
+	if len(summary.Notes) > 0 {
+		b.WriteString(`<div class="panel" style="margin-top:16px;"><h3>说明</h3>`)
+		for _, note := range summary.Notes {
+			b.WriteString(`<div style="padding:6px 0;border-bottom:1px dashed #e2e8f0;">` + escapeHTML(note) + `</div>`)
+		}
+		b.WriteString(`</div>`)
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+func defaultDash(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "—"
+	}
+	return v
+}
 
 // buildInsightsSection 生成洞察区域HTML
 func buildInsightsSection(insights contracts.Insights) string {
@@ -27,7 +82,7 @@ func buildInsightsSection(insights contracts.Insights) string {
 	// 最佳模型
 	if insights.BestModel.Title != "" {
 		b.WriteString(fmt.Sprintf(`
-    <div class="insight-card insight-best" style="background:linear-gradient(135deg,#1e40af,#3b82f6);color:#fff;padding:16px;border-radius:12px;">
+    <div class="insight-card insight-best" style="background:#0f766e;color:#fff;padding:16px;border-radius:12px;">
       <div style="margin-bottom:8px;">%s</div>
       <div style="font-size:18px;font-weight:700;margin-bottom:6px;">%s</div>
       <div style="font-size:14px;line-height:1.5;">%s</div>
@@ -57,10 +112,10 @@ func buildInsightsSection(insights contracts.Insights) string {
 	// 语言差异
 	for _, lg := range insights.LanguageGaps {
 		b.WriteString(fmt.Sprintf(`
-    <div class="insight-card" style="background:#e0e7ff;border:1px solid #6366f1;padding:16px;border-radius:12px;">
-      <div style="color:#4f46e5;margin-bottom:6px;">%s</div>
-      <div style="font-size:16px;font-weight:600;color:#3730a3;">%s</div>
-      <div style="font-size:13px;color:#4338ca;margin-top:4px;">%s</div>
+    <div class="insight-card" style="background:#e6f4f1;border:1px solid #0f766e;padding:16px;border-radius:12px;">
+      <div style="color:#0f766e;margin-bottom:6px;">%s</div>
+      <div style="font-size:16px;font-weight:600;color:#115e59;">%s</div>
+      <div style="font-size:13px;color:#0f766e;margin-top:4px;">%s</div>
     </div>`, chartSVG, escapeHTML(lg.Title), escapeHTML(lg.Detail)))
 	}
 
@@ -117,6 +172,15 @@ func buildEfficiencySection(stats contracts.EfficiencyStats) string {
 		return ""
 	}
 	var b strings.Builder
+	costSummary := "未配置模型定价，当前仅统计 token，不展示成本。"
+	if stats.CostEstimate.PricingConfigured {
+		costSummary = fmt.Sprintf("估算总成本: $%.4f | 已定价样本: %d | 实际token样本: %d | 估算token样本: %d | 缺失token样本: %d",
+			stats.CostEstimate.EstimatedCostUSD,
+			stats.CostEstimate.PricedSamples,
+			stats.CostEstimate.ActualTokenSamples,
+			stats.CostEstimate.EstimatedTokenSamples,
+			stats.CostEstimate.MissingTokenSamples)
+	}
 	b.WriteString(`<div class="section" id="efficiency">
   <h2>效率分析 Efficiency Analysis</h2>
   <div class="grid-2">
@@ -150,16 +214,19 @@ func buildEfficiencySection(stats contracts.EfficiencyStats) string {
   </div>
   <div class="panel" style="margin-top:16px;">
     <h3>成本估算</h3>
+    <p class="muted" style="font-size:12px;margin-top:6px;">说明：CLI Agent 若未直接暴露 usage，本报告会将 token/cost 标记为 estimated，不能与 API 原生 usage 视为同等精度。</p>
     <div style="display:flex;gap:24px;margin-top:8px;font-size:14px;">
       <div><strong>总Token消耗:</strong> ` + fmt.Sprintf("%d", stats.CostEstimate.TotalTokens) + `</div>
-      <div><strong>估算成本:</strong> ~¥` + fmt.Sprintf("%.2f", stats.CostEstimate.EstimatedCostUSD*7.2) + ` (按 ¥0.0072/1K Token 估算)</div>
+      <div><strong>成本说明:</strong> ` + escapeHTML(costSummary) + `</div>
     </div>
     <table style="width:100%%;font-size:13px;border-collapse:collapse;margin-top:12px;">
-      <thead><tr style="background:#f1f5f9;"><th style="padding:6px;">模型</th><th style="padding:6px;">总Token</th><th style="padding:6px;">每样本成本(¥)</th></tr></thead>
+      <thead><tr style="background:#f1f5f9;"><th style="padding:6px;">模型</th><th style="padding:6px;">总Token</th><th style="padding:6px;">总成本(USD)</th><th style="padding:6px;">每样本成本(USD)</th><th style="padding:6px;">样本说明</th></tr></thead>
       <tbody>`)
 	for _, row := range stats.CostEstimate.ModelCostBreakdown {
-		b.WriteString(fmt.Sprintf(`<tr><td style="padding:6px;border-bottom:1px solid #e2e8f0;">%s</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">%d</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">¥%.4f</td></tr>`,
-			escapeHTML(row.Model), row.TotalTokens, row.AvgCostPerSample*7.2))
+		sampleNote := fmt.Sprintf("priced=%d, actual=%d, estimated=%d",
+			row.PricedSamples, row.ActualTokenSamples, row.EstimatedTokenSamples)
+		b.WriteString(fmt.Sprintf(`<tr><td style="padding:6px;border-bottom:1px solid #e2e8f0;">%s</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">%d</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">$%.4f</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">$%.4f</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">%s</td></tr>`,
+			escapeHTML(row.Model), row.TotalTokens, row.EstimatedCostUSD, row.AvgCostPerSample, escapeHTML(sampleNote)))
 	}
 	b.WriteString(`      </tbody>
     </table>
@@ -260,7 +327,7 @@ func buildMetaSection(runID string, specInfo string) string {
     <div><strong>提示词策略:</strong> <span style="color:#64748b;">structured-v1</span></div>
   </div>
   <div style="margin-top:12px;padding:12px;background:#e0e7ff;border-radius:8px;font-size:13px;">
-    <strong>评分规则说明：</strong> 综合得分 = 编译通过率×0.3 + 样本测试通过率×0.3 + 行覆盖率×0.2 + 变异分数×0.2。
+    <strong>评分规则说明：</strong> 综合得分 = `+contracts.DefaultWeights.String()+`。
     其中变异分数反映测试用例检测代码缺陷的能力，通过变异测试工具注入缺陷来验证测试的有效性。
   </div>
 </div>`, escapeHTML(runID), escapeHTML(specInfo))

@@ -1,3 +1,6 @@
+// prompt 包提供提示词构建和管理功能
+// 负责为不同语言生成 LLM 提示词、管理提示词版本和快照
+// 支持三种提示词模式：完整文件模式、续写模式、仓库级模式
 package runner
 
 import (
@@ -10,41 +13,55 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"go-ut-bench/internal/contracts"
 )
 
-type PromptMode string
+// PromptMode 提示词模式类型（别名，实际定义在 contracts 包）
+type PromptMode = contracts.PromptMode
 
+// 三种提示词模式常量（引用 contracts 统一定义）
 const (
-	PromptModeFullFile    PromptMode = "full_file"
-	PromptModeCompletion  PromptMode = "completion"
-	PromptModeModuleLevel PromptMode = "module_level"
+	PromptModeFullFile   = contracts.PromptModeFullFile
+	PromptModeCompletion = contracts.PromptModeCompletion
+	PromptModeRepoLevel  = contracts.PromptModeRepoLevel
 )
 
+// systemMessage 系统消息，强调只生成可运行的测试代码
 const systemMessage = "You are a senior unit test generation model. " +
 	"Return only runnable test code. Do not include explanations, markdown fences, or placeholder tests. " +
 	"Use only the provided source and context. Do not invent APIs, imports, or behavior."
 
+// promptStrategy 提示词策略名称
 const promptStrategy = "structured-v1"
 
-var promptLanguages = []string{"python", "go", "java", "cpp"}
+// promptLanguages 支持提示词的语言列表（引用 contracts 统一定义）
+var promptLanguages = contracts.SupportedLanguages
 
-type PromptCatalog struct {
-	Strategy      string                           `json:"strategy"`
-	VersionID     string                           `json:"version_id"`
-	SystemMessage string                           `json:"system_message"`
-	Modes         []PromptMode                     `json:"modes"`
-	Templates     map[string]map[PromptMode]string `json:"templates"`
-}
+// PromptCatalog 提示词目录（别名，实际定义在 contracts 包）
+type PromptCatalog = contracts.PromptCatalog
 
+// PromptRequest 提示词构建请求参数
+// 包含构建提示词所需的所有输入信息
 type PromptRequest struct {
-	Mode            PromptMode
-	Language        string
-	SamplePath      string
-	SourceCode      string
-	ExistingTestSrc string
-	ModuleMeta      *moduleLevelMetaForRunner
+	Mode            PromptMode              // 提示词模式
+	Language        string                  // 编程语言
+	SamplePath      string                  // 样本文件路径
+	SourceCode      string                  // 源代码内容
+	ExistingTestSrc string                  // 已有测试代码（用于续写模式）
+	ModuleMeta      *repoLevelMetaForRunner // 仓库级样本元数据（用于 repo_level 模式）
 }
 
+// buildPrompt 构建提示词（简化版本）
+// 根据样本路径自动检测是否为 repo_level 类型，选择合适的模式
+//
+// 参数:
+//   - language: 编程语言
+//   - samplePath: 样本文件路径
+//   - sourceCode: 源代码内容
+//
+// 返回值:
+//   - string: 构建完成的提示词
 func buildPrompt(language, samplePath, sourceCode string) string {
 	req := PromptRequest{
 		Mode:       PromptModeFullFile,
@@ -52,20 +69,28 @@ func buildPrompt(language, samplePath, sourceCode string) string {
 		SamplePath: samplePath,
 		SourceCode: sourceCode,
 	}
-	if meta := loadModuleLevelMetaForRunner(samplePath); meta != nil {
-		req.Mode = PromptModeModuleLevel
+	if meta := loadRepoLevelMetaForRunner(samplePath); meta != nil {
+		req.Mode = PromptModeRepoLevel
 		req.ModuleMeta = meta
 	}
 	return BuildPrompt(req)
 }
 
+// BuildPrompt 根据请求参数构建提示词
+// 根据模式选择对应的构建函数
+//
+// 参数:
+//   - req: 提示词构建请求参数
+//
+// 返回值:
+//   - string: 构建完成的提示词
 func BuildPrompt(req PromptRequest) string {
 	switch req.Mode {
 	case PromptModeCompletion:
 		return buildCompletionPrompt(req)
-	case PromptModeModuleLevel:
+	case PromptModeRepoLevel:
 		if req.ModuleMeta != nil {
-			return buildModuleLevelPrompt(req)
+			return buildRepoLevelPrompt(req)
 		}
 		return buildFullFilePrompt(req)
 	default:
@@ -73,22 +98,28 @@ func BuildPrompt(req PromptRequest) string {
 	}
 }
 
+// PromptStrategy 返回提示词策略名称
 func PromptStrategy() string {
 	return promptStrategy
 }
 
+// PromptVersionID 返回提示词版本ID
+// 通过 BuildPromptCatalog 计算哈希生成
 func PromptVersionID() string {
 	return BuildPromptCatalog().VersionID
 }
 
+// BuildPromptCatalog 构建提示词目录
+// 包含所有语言所有模式的提示词模板，以及版本信息
+// 版本ID 由整个目录内容的 SHA1 哈希生成，确保可追溯
 func BuildPromptCatalog() PromptCatalog {
 	templates := make(map[string]map[PromptMode]string, len(promptLanguages))
-	modes := []PromptMode{PromptModeFullFile, PromptModeCompletion, PromptModeModuleLevel}
+	modes := []PromptMode{PromptModeFullFile, PromptModeCompletion, PromptModeRepoLevel}
 	for _, language := range promptLanguages {
 		templates[language] = map[PromptMode]string{
-			PromptModeFullFile:    buildPromptPreview(previewPromptRequest(language, PromptModeFullFile)),
-			PromptModeCompletion:  buildPromptPreview(previewPromptRequest(language, PromptModeCompletion)),
-			PromptModeModuleLevel: buildPromptPreview(previewPromptRequest(language, PromptModeModuleLevel)),
+			PromptModeFullFile:   buildPromptPreview(previewPromptRequest(language, PromptModeFullFile)),
+			PromptModeCompletion: buildPromptPreview(previewPromptRequest(language, PromptModeCompletion)),
+			PromptModeRepoLevel:  buildPromptPreview(previewPromptRequest(language, PromptModeRepoLevel)),
 		}
 	}
 
@@ -115,6 +146,15 @@ func BuildPromptCatalog() PromptCatalog {
 	}
 }
 
+// WritePromptCatalog 将提示词目录写入目录
+// 生成 system.txt、各语言各模式的 .prompt.txt 文件、prompt_catalog.json
+//
+// 参数:
+//   - dir: 目标目录路径
+//
+// 返回值:
+//   - PromptCatalog: 写入的目录内容
+//   - error: 写入过程中的错误
 func WritePromptCatalog(dir string) (PromptCatalog, error) {
 	catalog := BuildPromptCatalog()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -142,18 +182,13 @@ func WritePromptCatalog(dir string) (PromptCatalog, error) {
 	return catalog, nil
 }
 
+// LoadPromptCatalog 从目录加载提示词目录（委托给 contracts 包）
 func LoadPromptCatalog(dir string) (PromptCatalog, error) {
-	var catalog PromptCatalog
-	raw, err := os.ReadFile(filepath.Join(dir, "prompt_catalog.json"))
-	if err != nil {
-		return PromptCatalog{}, err
-	}
-	if err := json.Unmarshal(raw, &catalog); err != nil {
-		return PromptCatalog{}, err
-	}
-	return catalog, nil
+	return contracts.LoadPromptCatalog(dir)
 }
 
+// PromptTemplatePreview 返回指定语言的完整文件模式提示词模板预览
+// 用于查看提示词内容
 func PromptTemplatePreview(language string) string {
 	catalog := BuildPromptCatalog()
 	lang := normalizeLanguage(language)
@@ -163,6 +198,14 @@ func PromptTemplatePreview(language string) string {
 	return catalog.Templates["python"][PromptModeFullFile]
 }
 
+// buildFullFilePrompt 构建完整文件模式提示词
+// 用于 self_contained 类型样本，提供完整源码和测试要求
+//
+// 参数:
+//   - req: 提示词构建请求参数
+//
+// 返回值:
+//   - string: 构建完成的提示词
 func buildFullFilePrompt(req PromptRequest) string {
 	lang := normalizeLanguage(req.Language)
 	sampleID := strings.TrimSuffix(filepath.Base(req.SamplePath), filepath.Ext(req.SamplePath))
@@ -173,7 +216,7 @@ func buildFullFilePrompt(req PromptRequest) string {
 	}
 	dependencies := formatDependencyText(extractDependencies(req.SourceCode, lang))
 	criticalConditions := formatBulletList(extractCriticalConditions(req.SourceCode, lang), "none detected")
-	moduleSymbols := extractModuleLevelSymbols(req.SourceCode, lang)
+	moduleSymbols := extractRepoLevelSymbols(req.SourceCode, lang)
 	mockReq := mockRequirement(req.SourceCode)
 
 	var b strings.Builder
@@ -222,6 +265,14 @@ func buildFullFilePrompt(req PromptRequest) string {
 	return b.String()
 }
 
+// buildCompletionPrompt 构建续写模式提示词
+// 用于截断后续写，基于已生成内容继续补全
+//
+// 参数:
+//   - req: 提示词构建请求参数，需包含 ExistingTestSrc
+//
+// 返回值:
+//   - string: 构建完成的提示词
 func buildCompletionPrompt(req PromptRequest) string {
 	lang := normalizeLanguage(req.Language)
 	framework := languageFramework(lang)
@@ -252,7 +303,15 @@ func buildCompletionPrompt(req PromptRequest) string {
 	return b.String()
 }
 
-func buildModuleLevelPrompt(req PromptRequest) string {
+// buildRepoLevelPrompt 构建仓库级模式提示词
+// 用于 repo_level 类型样本，包含 workspace 和 module_import 上下文
+//
+// 参数:
+//   - req: 提示词构建请求参数，需包含 ModuleMeta
+//
+// 返回值:
+//   - string: 构建完成的提示词
+func buildRepoLevelPrompt(req PromptRequest) string {
 	lang := normalizeLanguage(req.Language)
 	framework := languageFramework(lang)
 	meta := req.ModuleMeta
@@ -275,7 +334,7 @@ func buildModuleLevelPrompt(req PromptRequest) string {
 	b.WriteString("Task: Generate one complete test file for the target module in this multi-file package.\n")
 	fmt.Fprintf(&b, "Language: %s\n", lang)
 	fmt.Fprintf(&b, "Framework: %s\n", framework)
-	fmt.Fprintf(&b, "Mode: %s\n\n", PromptModeModuleLevel)
+	fmt.Fprintf(&b, "Mode: %s\n\n", PromptModeRepoLevel)
 
 	b.WriteString("Hard requirements:\n")
 	b.WriteString("- Return one complete runnable test file.\n")
@@ -311,6 +370,15 @@ func buildModuleLevelPrompt(req PromptRequest) string {
 	return b.String()
 }
 
+// promptLanguageRules 返回各语言特有的测试规则
+// 为不同语言提供特定的测试框架、命名规范、导入规则等要求
+//
+// 参数:
+//   - lang: 编程语言
+//   - moduleName: 模块名称（用于导入语句）
+//
+// 返回值:
+//   - []string: 语言特定的规则列表
 func promptLanguageRules(lang, moduleName string) []string {
 	switch lang {
 	case "python":
@@ -356,10 +424,14 @@ func promptLanguageRules(lang, moduleName string) []string {
 	}
 }
 
+// normalizeLanguage 规范化语言名称
+// 转为小写并去除空白
 func normalizeLanguage(language string) string {
 	return strings.ToLower(strings.TrimSpace(language))
 }
 
+// formatDependencyText 格式化依赖列表文本
+// 空列表返回 "none detected"
 func formatDependencyText(deps []string) string {
 	if len(deps) == 0 {
 		return "none detected"
@@ -399,8 +471,8 @@ func previewPromptRequest(language string, mode PromptMode) PromptRequest {
 	switch mode {
 	case PromptModeCompletion:
 		req.ExistingTestSrc = previewExistingTest(lang)
-	case PromptModeModuleLevel:
-		req.ModuleMeta = &moduleLevelMetaForRunner{
+	case PromptModeRepoLevel:
+		req.ModuleMeta = &repoLevelMetaForRunner{
 			SampleID:     "preview_sample",
 			ModuleImport: previewModuleImport(lang),
 			PackageName:  previewPackageName(lang),

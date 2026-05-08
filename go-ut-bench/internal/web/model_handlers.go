@@ -23,17 +23,18 @@ var modelsMu sync.Mutex
 // 注意：api_key 字段仅写入 .env（或运行时环境变量）约定的变量名，
 // 真实密钥值不会落盘到 YAML；YAML 只保留 api_key_env 字段名。
 type modelEntry struct {
-	Name        string            `json:"name"`
-	Enabled     bool              `json:"enabled"`
-	Provider    string            `json:"provider"`
-	ModelID     string            `json:"model_id"`
-	APIEndpoint string            `json:"api_endpoint"`
-	APIKeyEnv   string            `json:"api_key_env"`
-	APIKey      string            `json:"api_key,omitempty"` // 仅 POST/PUT 时接收，用于写入 .env
-	APIKeySet   bool              `json:"api_key_set"`       // GET 时标示对应 env 变量是否已设置
-	Parameters  map[string]any    `json:"parameters,omitempty"`
-	Extra       map[string]any    `json:"extra,omitempty"` // 保留未识别字段
-	_           map[string]string `json:"-"`
+	Name              string            `json:"name"`
+	Enabled           bool              `json:"enabled"`
+	Provider          string            `json:"provider"`
+	ModelID           string            `json:"model_id"`
+	APIEndpoint       string            `json:"api_endpoint"`
+	AnthropicEndpoint string            `json:"anthropic_endpoint,omitempty"` // Anthropic 兼容端点（Claude Code 使用）
+	APIKeyEnv         string            `json:"api_key_env"`
+	APIKey            string            `json:"api_key,omitempty"` // 仅 POST/PUT 时接收，用于写入 .env
+	APIKeySet         bool              `json:"api_key_set"`       // GET 时标示对应 env 变量是否已设置
+	Parameters        map[string]any    `json:"parameters,omitempty"`
+	Extra             map[string]any    `json:"extra,omitempty"` // 保留未识别字段
+	_                 map[string]string `json:"-"`
 }
 
 // handleModels 路由 GET/POST /api/models。
@@ -105,7 +106,7 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request, name st
 		errJSON(w, http.StatusNotFound, "model not found: "+name)
 		return
 	}
-	writeJSON(w, http.StatusOK, testModelConnection(r.Context(), entry))
+	writeJSON(w, http.StatusOK, s.testModelConnection(r.Context(), entry))
 }
 
 func (s *Server) handleTestAllModels(w http.ResponseWriter, r *http.Request) {
@@ -120,12 +121,20 @@ func (s *Server) handleTestAllModels(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	entries := extractEntries(root)
+	entries := s.extractModelEntries(root)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	results := make([]modelTestResult, 0, len(entries))
-	for _, entry := range entries {
-		results = append(results, testModelConnection(r.Context(), entry))
+
+	// 并发测试所有模型
+	results := make([]modelTestResult, len(entries))
+	var wg sync.WaitGroup
+	for i, entry := range entries {
+		wg.Add(1)
+		go func(idx int, e modelEntry) {
+			defer wg.Done()
+			results[idx] = s.testModelConnection(r.Context(), e)
+		}(i, entry)
 	}
+	wg.Wait()
 	writeJSON(w, http.StatusOK, results)
 }
 
@@ -138,7 +147,7 @@ func findModelEntry(root map[string]any, name string) (modelEntry, bool) {
 	return modelEntry{}, false
 }
 
-func testModelConnection(parent context.Context, entry modelEntry) modelTestResult {
+func (s *Server) testModelConnection(parent context.Context, entry modelEntry) modelTestResult {
 	result := modelTestResult{
 		Name:      entry.Name,
 		Status:    "failed",
@@ -152,7 +161,7 @@ func testModelConnection(parent context.Context, entry modelEntry) modelTestResu
 		result.Message = "model id is empty"
 		return result
 	}
-	apiKey := strings.TrimSpace(os.Getenv(entry.APIKeyEnv))
+	apiKey := strings.TrimSpace(s.lookupAPIKey(entry.APIKeyEnv))
 	if !hasUsableAPIKey(apiKey) {
 		result.Status = "missing_key"
 		result.Message = "missing API key env var: " + entry.APIKeyEnv
@@ -312,7 +321,7 @@ func (s *Server) listModels(w http.ResponseWriter, _ *http.Request) {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	out := extractEntries(root)
+	out := s.extractModelEntries(root)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	writeJSON(w, http.StatusOK, out)
 }
@@ -453,6 +462,7 @@ func extractEntries(root map[string]any) []modelEntry {
 		if cfg != nil {
 			entry.ModelID, _ = cfg["model"].(string)
 			entry.APIEndpoint, _ = cfg["api_endpoint"].(string)
+			entry.AnthropicEndpoint, _ = cfg["anthropic_endpoint"].(string)
 			entry.APIKeyEnv, _ = cfg["api_key_env"].(string)
 			if p, ok := cfg["parameters"].(map[string]any); ok {
 				entry.Parameters = p
@@ -462,6 +472,16 @@ func extractEntries(root map[string]any) []modelEntry {
 			entry.APIKeySet = hasUsableAPIKey(os.Getenv(entry.APIKeyEnv))
 		}
 		out = append(out, entry)
+	}
+	return out
+}
+
+func (s *Server) extractModelEntries(root map[string]any) []modelEntry {
+	out := extractEntries(root)
+	for i := range out {
+		if out[i].APIKeyEnv != "" {
+			out[i].APIKeySet = hasUsableAPIKey(s.lookupAPIKey(out[i].APIKeyEnv))
+		}
 	}
 	return out
 }
@@ -481,6 +501,7 @@ func upsertModelNode(models map[string]any, in modelEntry) {
 	}
 	cfg["model"] = in.ModelID
 	cfg["api_endpoint"] = in.APIEndpoint
+	cfg["anthropic_endpoint"] = strings.TrimSpace(in.AnthropicEndpoint)
 	normalizeModelEntry(&in)
 	cfg["api_key_env"] = in.APIKeyEnv
 	if in.Parameters != nil {

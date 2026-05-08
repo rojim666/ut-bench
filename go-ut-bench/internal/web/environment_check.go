@@ -87,7 +87,27 @@ func (s *Server) handleEnvironmentCheck(w http.ResponseWriter, r *http.Request) 
 		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.buildEnvironmentCheck())
+	writeJSON(w, http.StatusOK, s.buildEnvironmentCheckCached())
+}
+
+// buildEnvironmentCheckCached 带缓存的环境检测，10秒内复用。
+func (s *Server) buildEnvironmentCheckCached() environmentCheckResponse {
+	const cacheTTL = 10 * time.Second
+
+	s.cacheMu.RLock()
+	if s.envCheckCache != nil && time.Since(s.envCheckCache.loadedAt) < cacheTTL {
+		data := s.envCheckCache.data
+		s.cacheMu.RUnlock()
+		return data
+	}
+	s.cacheMu.RUnlock()
+
+	data := s.buildEnvironmentCheck()
+
+	s.cacheMu.Lock()
+	s.envCheckCache = &envCheckCacheEntry{data: data, loadedAt: time.Now()}
+	s.cacheMu.Unlock()
+	return data
 }
 
 func (s *Server) handleEnvironmentCheckOne(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +160,7 @@ func (s *Server) handleEnvironmentInstall(w http.ResponseWriter, r *http.Request
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, plan.Command, plan.Args...)
+	hideCommandWindow(cmd)
 	out, runErr := cmd.CombinedOutput()
 	output := trimCommandOutput(string(out), 12000)
 	resp := environmentInstallResponse{
@@ -163,6 +184,17 @@ func (s *Server) handleEnvironmentInstall(w http.ResponseWriter, r *http.Request
 
 func (s *Server) buildEnvironmentCheck() environmentCheckResponse {
 	py, pyOK, pyVersion := detectPythonCommand()
+
+	// 检测 Docker 是否可用且镜像就绪
+	dockerOK, dockerImageReady := false, false
+	if _, version, _ := detectDocker(); version != "" {
+		dockerOK = true
+		if img := s.dockerCfg.EffectiveEvalImage(); img != "" {
+			dockerImageReady, _ = detectImage(img)
+		}
+	}
+	dockerAvailable := dockerOK && dockerImageReady
+
 	groups := []environmentCheckGroup{
 		{
 			ID:    "basic",
@@ -173,7 +205,7 @@ func (s *Server) buildEnvironmentCheck() environmentCheckResponse {
 				checkExecutable("java", "Java", "basic", []string{"java"}, []string{"-version"}, false, "Java/JDK 17+ 用于 Java 样本评测。", "java"),
 				checkExecutable("javac", "Javac", "basic", []string{"javac"}, []string{"-version"}, false, "Java 样本编译需要 JDK，而不仅是 JRE。", "jdk"),
 				checkExecutable("maven", "Maven", "basic", []string{"mvn"}, []string{"-version"}, false, "Java 样本评测和 PITest 需要 Maven。", "maven"),
-				checkDocker(s.dockerCfg.ImageName),
+				checkDocker(s.dockerCfg.EffectiveEvalImage()),
 			},
 		},
 		{
@@ -222,6 +254,20 @@ func (s *Server) buildEnvironmentCheck() environmentCheckResponse {
 			},
 		},
 	}
+
+	// Docker 就绪时，将本地缺失的非必需工具升级为 "docker_ok"
+	if dockerAvailable {
+		for gi := range groups {
+			for ii := range groups[gi].Items {
+				item := &groups[gi].Items[ii]
+				if item.Status == "missing" && !item.Required {
+					item.Status = "docker_ok"
+					item.Message = "本地未安装，但 Docker 镜像中可用。"
+				}
+			}
+		}
+	}
+
 	return environmentCheckResponse{
 		CheckedAt:   time.Now().Format(time.RFC3339Nano),
 		OS:          runtime.GOOS,
@@ -380,7 +426,7 @@ func summarizeEnvironmentGroups(groups []environmentCheckGroup) environmentCheck
 				sum.Installable++
 			}
 			switch item.Status {
-			case "ok":
+			case "ok", "docker_ok":
 				sum.OK++
 			case "warning":
 				sum.Warning++
@@ -418,7 +464,9 @@ func detectPythonCommand() (envCommand, bool, string) {
 func runCheckCommand(command string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), detectTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, command, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, command, args...)
+	hideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	return trimCommandOutput(string(out), 1200), err
 }
 

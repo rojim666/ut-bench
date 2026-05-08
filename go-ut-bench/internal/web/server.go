@@ -1,23 +1,35 @@
+// web 包提供 HTTP 管理服务
+// 提供 Web UI 和 API 接口，用于启动评测、查看进度、生成报告
 package web
 
 import (
+	"archive/zip"
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
+	"go-ut-bench/internal/agentconfig"
 	"go-ut-bench/internal/contracts"
+	"go-ut-bench/internal/dataset"
 	"go-ut-bench/internal/obs"
 	"go-ut-bench/internal/orchestrator"
 	"go-ut-bench/internal/reporter"
+	"go-ut-bench/internal/runner"
 	"go-ut-bench/internal/store"
 
 	"gopkg.in/yaml.v3"
@@ -35,6 +47,31 @@ type Server struct {
 	dockerCfg  DockerConfig
 	mux        *http.ServeMux
 	db         *store.SQLiteStore // 持久化的数据库连接，避免每次请求重新打开
+	httpServer *http.Server       // 用于优雅关闭
+
+	// 缓存层：避免重复读磁盘/解析YAML
+	automation    *AutomationScheduler
+	cacheMu       sync.RWMutex
+	catalogCache  *catalogCacheEntry
+	runsCache     *runsCacheEntry
+	envCheckCache *envCheckCacheEntry
+}
+
+type catalogCacheEntry struct {
+	data            webCatalog
+	loadedAt        time.Time
+	configMod       time.Time // models.yaml 的 mtime，用于失效判断
+	agentsConfigMod time.Time // agents.yaml 的 mtime，用于失效判断
+}
+
+type runsCacheEntry struct {
+	data     []runSummaryItem
+	loadedAt time.Time
+}
+
+type envCheckCacheEntry struct {
+	data     environmentCheckResponse
+	loadedAt time.Time
 }
 
 // NewServer wires up a Server with the given RunManager and build manager.
@@ -61,6 +98,7 @@ func NewServer(mgr *RunManager, bld *BuildManager, configPath, outputRoot, dbPat
 		dockerCfg:  cfg,
 		db:         db,
 	}
+	s.automation = NewAutomationScheduler(s)
 	s.mux = http.NewServeMux()
 	s.registerRoutes()
 	return s, nil
@@ -69,11 +107,97 @@ func NewServer(mgr *RunManager, bld *BuildManager, configPath, outputRoot, dbPat
 // Start begins listening on addr (e.g. ":8080").
 func (s *Server) Start(addr string) error {
 	fmt.Printf("UTBench Web UI  →  http://localhost%s\n", addr)
-	return http.ListenAndServe(addr, s)
+	s.automation.Start()
+	s.httpServer = &http.Server{Addr: addr, Handler: s}
+	return s.httpServer.ListenAndServe()
 }
 
-// Close closes the database connection.
+// StartGraceful 启动 HTTP 服务并监听 SIGINT/SIGTERM 信号，收到后优雅关闭。
+// 确保所有运行中的任务被取消、Docker 容器被清理、数据库连接被关闭。
+func (s *Server) StartGraceful(addr string) error {
+	fmt.Printf("UTBench Web UI  →  http://localhost%s\n", addr)
+	s.httpServer = &http.Server{Addr: addr, Handler: s}
+
+	// 在 goroutine 中启动服务
+	errCh := make(chan error, 1)
+	s.automation.Start()
+	go func() {
+		errCh <- s.httpServer.ListenAndServe()
+	}()
+
+	// 监听 SIGINT (Ctrl+C) 和 SIGTERM (docker stop / kill)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	select {
+	case sig := <-sigCh:
+		fmt.Fprintf(os.Stderr, "\n收到信号 %v，正在优雅关闭...\n", sig)
+	case err := <-errCh:
+		// HTTP 服务自身出错（端口占用等）
+		s.Close()
+		return err
+	}
+
+	// 给在途请求 5 秒完成时间
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "HTTP shutdown: %v\n", err)
+	}
+
+	// 清理所有运行中的任务和容器
+	s.Close()
+
+	// 等待所有运行中任务的 goroutine 完成（最多 30 秒）
+	s.waitForRunningEntries(30 * time.Second)
+
+	fmt.Println("清理完成，退出。")
+	return nil
+}
+
+// waitForRunningEntries 等待所有 status=running 的 entry 的 Done channel 关闭。
+func (s *Server) waitForRunningEntries(timeout time.Duration) {
+	deadline := time.After(timeout)
+	for _, entry := range s.mgr.List() {
+		entry.mu.RLock()
+		status := entry.Status
+		done := entry.Done
+		entry.mu.RUnlock()
+		if status == StatusRunning || status == StatusPending {
+			select {
+			case <-done:
+			case <-deadline:
+				fmt.Fprintf(os.Stderr, "等待超时，部分任务可能未完成清理\n")
+				return
+			}
+		}
+	}
+}
+
+// Close cancels all running tasks, cleans up Docker containers, and closes the database connection.
 func (s *Server) Close() error {
+	if s.automation != nil {
+		s.automation.Stop()
+	}
+	// 取消所有活跃任务
+	for _, entry := range s.mgr.List() {
+		entry.mu.RLock()
+		status := entry.Status
+		runID := entry.RunID
+		useDocker := entry.UseDocker
+		entry.mu.RUnlock()
+		if status == StatusRunning || status == StatusPending {
+			_ = s.mgr.Cancel(runID)
+		}
+		// 清理 sandbox 子容器
+		if useDocker {
+			killSandboxContainers(runID)
+		}
+	}
+	// 清理所有可能残留的 utbench sandbox 容器（兜底）
+	killAllUtbenchSandboxes()
+	// 停止 RunManager 后台清理 goroutine
+	s.mgr.Close()
 	if s.db != nil {
 		return s.db.Close()
 	}
@@ -102,9 +226,23 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/environment/install", s.handleEnvironmentInstall)
 	s.mux.HandleFunc("/api/runs", s.handleRuns)
 	s.mux.HandleFunc("/api/runs/", s.handleRunSub)
+	s.mux.HandleFunc("/api/assets/runs", s.handleAssets)
 	s.mux.HandleFunc("/api/models", s.handleModels)
 	s.mux.HandleFunc("/api/models/test-all", s.handleTestAllModels)
 	s.mux.HandleFunc("/api/models/", s.handleModelsSub)
+	s.mux.HandleFunc("/api/agents/check", s.handleAgentCheck)
+	s.mux.HandleFunc("/api/agents/install-cli", s.handleAgentInstallCLI)
+	s.mux.HandleFunc("/api/agents/frameworks", s.handleAgentFrameworks)
+	s.mux.HandleFunc("/api/agents/skills", s.handleAgentSkills)
+	s.mux.HandleFunc("/api/agents/skills/upload", s.handleAgentSkillsUpload)
+	s.mux.HandleFunc("/api/agents/skills/command", s.handleAgentSkillsCommand)
+	s.mux.HandleFunc("/api/agents/skills/scan", s.handleAgentSkillsScan)
+	s.mux.HandleFunc("/api/settings/api-keys", s.handleAPIKeys)
+	s.mux.HandleFunc("/api/automations", s.handleAutomations)
+	s.mux.HandleFunc("/api/automations/", s.handleAutomationSub)
+	s.mux.HandleFunc("/api/notification-channels", s.handleNotificationChannels)
+	s.mux.HandleFunc("/api/notification-channels/", s.handleNotificationChannelSub)
+	s.mux.HandleFunc("/api/notification-deliveries", s.handleNotificationDeliveries)
 	// 数据库管理API
 	s.mux.HandleFunc("/api/db/overview", s.handleDBOverview)
 	s.mux.HandleFunc("/api/db/runs", s.handleDBRuns)
@@ -120,7 +258,13 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/db/evaluation-runs", s.handleDBEvaluationRuns)
 	s.mux.HandleFunc("/api/db/evaluation-stages", s.handleDBEvaluationStages)
 	s.mux.HandleFunc("/api/db/dataset-samples", s.handleDBDatasetSamples)
+	s.mux.HandleFunc("/api/db/dataset-packages", s.handleDBDatasetPackages)
 	s.mux.HandleFunc("/api/db/dataset-snapshots", s.handleDBDatasetSnapshots)
+	s.mux.HandleFunc("/api/db/asset-subjects", s.handleDBAssetSubjects)
+	s.mux.HandleFunc("/api/db/subject-versions", s.handleDBSubjectVersions)
+	s.mux.HandleFunc("/api/db/asset-generations", s.handleDBAssetGenerations)
+	s.mux.HandleFunc("/api/db/asset-evaluations", s.handleDBAssetEvaluations)
+	s.mux.HandleFunc("/api/db/asset-explain-reuse", s.handleDBAssetExplainReuse)
 	s.mux.HandleFunc("/api/db/model-configs", s.handleDBModelConfigs)
 	s.mux.HandleFunc("/api/db/prompt-profiles", s.handleDBPromptProfiles)
 	s.mux.HandleFunc("/api/db/evaluation-envs", s.handleDBEvaluationEnvs)
@@ -134,7 +278,11 @@ func (s *Server) registerRoutes() {
 	if err != nil {
 		panic(err)
 	}
-	s.mux.Handle("/", http.FileServer(http.FS(sub)))
+	staticHandler := http.FileServer(http.FS(sub))
+	s.mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		staticHandler.ServeHTTP(w, r)
+	}))
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -308,6 +456,53 @@ type dbReportRequest struct {
 	Models            []string `json:"models"`
 	Languages         []string `json:"languages"`
 	ScoreEligibleOnly bool     `json:"score_eligible_only"`
+	// DedupMode 去重模式：
+	// - "merge" (默认): 合并所有结果，同名样本可能有多条记录
+	// - "overwrite": 按 (model, language, sample_id) 去重，保留最新 run_id 的结果
+	DedupMode string `json:"dedup_mode,omitempty"`
+}
+
+// dbReportSummary 是写入 _db_report 目录下 run_summary.json 的结构，
+// 使合并报告能被 /api/runs 发现并显示在 Web UI 中。
+type dbReportSummary struct {
+	RunID          string            `json:"run_id"`
+	CreatedAtUTC   string            `json:"created_at_utc"`
+	SchemaVersion  string            `json:"schema_version"`
+	Phase          string            `json:"phase"`
+	SourceRunIDs   []string          `json:"source_run_ids"`
+	ResultCount    int               `json:"result_count"`
+	ReportJSONPath string            `json:"report_json_path"`
+	ReportHTMLPath string            `json:"report_html_path"`
+	IsMergedReport bool              `json:"is_merged_report"`
+	Spec           contracts.RunSpec `json:"spec"`
+}
+
+// dedupResultsByLatestRun 按 (model, language, sample_id) 去重，保留最新 run_id 的结果。
+// 用于 "overwrite" 模式，确保同一模型+语言+样本只保留最新运行的结果。
+func dedupResultsByLatestRun(results []contracts.EvaluationResult) []contracts.EvaluationResult {
+	type dedupKey struct {
+		Model    string
+		Language string
+		SampleID string
+	}
+	// 按 run_id 排序（run_id 是时间戳格式，字典序即时间序），后面的会覆盖前面的
+	seen := make(map[dedupKey]int) // key -> index in result slice
+	for i, r := range results {
+		key := dedupKey{Model: r.Model, Language: r.Language, SampleID: r.SampleID}
+		if prevIdx, exists := seen[key]; exists {
+			// 比较 run_id，保留最新的
+			if r.RunID > results[prevIdx].RunID {
+				seen[key] = i
+			}
+		} else {
+			seen[key] = i
+		}
+	}
+	deduped := make([]contracts.EvaluationResult, 0, len(seen))
+	for _, idx := range seen {
+		deduped = append(deduped, results[idx])
+	}
+	return deduped
 }
 
 func (s *Server) handleDBReport(w http.ResponseWriter, r *http.Request) {
@@ -324,13 +519,34 @@ func (s *Server) handleDBReport(w http.ResponseWriter, r *http.Request) {
 	if outRunID == "" {
 		outRunID = contracts.NewRunID() + "_db_report"
 	}
+
+	// 增量合并：如果指定了 run_id 且该目录下已有 run_summary.json，
+	// 读取其 source_run_ids 与本次新选的合并（去重）。
+	allSourceRunIDs := append([]string{}, req.SourceRunIDs...)
+	summaryPath := filepath.Join(s.outputRoot, "runs", outRunID, "run_summary.json")
+	if existing, err := os.ReadFile(summaryPath); err == nil {
+		var prev dbReportSummary
+		if json.Unmarshal(existing, &prev) == nil && len(prev.SourceRunIDs) > 0 {
+			seen := make(map[string]bool, len(allSourceRunIDs))
+			for _, id := range allSourceRunIDs {
+				seen[id] = true
+			}
+			for _, id := range prev.SourceRunIDs {
+				if !seen[id] {
+					allSourceRunIDs = append(allSourceRunIDs, id)
+					seen[id] = true
+				}
+			}
+		}
+	}
+
 	db, err := s.openStore(r.Context())
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	set, err := db.SelectEvaluationResultSet(r.Context(), outRunID, store.DBReportFilter{
-		RunIDs:            req.SourceRunIDs,
+		RunIDs:            allSourceRunIDs,
 		EvaluationRunIDs:  req.EvaluationRunIDs,
 		Models:            req.Models,
 		Languages:         req.Languages,
@@ -340,8 +556,18 @@ func (s *Server) handleDBReport(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	// 按去重模式处理结果
+	dedupMode := strings.TrimSpace(req.DedupMode)
+	if dedupMode == "" {
+		dedupMode = "merge"
+	}
+	if dedupMode == "overwrite" {
+		set.Results = dedupResultsByLatestRun(set.Results)
+	}
+
 	logger := obs.NewLogger(false, filepath.Join(s.outputRoot, "runs", outRunID, "logs"))
-	out, err := reporter.NewService(logger).GenerateFromResultSet(contracts.RunSpec{
+	out, err := reporter.NewService(logger, &runner.DefaultPromptMetaProvider{}).GenerateFromResultSet(contracts.RunSpec{
 		RunID:      outRunID,
 		OutputRoot: s.outputRoot,
 		ConfigPath: s.configPath,
@@ -354,30 +580,125 @@ func (s *Server) handleDBReport(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusInternalServerError, "report generated but ingest failed: "+err.Error())
 		return
 	}
+
+	// 写入 run_summary.json，使合并报告出现在 /api/runs 列表中。
+	// 收集涉及的模型和语言。
+	modelSet := make(map[string]bool)
+	langSet := make(map[string]bool)
+	for _, res := range set.Results {
+		modelSet[res.Model] = true
+		langSet[res.Language] = true
+	}
+	models := make([]string, 0, len(modelSet))
+	for m := range modelSet {
+		models = append(models, m)
+	}
+	languages := make([]string, 0, len(langSet))
+	for l := range langSet {
+		languages = append(languages, l)
+	}
+	sort.Strings(models)
+	sort.Strings(languages)
+
+	summary := dbReportSummary{
+		RunID:          outRunID,
+		CreatedAtUTC:   time.Now().UTC().Format(time.RFC3339Nano),
+		SchemaVersion:  "v0.1.0",
+		Phase:          "report",
+		SourceRunIDs:   allSourceRunIDs,
+		ResultCount:    len(set.Results),
+		ReportJSONPath: out.ReportJSONPath,
+		ReportHTMLPath: out.ReportHTMLPath,
+		IsMergedReport: true,
+		Spec: contracts.RunSpec{
+			RunID:        outRunID,
+			Models:       models,
+			Languages:    languages,
+			OutputRoot:   s.outputRoot,
+			ConfigPath:   s.configPath,
+			CreatedAtUTC: time.Now().UTC(),
+		},
+	}
+	if data, err := json.MarshalIndent(summary, "", "  "); err == nil {
+		_ = os.MkdirAll(filepath.Dir(summaryPath), 0o755)
+		_ = os.WriteFile(summaryPath, data, 0o644)
+	}
+
+	// 使 runs 缓存失效，下次 loadRuns 能立即看到新合并报告。
+	s.cacheMu.Lock()
+	s.runsCache = nil
+	s.cacheMu.Unlock()
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"run_id":           outRunID,
 		"result_count":     len(set.Results),
 		"report_json_path": out.ReportJSONPath,
 		"report_html_path": out.ReportHTMLPath,
+		"source_run_ids":   allSourceRunIDs,
 	})
 }
 
 // ─── GET /api/config ─────────────────────────────────────────────────────────
 
 type modelInfo struct {
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
-	ModelID  string `json:"model_id"`
-	Enabled  bool   `json:"enabled"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	ModelID   string `json:"model_id"`
+	Enabled   bool   `json:"enabled"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+	APIKeySet bool   `json:"api_key_set,omitempty"`
+}
+
+type frameworkInfo struct {
+	Name                string   `json:"name"`
+	Kind                string   `json:"kind"`
+	SandboxMode         string   `json:"sandbox_mode,omitempty"`
+	SandboxProvider     string   `json:"sandbox_provider,omitempty"`
+	SandboxImage        string   `json:"sandbox_image,omitempty"`
+	TimeoutSeconds      int      `json:"timeout_seconds,omitempty"`
+	NetworkDisabled     bool     `json:"network_disabled,omitempty"`
+	EnvFromHost         []string `json:"env_from_host,omitempty"`
+	PreflightLanguages  []string `json:"preflight_languages,omitempty"`
+	OutputGlobs         []string `json:"output_globs,omitempty"`
+	CommandPreview      string   `json:"command_preview,omitempty"`
+	CompatibleModels    []string `json:"compatible_models,omitempty"`
+	CompatibleLanguages []string `json:"compatible_languages,omitempty"`
+}
+
+type skillInfo struct {
+	Name                 string   `json:"name"`
+	Version              string   `json:"version,omitempty"`
+	Description          string   `json:"description,omitempty"`
+	InstructionPath      string   `json:"instruction_path,omitempty"`
+	Files                []string `json:"files,omitempty"`
+	InjectMode           string   `json:"inject_mode,omitempty"`
+	CompatibleFrameworks []string `json:"compatible_frameworks,omitempty"`
+	CompatibleLanguages  []string `json:"compatible_languages,omitempty"`
+}
+
+type subjectInfo struct {
+	ID          string   `json:"id"`
+	Kind        string   `json:"kind"`
+	Framework   string   `json:"framework"`
+	Model       string   `json:"model"`
+	Skill       string   `json:"skill"`
+	SandboxMode string   `json:"sandbox_mode,omitempty"`
+	Labels      []string `json:"labels,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 type configResponse struct {
-	Models      []modelInfo `json:"models"`
-	Languages   []string    `json:"languages"`
-	Scenarios   []string    `json:"scenarios"`
-	Classes     []string    `json:"classes"`
-	DatasetRoot string      `json:"dataset_root"`
-	ConfigPath  string      `json:"config_path"`
+	Models            []modelInfo     `json:"models"`
+	Frameworks        []frameworkInfo `json:"frameworks,omitempty"`
+	Skills            []skillInfo     `json:"skills,omitempty"`
+	Subjects          []subjectInfo   `json:"subjects,omitempty"`
+	Languages         []string        `json:"languages"`
+	Scenarios         []string        `json:"scenarios"`
+	Classes           []string        `json:"classes"`
+	DatasetRoot       string          `json:"dataset_root"`
+	ConfigPath        string          `json:"config_path"`
+	AgentsConfigPath  string          `json:"agents_config_path,omitempty"`
+	AgentsConfigError string          `json:"agents_config_error,omitempty"`
 }
 
 type modelsYAML struct {
@@ -385,9 +706,1137 @@ type modelsYAML struct {
 		Enabled  bool   `yaml:"enabled"`
 		Provider string `yaml:"provider"`
 		Config   struct {
-			Model string `yaml:"model"`
+			Model     string `yaml:"model"`
+			APIKeyEnv string `yaml:"api_key_env"`
 		} `yaml:"config"`
 	} `yaml:"models"`
+}
+
+type webCatalog struct {
+	models            []modelInfo
+	frameworks        []frameworkInfo
+	skills            []skillInfo
+	subjects          []subjectInfo
+	agentsConfigError string
+}
+
+// loadWebCatalogCached 带缓存的 catalog 加载，2秒内复用。
+// 当 models.yaml 文件 mtime 变化时自动失效。
+func (s *Server) loadWebCatalogCached() (webCatalog, error) {
+	const cacheTTL = 2 * time.Second
+
+	configModTime := fileModTime(s.configPath)
+	agentsConfigModTime := fileModTime(strings.TrimSpace(s.mgr.agentsConfigPath))
+
+	s.cacheMu.RLock()
+	if s.catalogCache != nil &&
+		time.Since(s.catalogCache.loadedAt) < cacheTTL &&
+		s.catalogCache.configMod == configModTime &&
+		s.catalogCache.agentsConfigMod == agentsConfigModTime {
+		cat := s.catalogCache.data
+		s.cacheMu.RUnlock()
+		return cat, nil
+	}
+	s.cacheMu.RUnlock()
+
+	cat, err := s.loadWebCatalog()
+	if err != nil {
+		return cat, err
+	}
+
+	s.cacheMu.Lock()
+	s.catalogCache = &catalogCacheEntry{data: cat, loadedAt: time.Now(), configMod: configModTime, agentsConfigMod: agentsConfigModTime}
+	s.cacheMu.Unlock()
+	return cat, nil
+}
+
+func fileModTime(path string) time.Time {
+	if strings.TrimSpace(path) == "" {
+		return time.Time{}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+func (s *Server) loadWebCatalog() (webCatalog, error) {
+	raw, err := os.ReadFile(s.configPath)
+	if err != nil {
+		return webCatalog{}, fmt.Errorf("cannot read models.yaml: %w", err)
+	}
+	var mf modelsYAML
+	_ = yaml.Unmarshal(raw, &mf)
+
+	models := make([]modelInfo, 0, len(mf.Models))
+	modelNames := make([]string, 0, len(mf.Models))
+	for name, m := range mf.Models {
+		models = append(models, modelInfo{
+			Name:      name,
+			Provider:  m.Provider,
+			ModelID:   m.Config.Model,
+			Enabled:   m.Enabled,
+			APIKeyEnv: m.Config.APIKeyEnv,
+			APIKeySet: hasUsableAPIKey(s.lookupAPIKey(m.Config.APIKeyEnv)),
+		})
+		if m.Enabled {
+			modelNames = append(modelNames, name)
+		}
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
+	sort.Strings(modelNames)
+
+	catalog := webCatalog{models: models}
+	agentsConfigPath := strings.TrimSpace(s.mgr.agentsConfigPath)
+	if agentsConfigPath == "" {
+		catalog.agentsConfigError = "未配置 agents config 路径（--agents-config）"
+		return catalog, nil
+	}
+	resolved, err := agentconfig.Load(agentsConfigPath, modelNames, nil)
+	if err != nil {
+		catalog.agentsConfigError = fmt.Sprintf("加载 agents config 失败: %v", err)
+		fmt.Printf("[web] agents config error: %v\n", err)
+		return catalog, nil
+	}
+	fmt.Printf("[web] agents config loaded: %d subjects, models=%v\n", len(resolved), modelNames)
+	frameworkSeen := map[string]frameworkInfo{}
+	skillSeen := map[string]skillInfo{}
+	subjects := make([]subjectInfo, 0, len(resolved))
+	for _, item := range resolved {
+		if item.Framework.Name != "" {
+			frameworkSeen[item.Framework.Name] = frameworkInfo{
+				Name:                item.Framework.Name,
+				Kind:                item.Framework.Kind,
+				SandboxMode:         item.Framework.SandboxMode,
+				SandboxProvider:     item.Framework.Sandbox.Provider,
+				SandboxImage:        firstNonEmptyString(item.Framework.Sandbox.Image, item.Framework.DockerImage),
+				TimeoutSeconds:      item.Framework.TimeoutSeconds,
+				NetworkDisabled:     item.Framework.NetworkDisabled,
+				EnvFromHost:         append([]string{}, item.Framework.EnvFromHost...),
+				PreflightLanguages:  sortedStringKeys(item.Framework.Preflight),
+				OutputGlobs:         append([]string{}, item.Framework.OutputGlobs...),
+				CommandPreview:      compactCommandPreview(item.Framework.Command),
+				CompatibleModels:    append([]string{}, item.Framework.CompatibleModels...),
+				CompatibleLanguages: append([]string{}, item.Framework.CompatibleLangs...),
+			}
+		}
+		if item.Skill.Name != "" {
+			skillSeen[item.Skill.Name] = skillInfo{
+				Name:                 item.Skill.Name,
+				Version:              item.Skill.Version,
+				Description:          item.Skill.Description,
+				InstructionPath:      item.Skill.InstructionPath,
+				Files:                append([]string{}, item.Skill.Files...),
+				InjectMode:           item.Skill.InjectMode,
+				CompatibleFrameworks: append([]string{}, item.Skill.CompatibleFrameworks...),
+				CompatibleLanguages:  append([]string{}, item.Skill.CompatibleLanguages...),
+			}
+		}
+		subjects = append(subjects, subjectInfo{
+			ID:          item.Spec.ID,
+			Kind:        item.Spec.Kind,
+			Framework:   item.Spec.Framework,
+			Model:       item.Spec.Model,
+			Skill:       item.Spec.Skill,
+			SandboxMode: item.Framework.SandboxMode,
+			Labels:      append([]string{}, item.Spec.Labels...),
+			Tags:        append([]string{}, item.Spec.Tags...),
+		})
+	}
+	catalog.frameworks = make([]frameworkInfo, 0, len(frameworkSeen))
+	for _, v := range frameworkSeen {
+		catalog.frameworks = append(catalog.frameworks, v)
+	}
+	sort.Slice(catalog.frameworks, func(i, j int) bool { return catalog.frameworks[i].Name < catalog.frameworks[j].Name })
+	catalog.skills = make([]skillInfo, 0, len(skillSeen))
+	for _, v := range skillSeen {
+		catalog.skills = append(catalog.skills, v)
+	}
+	sort.Slice(catalog.skills, func(i, j int) bool { return catalog.skills[i].Name < catalog.skills[j].Name })
+	sort.Slice(subjects, func(i, j int) bool { return subjects[i].ID < subjects[j].ID })
+	catalog.subjects = subjects
+	return catalog, nil
+}
+
+func deriveModelsFromSubjects(subjectIDs []string, subjects []subjectInfo) []string {
+	if len(subjectIDs) == 0 {
+		return nil
+	}
+	selected := map[string]struct{}{}
+	for _, id := range subjectIDs {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			selected[id] = struct{}{}
+		}
+	}
+	modelSet := map[string]struct{}{}
+	for _, subject := range subjects {
+		if _, ok := selected[subject.ID]; ok && strings.TrimSpace(subject.Model) != "" {
+			modelSet[subject.Model] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(modelSet))
+	for model := range modelSet {
+		out = append(out, model)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func subjectRequiresDockerSandbox(subjectIDs []string, subjects []subjectInfo) bool {
+	if len(subjectIDs) == 0 {
+		return false
+	}
+	selected := map[string]struct{}{}
+	for _, id := range subjectIDs {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			selected[id] = struct{}{}
+		}
+	}
+	for _, subject := range subjects {
+		if _, ok := selected[subject.ID]; !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(subject.SandboxMode), "docker") {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedStringKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for key := range m {
+		if strings.TrimSpace(key) != "" {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func compactCommandPreview(command string) string {
+	command = strings.Join(strings.Fields(command), " ")
+	if len(command) > 220 {
+		return command[:220] + "..."
+	}
+	return command
+}
+
+type createAgentFrameworkRequest struct {
+	Name                string   `json:"name"`
+	Command             string   `json:"command"`
+	Image               string   `json:"image"`
+	TimeoutSeconds      int      `json:"timeout_seconds"`
+	NetworkDisabled     bool     `json:"network_disabled"`
+	EnvFromHost         []string `json:"env_from_host"`
+	CompatibleModels    []string `json:"compatible_models"`
+	CompatibleLanguages []string `json:"compatible_languages"`
+	OutputGlobs         []string `json:"output_globs"`
+}
+
+type agentCheckRequest struct {
+	Image   string `json:"image"`
+	Command string `json:"command"`
+}
+
+type agentInstallCLIRequest struct {
+	Runtime string `json:"runtime"`
+	Image   string `json:"image"`
+	Package string `json:"package"`
+}
+
+type agentCheckResponse struct {
+	OK        bool   `json:"ok"`
+	Image     string `json:"image"`
+	Command   string `json:"command"`
+	Version   string `json:"version,omitempty"`
+	Output    string `json:"output,omitempty"`
+	Error     string `json:"error,omitempty"`
+	CheckedAt string `json:"checked_at"`
+}
+
+func (s *Server) handleAgentInstallCLI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if latest := s.bld.Latest(); latest != nil {
+		latest.mu.RLock()
+		active := latest.Status == BuildPending || latest.Status == BuildRunning
+		latest.mu.RUnlock()
+		if active {
+			writeJSON(w, http.StatusOK, buildJobSnapshot(latest))
+			return
+		}
+	}
+	if !isDockerReady(s.dockerCfg) {
+		errJSON(w, http.StatusPreconditionFailed, "docker daemon is not available on the host")
+		return
+	}
+	var req agentInstallCLIRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	image := strings.TrimSpace(req.Image)
+	if image == "" {
+		image = defaultAgentImageName
+	}
+	if !isSafeDockerImageRef(image) {
+		errJSON(w, http.StatusBadRequest, "invalid docker image")
+		return
+	}
+	pkg := strings.TrimSpace(req.Package)
+	if pkg == "" {
+		pkg = defaultAgentCLIPackage(req.Runtime)
+	}
+	if !isSafeNpmPackageList(pkg) {
+		errJSON(w, http.StatusBadRequest, "invalid agent cli package")
+		return
+	}
+	profile := BuildProfile{
+		Target:     "agent",
+		ImageName:  image,
+		Dockerfile: "docker/agents/Dockerfile",
+		BuildArgs:  map[string]string{"EXTRA_NPM_PACKAGES": pkg},
+	}
+	job := s.bld.Submit(profile)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"build_id":   job.BuildID,
+		"image_name": job.ImageName,
+		"target":     job.Target,
+		"status":     string(job.Status),
+		"package":    pkg,
+	})
+}
+
+func defaultAgentCLIPackage(runtime string) string {
+	switch strings.ToLower(strings.TrimSpace(runtime)) {
+	case "codex":
+		return "@openai/codex"
+	case "kilo":
+		return "@kilocode/cli"
+	case "claudecode":
+		return "@anthropic-ai/claude-code"
+	case "opencode":
+		return "opencode-ai opencode-linux-x64-baseline"
+	case "codebuddy":
+		return "@tencent-ai/codebuddy-code"
+	default:
+		return ""
+	}
+}
+
+func (s *Server) handleAgentCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req agentCheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	image := strings.TrimSpace(req.Image)
+	if image == "" {
+		image = defaultAgentImageName
+	}
+	command := strings.TrimSpace(req.Command)
+	if !isSafeAgentCLIName(command) {
+		errJSON(w, http.StatusBadRequest, "invalid agent command")
+		return
+	}
+	if !isSafeDockerImageRef(image) {
+		errJSON(w, http.StatusBadRequest, "invalid docker image")
+		return
+	}
+	if ok, _, _ := detectDocker(); !ok {
+		writeJSON(w, http.StatusOK, agentCheckResponse{
+			OK:        false,
+			Image:     image,
+			Command:   command,
+			Error:     "docker daemon is not available",
+			CheckedAt: time.Now().Format(time.RFC3339Nano),
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	script := fmt.Sprintf("command -v %s >/dev/null 2>&1 && %s --version", command, command)
+	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "--entrypoint", "sh", image, "-lc", script)
+	hideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	output := trimCommandOutput(string(out), 4000)
+	resp := agentCheckResponse{
+		OK:        err == nil,
+		Image:     image,
+		Command:   command,
+		Output:    output,
+		CheckedAt: time.Now().Format(time.RFC3339Nano),
+	}
+	if err == nil {
+		resp.Version = firstOutputLine(output)
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		resp.Error = "agent check timed out"
+	} else if output == "" {
+		resp.Error = err.Error()
+	} else {
+		resp.Error = output
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func isSafeAgentCLIName(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isSafeDockerImageRef(value string) bool {
+	if value == "" || len(value) > 180 || strings.ContainsAny(value, " \t\r\n\"'`$\\") {
+		return false
+	}
+	return true
+}
+
+func isSafeNpmPackageList(value string) bool {
+	if value == "" || len(value) > 240 {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '@' || r == '/' || r == '-' || r == '_' || r == '.' || r == ' ' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func firstOutputLine(output string) string {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func (s *Server) handleAgentFrameworks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req createAgentFrameworkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	name := sanitizeAgentFrameworkName(req.Name)
+	if name == "" {
+		errJSON(w, http.StatusBadRequest, "agent name is required")
+		return
+	}
+	command := strings.TrimSpace(req.Command)
+	if command == "" {
+		errJSON(w, http.StatusBadRequest, "agent command is required")
+		return
+	}
+	agentsConfigPath := strings.TrimSpace(s.mgr.agentsConfigPath)
+	if agentsConfigPath == "" {
+		errJSON(w, http.StatusBadRequest, "agents config path is not configured")
+		return
+	}
+	if err := appendAgentFrameworkToYAML(agentsConfigPath, name, req, command); err != nil {
+		errJSON(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.cacheMu.Lock()
+	s.catalogCache = nil
+	s.cacheMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "config_path": agentsConfigPath})
+}
+
+type createAgentSkillRequest struct {
+	SkillRoot string   `json:"skill_root"`
+	Names     []string `json:"names"`
+}
+
+type runAgentSkillCommandRequest struct {
+	SkillRoot string `json:"skill_root"`
+	Command   string `json:"command"`
+}
+
+func (s *Server) handleAgentSkills(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req createAgentSkillRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	names := uniqueNonEmptyStrings(req.Names)
+	if len(names) == 0 {
+		errJSON(w, http.StatusBadRequest, "names is required")
+		return
+	}
+	agentsConfigPath := strings.TrimSpace(s.mgr.agentsConfigPath)
+	if agentsConfigPath == "" {
+		errJSON(w, http.StatusBadRequest, "agents config path is not configured")
+		return
+	}
+	skillRoot := strings.TrimSpace(req.SkillRoot)
+	if skillRoot == "" {
+		skillRoot = "./skills"
+	}
+
+	// 解析 skills 目录，构建包名 -> 路径映射
+	skillPaths, err := resolveSkillPaths(skillRoot)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "resolve skill paths: "+err.Error())
+		return
+	}
+
+	var installed []string
+	var errors []string
+	for _, name := range names {
+		resolved, ok := skillPaths[name]
+		if !ok {
+			errors = append(errors, fmt.Sprintf("skill %q not found in %s", name, skillRoot))
+			continue
+		}
+		// 读取 SKILL.md 提取 metadata
+		meta := parseSkillMeta(resolved)
+		if err := appendAgentSkillToYAML(agentsConfigPath, name, meta); err != nil {
+			errors = append(errors, fmt.Sprintf("skill %q: %v", name, err))
+			continue
+		}
+		installed = append(installed, name)
+	}
+
+	s.cacheMu.Lock()
+	s.catalogCache = nil
+	s.cacheMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"installed": installed,
+		"errors":    errors,
+	})
+}
+
+// resolveSkillPaths 扫描 skillRoot 目录，返回 "包名 -> 目录路径" 映射。
+// 支持格式：
+//
+//	skills/xxx/           → 包名 xxx
+//	skills/@scope/xxx/   → 包名 @scope/xxx（@scope 为目录，xxx 为子目录）
+func (s *Server) handleAgentSkillsUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid multipart form: "+err.Error())
+		return
+	}
+	skillRoot := strings.TrimSpace(r.FormValue("skill_root"))
+	if skillRoot == "" {
+		skillRoot = "./skills"
+	}
+	root := filepath.Clean(skillRoot)
+	if err := os.MkdirAll(root, 0755); err != nil {
+		errJSON(w, http.StatusInternalServerError, "cannot create skill root: "+err.Error())
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		errJSON(w, http.StatusBadRequest, "file is required")
+		return
+	}
+	defer file.Close()
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".zip") {
+		errJSON(w, http.StatusBadRequest, "only .zip skill packages are supported")
+		return
+	}
+	tmp, err := os.CreateTemp("", "utbench-skill-*.zip")
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "cannot create temp file: "+err.Error())
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmp, io.LimitReader(file, 64<<20)); err != nil {
+		tmp.Close()
+		errJSON(w, http.StatusInternalServerError, "cannot save upload: "+err.Error())
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		errJSON(w, http.StatusInternalServerError, "cannot close upload: "+err.Error())
+		return
+	}
+	extracted, err := extractSkillZip(tmpPath, root)
+	if err != nil {
+		errJSON(w, http.StatusBadRequest, "cannot extract zip: "+err.Error())
+		return
+	}
+	pkgs, err := scanSkillPackageMaps(root)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "scan after upload: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"uploaded":   header.Filename,
+		"skill_root": root,
+		"extracted":  extracted,
+		"packages":   pkgs,
+	})
+}
+
+func (s *Server) handleAgentSkillsCommand(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req runAgentSkillCommandRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	command := strings.TrimSpace(req.Command)
+	if command == "" {
+		errJSON(w, http.StatusBadRequest, "command is required")
+		return
+	}
+	skillRoot := strings.TrimSpace(req.SkillRoot)
+	if skillRoot == "" {
+		skillRoot = "./skills"
+	}
+	if err := os.MkdirAll(filepath.Clean(skillRoot), 0755); err != nil {
+		errJSON(w, http.StatusInternalServerError, "cannot create skill root: "+err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "cmd", "/C", command)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "UTBENCH_SKILL_ROOT="+filepath.Clean(skillRoot))
+	out, err := cmd.CombinedOutput()
+	output := string(out)
+	if ctx.Err() == context.DeadlineExceeded {
+		errJSON(w, http.StatusGatewayTimeout, "command timed out\n"+output)
+		return
+	}
+	pkgs, scanErr := scanSkillPackageMaps(skillRoot)
+	if err != nil {
+		errJSON(w, http.StatusBadRequest, fmt.Sprintf("command failed: %v\n%s", err, output))
+		return
+	}
+	if scanErr != nil {
+		errJSON(w, http.StatusInternalServerError, "command ok, scan failed: "+scanErr.Error()+"\n"+output)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"output":     output,
+		"skill_root": filepath.Clean(skillRoot),
+		"packages":   pkgs,
+	})
+}
+
+func resolveSkillPaths(skillRoot string) (map[string]string, error) {
+	out := make(map[string]string)
+	root := filepath.Clean(skillRoot)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, "@") {
+			// @scope 包：查找子目录
+			scopeDir := filepath.Join(root, name)
+			subEntries, _ := os.ReadDir(scopeDir)
+			for _, se := range subEntries {
+				if !se.IsDir() {
+					continue
+				}
+				pkgName := name + "/" + se.Name()
+				out[pkgName] = filepath.Join(scopeDir, se.Name())
+			}
+		} else {
+			out[name] = filepath.Join(root, name)
+		}
+	}
+	return out, nil
+}
+
+// handleAgentSkillsScan 处理 GET /api/agents/skills/scan，扫描 skillRoot 目录返回可用包列表。
+func scanSkillPackageMaps(skillRoot string) ([]map[string]string, error) {
+	skillPaths, err := resolveSkillPaths(skillRoot)
+	if err != nil {
+		return nil, err
+	}
+	pkgs := make([]map[string]string, 0, len(skillPaths))
+	for name, dir := range skillPaths {
+		meta := parseSkillMeta(dir)
+		pkgs = append(pkgs, map[string]string{
+			"name":        name,
+			"path":        dir,
+			"description": meta.Description,
+			"version":     meta.Version,
+		})
+	}
+	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i]["name"] < pkgs[j]["name"] })
+	return pkgs, nil
+}
+
+func extractSkillZip(zipPath, destRoot string) ([]string, error) {
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	rootAbs, err := filepath.Abs(destRoot)
+	if err != nil {
+		return nil, err
+	}
+	var extracted []string
+	for _, f := range zr.File {
+		cleanName := filepath.Clean(filepath.FromSlash(f.Name))
+		if cleanName == "." || strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) {
+			return extracted, fmt.Errorf("unsafe zip path: %s", f.Name)
+		}
+		target := filepath.Join(destRoot, cleanName)
+		targetAbs, err := filepath.Abs(target)
+		if err != nil {
+			return extracted, err
+		}
+		if targetAbs != rootAbs && !strings.HasPrefix(targetAbs, rootAbs+string(os.PathSeparator)) {
+			return extracted, fmt.Errorf("zip path escapes skill root: %s", f.Name)
+		}
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return extracted, err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return extracted, err
+		}
+		src, err := f.Open()
+		if err != nil {
+			return extracted, err
+		}
+		dst, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
+		if err != nil {
+			src.Close()
+			return extracted, err
+		}
+		_, copyErr := io.Copy(dst, src)
+		closeErr := dst.Close()
+		src.Close()
+		if copyErr != nil {
+			return extracted, copyErr
+		}
+		if closeErr != nil {
+			return extracted, closeErr
+		}
+		extracted = append(extracted, target)
+	}
+	return extracted, nil
+}
+
+func (s *Server) handleAgentSkillsScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	skillRoot := strings.TrimSpace(r.URL.Query().Get("skill_root"))
+	if skillRoot == "" {
+		skillRoot = "./skills"
+	}
+	if err := os.MkdirAll(filepath.Clean(skillRoot), 0755); err != nil {
+		errJSON(w, http.StatusInternalServerError, "cannot create skill root: "+err.Error())
+		return
+	}
+	pkgs, err := scanSkillPackageMaps(skillRoot)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "cannot read skill root: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"packages": pkgs, "skill_root": skillRoot})
+}
+
+// skillMeta 描述从 SKILL.md 提取的 skill 元信息。
+type skillMeta struct {
+	Description          string
+	Version              string
+	InjectMode           string
+	InstructionPath      string
+	Files                []string
+	CompatibleFrameworks []string
+	CompatibleLanguages  []string
+}
+
+// parseSkillMeta 扫描 skillDir，尝试从 SKILL.md / metadata.yaml 中提取元信息。
+// instruction_path 优先取 metadata.yaml 中的路径，回退到 {skillDir}/SKILL.md。
+func parseSkillMeta(skillDir string) skillMeta {
+	meta := skillMeta{InjectMode: "agent_native", Version: "1"}
+	// 优先读 metadata.yaml
+	metaPath := filepath.Join(skillDir, "metadata.yaml")
+	if data, err := os.ReadFile(metaPath); err == nil {
+		var raw yaml.Node
+		if yaml.Unmarshal(data, &raw) == nil {
+			if v := mappingChild(&raw, "description"); v != nil {
+				meta.Description = v.Value
+			}
+			if v := mappingChild(&raw, "version"); v != nil {
+				meta.Version = v.Value
+			}
+			if v := mappingChild(&raw, "inject_mode"); v != nil {
+				meta.InjectMode = v.Value
+			}
+			if v := mappingChild(&raw, "instruction_path"); v != nil {
+				meta.InstructionPath = v.Value
+			}
+			if v := mappingChild(&raw, "compatible_frameworks"); v != nil && v.Kind == yaml.SequenceNode {
+				for i := 0; i+1 < len(v.Content); i++ {
+					meta.CompatibleFrameworks = append(meta.CompatibleFrameworks, v.Content[i+1].Value)
+					i++
+				}
+			}
+			if v := mappingChild(&raw, "compatible_languages"); v != nil && v.Kind == yaml.SequenceNode {
+				for i := 0; i+1 < len(v.Content); i++ {
+					meta.CompatibleLanguages = append(meta.CompatibleLanguages, v.Content[i+1].Value)
+					i++
+				}
+			}
+		}
+	}
+	// 默认 instruction_path 为 SKILL.md（如果 metadata.yaml 没有覆盖）
+	if meta.InstructionPath == "" {
+		sk := filepath.Join(skillDir, "SKILL.md")
+		if _, err := os.Stat(sk); err == nil {
+			meta.InstructionPath = sk
+		}
+	}
+	// 扫描目录下的 .md / 参考文件（排除 metadata.yaml）
+	if entries, err := os.ReadDir(skillDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || e.Name() == "metadata.yaml" {
+				continue
+			}
+			if strings.HasSuffix(e.Name(), ".md") || strings.HasSuffix(e.Name(), ".py") {
+				meta.Files = append(meta.Files, filepath.Join(skillDir, e.Name()))
+			}
+		}
+	}
+	// 默认兼容语言
+	if len(meta.CompatibleLanguages) == 0 {
+		meta.CompatibleLanguages = []string{"python", "go", "java", "cpp"}
+	}
+	return meta
+}
+
+func sanitizeAgentSkillName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	// 只允许字母、数字、连字符、下划线、斜杠（用于 @scope/name）
+	var b strings.Builder
+	for _, c := range name {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '/' {
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
+}
+
+func appendAgentSkillToYAML(path, name string, meta skillMeta) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("cannot read agents config: %w", err)
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return fmt.Errorf("cannot parse agents config: %w", err)
+	}
+	doc := ensureYAMLDocument(&root)
+	skills := ensureMappingChild(doc, "skills")
+	if mappingChild(skills, name) != nil {
+		return fmt.Errorf("skill %q already exists", name)
+	}
+	skills.Content = append(skills.Content, scalarNode(name), buildAgentSkillYAMLNode(meta))
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		return fmt.Errorf("cannot encode agents config: %w", err)
+	}
+	if err := os.WriteFile(path, out, 0644); err != nil {
+		return fmt.Errorf("cannot write agents config: %w", err)
+	}
+	return nil
+}
+
+func buildAgentSkillYAMLNode(meta skillMeta) *yaml.Node {
+	version := strings.TrimSpace(meta.Version)
+	if version == "" {
+		version = "1"
+	}
+	injectMode := strings.TrimSpace(meta.InjectMode)
+	if injectMode == "" {
+		injectMode = "agent_native"
+	}
+	compatFrameworks := uniqueNonEmptyStrings(meta.CompatibleFrameworks)
+	if len(compatFrameworks) == 0 {
+		compatFrameworks = []string{"opencode", "codebuddy", "claudecode", "codex"}
+	}
+	compatLangs := uniqueNonEmptyStrings(meta.CompatibleLanguages)
+	if len(compatLangs) == 0 {
+		compatLangs = []string{"python", "go", "java", "cpp"}
+	}
+	node := mappingNode(
+		"enabled", boolNode(true),
+		"version", scalarNode(version),
+		"description", scalarNode(strings.TrimSpace(meta.Description)),
+		"inject_mode", scalarNode(injectMode),
+		"instruction_path", scalarNode(strings.TrimSpace(meta.InstructionPath)),
+		"compatible_frameworks", stringSeqNode(compatFrameworks),
+		"compatible_languages", stringSeqNode(compatLangs),
+	)
+	files := uniqueNonEmptyStrings(meta.Files)
+	if len(files) > 0 {
+		node.Content = append(node.Content, scalarNode("files"), stringSeqNode(files))
+	}
+	return node
+}
+
+func sanitizeAgentFrameworkName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	prevDash := false
+	for _, r := range name {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			prevDash = false
+			continue
+		}
+		if (r == '-' || r == '_' || r == '.') && !prevDash {
+			b.WriteRune(r)
+			prevDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-_.")
+}
+
+func appendAgentFrameworkToYAML(path, name string, req createAgentFrameworkRequest, command string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("cannot read agents config: %w", err)
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return fmt.Errorf("cannot parse agents config: %w", err)
+	}
+	doc := ensureYAMLDocument(&root)
+	frameworks := ensureMappingChild(doc, "frameworks")
+	if mappingChild(frameworks, name) != nil {
+		return fmt.Errorf("agent framework %q already exists", name)
+	}
+	frameworks.Content = append(frameworks.Content, scalarNode(name), buildAgentFrameworkYAMLNode(req, command))
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		return fmt.Errorf("cannot encode agents config: %w", err)
+	}
+	if err := os.WriteFile(path, out, 0644); err != nil {
+		return fmt.Errorf("cannot write agents config: %w", err)
+	}
+	return nil
+}
+
+func ensureYAMLDocument(root *yaml.Node) *yaml.Node {
+	if root.Kind == 0 {
+		root.Kind = yaml.DocumentNode
+		root.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+	}
+	if root.Kind != yaml.DocumentNode {
+		return root
+	}
+	if len(root.Content) == 0 {
+		root.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+	}
+	if root.Content[0].Kind != yaml.MappingNode {
+		root.Content[0] = &yaml.Node{Kind: yaml.MappingNode}
+	}
+	return root.Content[0]
+}
+
+func ensureMappingChild(parent *yaml.Node, key string) *yaml.Node {
+	if child := mappingChild(parent, key); child != nil && child.Kind == yaml.MappingNode {
+		return child
+	}
+	child := &yaml.Node{Kind: yaml.MappingNode}
+	parent.Content = append(parent.Content, scalarNode(key), child)
+	return child
+}
+
+func mappingChild(parent *yaml.Node, key string) *yaml.Node {
+	if parent == nil || parent.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			return parent.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func buildAgentFrameworkYAMLNode(req createAgentFrameworkRequest, command string) *yaml.Node {
+	timeout := req.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = 600
+	}
+	image := strings.TrimSpace(req.Image)
+	if image == "" {
+		image = "utbench-agent-base:latest"
+	}
+	languages := uniqueNonEmptyStrings(req.CompatibleLanguages)
+	if len(languages) == 0 {
+		languages = []string{"python", "go", "java", "cpp"}
+	}
+	outputGlobs := uniqueNonEmptyStrings(req.OutputGlobs)
+	if len(outputGlobs) == 0 {
+		outputGlobs = []string{"generated_test.py", "test_*.py", "*_test.go", "*Test.java", "*test*.cpp"}
+	}
+	node := mappingNode(
+		"enabled", boolNode(true),
+		"kind", scalarNode("cli_agent"),
+		"sandbox", mappingNode(
+			"provider", scalarNode("docker"),
+			"mode", scalarNode("docker"),
+			"image", scalarNode(image),
+			"timeout_seconds", intNode(timeout),
+			"network_disabled", boolNode(req.NetworkDisabled),
+			"memory", scalarNode("2g"),
+			"cpu", scalarNode("2"),
+		),
+		"preflight", defaultPreflightNode(languages),
+		"forbidden_command_patterns", stringSeqNode(defaultForbiddenCommandPatterns()),
+		"env_from_host", stringSeqNode(uniqueNonEmptyStrings(req.EnvFromHost)),
+		"command", literalNode(command),
+		"compatible_languages", stringSeqNode(languages),
+		"output_globs", stringSeqNode(outputGlobs),
+	)
+	if models := uniqueNonEmptyStrings(req.CompatibleModels); len(models) > 0 {
+		node.Content = append(node.Content, scalarNode("compatible_models"), stringSeqNode(models))
+	}
+	return node
+}
+
+func mappingNode(items ...any) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	for i := 0; i+1 < len(items); i += 2 {
+		key, _ := items[i].(string)
+		child, _ := items[i+1].(*yaml.Node)
+		if key == "" || child == nil {
+			continue
+		}
+		node.Content = append(node.Content, scalarNode(key), child)
+	}
+	return node
+}
+
+func scalarNode(value string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+}
+
+func literalNode(value string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: strings.TrimSpace(value), Style: yaml.LiteralStyle}
+}
+
+func intNode(value int) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(value)}
+}
+
+func boolNode(value bool) *yaml.Node {
+	if value {
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"}
+	}
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "false"}
+}
+
+func stringSeqNode(values []string) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.SequenceNode}
+	for _, value := range values {
+		node.Content = append(node.Content, scalarNode(value))
+	}
+	return node
+}
+
+func defaultPreflightNode(languages []string) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	defaults := map[string][]string{
+		"python": {"python3 --version", "pytest --version"},
+		"go":     {"go version"},
+		"java":   {"java -version", "mvn -version"},
+		"cpp":    {"g++ --version", "cmake --version"},
+	}
+	for _, lang := range languages {
+		if cmds := defaults[lang]; len(cmds) > 0 {
+			node.Content = append(node.Content, scalarNode(lang), stringSeqNode(cmds))
+		}
+	}
+	return node
+}
+
+func defaultForbiddenCommandPatterns() []string {
+	return []string{
+		"apt-get update", "apt-get install", "apt install", "apk add", "yum install", "dnf install",
+		"pip install", "pip3 install", "python -m pip install", "python3 -m pip install",
+		"npm install", "yarn add", "pnpm add",
+	}
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -395,45 +1844,42 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	raw, err := os.ReadFile(s.configPath)
+	catalog, err := s.loadWebCatalogCached()
 	if err != nil {
-		errJSON(w, http.StatusInternalServerError, "cannot read models.yaml: "+err.Error())
+		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	var mf modelsYAML
-	_ = yaml.Unmarshal(raw, &mf)
-
-	models := make([]modelInfo, 0, len(mf.Models))
-	for name, m := range mf.Models {
-		models = append(models, modelInfo{
-			Name:     name,
-			Provider: m.Provider,
-			ModelID:  m.Config.Model,
-			Enabled:  m.Enabled,
-		})
-	}
-	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 
 	writeJSON(w, http.StatusOK, configResponse{
-		Models:      models,
-		Languages:   []string{"python", "go", "java", "cpp"},
-		Scenarios:   []string{"boundary", "simple_function", "complex_dependency", "interface_mock"},
-		Classes:     []string{"self_contained", "module_level"},
-		DatasetRoot: s.mgr.datasetRoot,
-		ConfigPath:  s.configPath,
+		Models:            catalog.models,
+		Frameworks:        catalog.frameworks,
+		Skills:            catalog.skills,
+		Subjects:          catalog.subjects,
+		Languages:         contracts.SupportedLanguages,
+		Scenarios:         contracts.SupportedScenarios,
+		Classes:           []string{"self_contained", "repo_level"},
+		DatasetRoot:       s.mgr.datasetRoot,
+		ConfigPath:        s.configPath,
+		AgentsConfigPath:  s.mgr.agentsConfigPath,
+		AgentsConfigError: catalog.agentsConfigError,
 	})
 }
 
 // ─── /api/runs ───────────────────────────────────────────────────────────────
 
 type runSummaryItem struct {
-	RunID     string            `json:"run_id"`
-	Status    RunStatus         `json:"status"`
-	Paused    bool              `json:"paused,omitempty"`
-	StartedAt time.Time         `json:"started_at"`
-	EndedAt   *time.Time        `json:"ended_at,omitempty"`
-	Error     string            `json:"error,omitempty"`
-	Spec      contracts.RunSpec `json:"spec"`
+	RunID          string            `json:"run_id"`
+	Label          string            `json:"label,omitempty"`
+	Status         RunStatus         `json:"status"`
+	Paused         bool              `json:"paused,omitempty"`
+	StartedAt      time.Time         `json:"started_at"`
+	EndedAt        *time.Time        `json:"ended_at,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	Spec           contracts.RunSpec `json:"spec"`
+	UseDocker      bool              `json:"use_docker,omitempty"`
+	IsMergedReport bool              `json:"is_merged_report,omitempty"`
+	SourceRunIDs   []string          `json:"source_run_ids,omitempty"`
+	ResultCount    int               `json:"result_count,omitempty"`
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -448,14 +1894,69 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request) {
-	// Merge in-memory runs + completed runs scanned from artifacts/
+	// 快速路径：如果全部在内存中（活跃任务），直接返回，不扫描磁盘。
+	// 只有当有已完成任务需要从 artifacts/ 恢复时才做文件系统扫描（带缓存）。
+	const cacheTTL = 10 * time.Second
+
+	activeRuns := s.mgr.List()
+	hasActive := len(activeRuns) > 0
+
+	// 检查缓存
+	s.cacheMu.RLock()
+	cached := s.runsCache
+	s.cacheMu.RUnlock()
+
+	if cached != nil && time.Since(cached.loadedAt) < cacheTTL {
+		// 合并缓存的已完成任务 + 实时的活跃任务
+		merged := make(map[string]runSummaryItem)
+		for _, item := range cached.data {
+			merged[item.RunID] = item
+		}
+		for _, entry := range activeRuns {
+			entry.mu.RLock()
+			merged[entry.RunID] = runSummaryItem{
+				RunID:     entry.RunID,
+				Status:    entry.Status,
+				Paused:    entry.Paused,
+				StartedAt: entry.StartedAt,
+				EndedAt:   entry.EndedAt,
+				Error:     entry.Error,
+				Spec:      entry.Spec,
+			}
+			entry.mu.RUnlock()
+		}
+		out := make([]runSummaryItem, 0, len(merged))
+		for _, v := range merged {
+			out = append(out, v)
+		}
+		sort.Slice(out, func(i, j int) bool {
+			return out[i].StartedAt.After(out[j].StartedAt)
+		})
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+
+	// 缓存失效，重新扫描
+	s.listRunsFromDisk(w, activeRuns, hasActive)
+}
+
+func (s *Server) listRunsFromDisk(w http.ResponseWriter, activeRuns []*RunEntry, updateCache bool) {
 	byID := make(map[string]runSummaryItem)
 
 	// Scan artifacts/runs/*/run_summary.json
 	pattern := filepath.Join(s.outputRoot, "runs", "*", "run_summary.json")
 	matches, _ := filepath.Glob(pattern)
 	for _, path := range matches {
-		var raw map[string]any
+		var raw struct {
+			RunID          string            `json:"run_id"`
+			Label          string            `json:"label"`
+			CreatedAtUTC   string            `json:"created_at_utc"`
+			Spec           contracts.RunSpec `json:"spec"`
+			Backend        string            `json:"backend"`
+			IsMergedReport bool              `json:"is_merged_report"`
+			SourceRunIDs   []string          `json:"source_run_ids"`
+			ResultCount    int               `json:"result_count"`
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -463,23 +1964,28 @@ func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request) {
 		if err := json.Unmarshal(data, &raw); err != nil {
 			continue
 		}
-		runID, _ := raw["run_id"].(string)
+		runID := strings.TrimSpace(raw.RunID)
 		if runID == "" {
 			continue
 		}
 		if _, exists := byID[runID]; !exists {
-			createdStr, _ := raw["created_at_utc"].(string)
-			t, _ := time.Parse(time.RFC3339Nano, createdStr)
+			t, _ := time.Parse(time.RFC3339Nano, raw.CreatedAtUTC)
 			byID[runID] = runSummaryItem{
-				RunID:     runID,
-				Status:    StatusCompleted,
-				StartedAt: t,
+				RunID:          runID,
+				Label:          raw.Label,
+				Status:         StatusCompleted,
+				StartedAt:      t,
+				Spec:           raw.Spec,
+				UseDocker:      strings.EqualFold(strings.TrimSpace(raw.Backend), "docker"),
+				IsMergedReport: raw.IsMergedReport,
+				SourceRunIDs:   raw.SourceRunIDs,
+				ResultCount:    raw.ResultCount,
 			}
 		}
 	}
 
 	// Override / add active in-memory runs
-	for _, entry := range s.mgr.List() {
+	for _, entry := range activeRuns {
 		entry.mu.RLock()
 		item := runSummaryItem{
 			RunID:     entry.RunID,
@@ -494,6 +2000,15 @@ func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request) {
 		byID[entry.RunID] = item
 	}
 
+	// 缓存已完成任务（不含活跃任务的实时状态）
+	diskItems := make([]runSummaryItem, 0, len(byID))
+	for _, v := range byID {
+		diskItems = append(diskItems, v)
+	}
+	s.cacheMu.Lock()
+	s.runsCache = &runsCacheEntry{data: diskItems, loadedAt: time.Now()}
+	s.cacheMu.Unlock()
+
 	out := make([]runSummaryItem, 0, len(byID))
 	for _, v := range byID {
 		out = append(out, v)
@@ -507,6 +2022,7 @@ func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request) {
 type createRunRequest struct {
 	RunID           string   `json:"run_id"`
 	Models          []string `json:"models"`
+	Subjects        []string `json:"subjects,omitempty"`
 	Languages       []string `json:"languages"`
 	Class           string   `json:"class"`
 	Scenario        string   `json:"scenario"`
@@ -516,6 +2032,7 @@ type createRunRequest struct {
 	Mode            string   `json:"mode"`
 	DryRun          bool     `json:"dry_run"`
 	ReuseGenerated  bool     `json:"reuse_generated"`
+	ReuseEvaluation bool     `json:"reuse_evaluation"`
 	MutationEnabled bool     `json:"mutation_enabled"`
 	MutationTimeout int      `json:"mutation_timeout"`
 	MutationPolicy  string   `json:"mutation_policy"`
@@ -553,10 +2070,6 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 
 	// Validate based on phase
 	if phase == "full" || phase == "generate" {
-		if len(req.Models) == 0 {
-			errJSON(w, http.StatusBadRequest, "models is required for generate/full phase")
-			return
-		}
 		if len(req.Languages) == 0 {
 			errJSON(w, http.StatusBadRequest, "languages is required for generate/full phase")
 			return
@@ -590,27 +2103,64 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	classes := splitTrim(req.Class)
+	catalog, err := s.loadWebCatalogCached()
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	models := append([]string{}, req.Models...)
+	if len(models) == 0 && len(req.Subjects) > 0 {
+		models = deriveModelsFromSubjects(req.Subjects, catalog.subjects)
+	}
+	if len(req.Subjects) > 0 && strings.TrimSpace(s.mgr.agentsConfigPath) == "" {
+		errJSON(w, http.StatusBadRequest, "subjects requires agents config")
+		return
+	}
+	if (phase == "full" || phase == "generate") && len(models) == 0 {
+		errJSON(w, http.StatusBadRequest, "models or subjects is required for generate/full phase")
+		return
+	}
+	if !req.UseDocker && subjectRequiresDockerSandbox(req.Subjects, catalog.subjects) {
+		outputRootSlash := filepath.ToSlash(s.outputRoot)
+		if strings.HasPrefix(outputRootSlash, "/app/") {
+			if strings.TrimSpace(os.Getenv("UTBENCH_SANDBOX_HOST_OUTPUT_ROOT")) == "" {
+				errJSON(w, http.StatusBadRequest, "当前 Web 运行在容器内，且选择了 sandbox_mode=docker 的 subject，但未设置 UTBENCH_SANDBOX_HOST_OUTPUT_ROOT")
+				return
+			}
+			if _, err := os.Stat("/var/run/docker.sock"); err != nil {
+				errJSON(w, http.StatusBadRequest, "当前 Web 运行在容器内，且选择了 sandbox_mode=docker 的 subject，但未挂载 /var/run/docker.sock")
+				return
+			}
+		}
+	}
+	agentsConfigPath := ""
+	if len(req.Subjects) > 0 {
+		agentsConfigPath = s.mgr.agentsConfigPath
+	}
 
 	spec := contracts.RunSpec{
-		RunID:           runID,
-		Models:          req.Models,
-		Languages:       req.Languages,
-		DatasetClasses:  classes,
-		DatasetScenario: req.Scenario,
-		DatasetLevel:    req.Level,
-		DatasetRoot:     s.mgr.datasetRoot,
-		ConfigPath:      s.configPath,
-		Mode:            contracts.RunMode(mode),
-		DryRun:          req.DryRun,
-		ReuseGenerated:  req.ReuseGenerated,
-		DBPath:          s.mgr.dbPath,
-		MutationEnabled: req.MutationEnabled,
-		MutationTimeout: mutTimeout,
-		MutationPolicy:  mutPolicy,
-		MaxSamples:      req.MaxSamples,
-		Workers:         req.Workers,
-		OutputRoot:      s.outputRoot,
-		CreatedAtUTC:    time.Now().UTC(),
+		RunID:            runID,
+		Models:           models,
+		Subjects:         splitTrim(strings.Join(req.Subjects, ",")),
+		AgentsConfigPath: agentsConfigPath,
+		Languages:        req.Languages,
+		DatasetClasses:   classes,
+		DatasetScenario:  req.Scenario,
+		DatasetLevel:     req.Level,
+		DatasetRoot:      s.mgr.datasetRoot,
+		ConfigPath:       s.configPath,
+		Mode:             contracts.RunMode(mode),
+		DryRun:           req.DryRun,
+		ReuseGenerated:   req.ReuseGenerated,
+		ReuseEvaluation:  req.ReuseEvaluation,
+		DBPath:           s.mgr.dbPath,
+		MutationEnabled:  req.MutationEnabled,
+		MutationTimeout:  mutTimeout,
+		MutationPolicy:   mutPolicy,
+		MaxSamples:       req.MaxSamples,
+		Workers:          req.Workers,
+		OutputRoot:       s.outputRoot,
+		CreatedAtUTC:     time.Now().UTC(),
 	}
 	opts := orchestrator.Options{
 		Ingest:         req.Ingest,
@@ -622,6 +2172,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry := s.mgr.Submit(spec, opts, req.UseDocker)
+	// 新任务提交后清除 runs 缓存
+	s.cacheMu.Lock()
+	s.runsCache = nil
+	s.cacheMu.Unlock()
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"run_id":        entry.RunID,
 		"status":        string(entry.Status),
@@ -657,7 +2211,14 @@ func (s *Server) handleRunSub(w http.ResponseWriter, r *http.Request) {
 	case "pause", "resume", "cancel":
 		s.handleRunControl(w, r, runID, sub)
 	default:
-		s.handleRunGet(w, r, runID)
+		switch r.Method {
+		case http.MethodDelete:
+			s.handleRunDelete(w, r, runID)
+		case http.MethodPatch:
+			s.handleRunRename(w, r, runID)
+		default:
+			s.handleRunGet(w, r, runID)
+		}
 	}
 }
 
@@ -739,6 +2300,9 @@ func (s *Server) handleRunRerun(w http.ResponseWriter, r *http.Request, runID st
 
 	opts := orchestrator.Options{DBPath: s.mgr.dbPath}
 	entry := s.mgr.Submit(spec, opts, true)
+	s.cacheMu.Lock()
+	s.runsCache = nil
+	s.cacheMu.Unlock()
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"run_id":        entry.RunID,
 		"source_run_id": runID,
@@ -757,18 +2321,39 @@ func (s *Server) loadRunSpec(runID string) (contracts.RunSpec, error) {
 		}
 	}
 
+	// 优先从 run_summary.json 恢复
+	path := filepath.Join(s.outputRoot, "runs", runID, "run_summary.json")
+	if data, err := os.ReadFile(path); err == nil {
+		var raw struct {
+			Spec contracts.RunSpec `json:"spec"`
+		}
+		if err := json.Unmarshal(data, &raw); err == nil && raw.Spec.RunID != "" {
+			return raw.Spec, nil
+		}
+	}
+
+	// fallback：从 generated_manifest.json 恢复 spec
+	manifestPath := filepath.Join(s.outputRoot, "runs", runID, "generated", "generated_manifest.json")
+	if manifest, err := contracts.ReadGeneratedManifest(manifestPath); err == nil && manifest.Spec.RunID != "" {
+		return manifest.Spec, nil
+	}
+
+	return contracts.RunSpec{}, fmt.Errorf("run not found or summary missing: %s", runID)
+}
+
+func (s *Server) loadRunLabel(runID string) string {
 	path := filepath.Join(s.outputRoot, "runs", runID, "run_summary.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return contracts.RunSpec{}, fmt.Errorf("run not found or summary missing: %s", runID)
+		return ""
 	}
 	var raw struct {
-		Spec contracts.RunSpec `json:"spec"`
+		Label string `json:"label"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil || raw.Spec.RunID == "" {
-		return contracts.RunSpec{}, fmt.Errorf("run_summary.json missing spec")
+	if json.Unmarshal(data, &raw) != nil {
+		return ""
 	}
-	return raw.Spec, nil
+	return raw.Label
 }
 
 func (s *Server) normalizeRunSpec(runID string, spec contracts.RunSpec) contracts.RunSpec {
@@ -805,17 +2390,35 @@ func (s *Server) handleRunReevaluate(w http.ResponseWriter, r *http.Request, run
 		errJSON(w, http.StatusConflict, "Docker image is not ready; reevaluate requires Docker so evaluator tools are complete")
 		return
 	}
-	out, err := runEvaluateInDocker(r.Context(), runID, spec, s.dockerCfg)
-	if err != nil {
-		errJSON(w, http.StatusInternalServerError, "reevaluate failed: "+err.Error()+": "+tailString(string(out), 2000))
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"run_id":          runID,
-		"manifest_path":   manifestPath,
-		"evaluation_path": filepath.Join(s.outputRoot, "runs", runID, "evaluation", "evaluation_result.json"),
-		"backend":         "docker",
-		"output_tail":     tailString(string(out), 2000),
+	// 异步执行评测，避免阻塞 HTTP 响应。
+	// 使用 s.mgr 的 stopCleaner channel 作为取消信号，确保服务器关闭时任务也会终止。
+	reevalCtx, reevalCancel := context.WithCancel(context.Background())
+	go func() {
+		defer reevalCancel()
+		// 监听服务器关闭信号
+		go func() {
+			select {
+			case <-s.mgr.stopCleaner:
+				reevalCancel()
+			case <-reevalCtx.Done():
+			}
+		}()
+		out, err := runEvaluateInDocker(reevalCtx, runID, spec, s.dockerCfg)
+		if err != nil {
+			if reevalCtx.Err() != nil {
+				fmt.Printf("[reevaluate] run=%s canceled (server shutdown)\n", runID)
+				return
+			}
+			fmt.Printf("[reevaluate] run=%s failed: %v\n%s\n", runID, err, tailString(string(out), 500))
+			return
+		}
+		fmt.Printf("[reevaluate] run=%s completed\n", runID)
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"run_id":        runID,
+		"manifest_path": manifestPath,
+		"status":        "reevaluation_started",
+		"message":       "Re-evaluation is running in the background. Check run status for completion.",
 	})
 }
 
@@ -920,7 +2523,7 @@ func (s *Server) handleRunRegenerateReport(w http.ResponseWriter, r *http.Reques
 
 	logDir := filepath.Join(s.outputRoot, "runs", runID, "logs")
 	logger := obs.NewLogger(true, logDir)
-	out, err := reporter.NewService(logger).Generate(context.Background(), spec, evaluationPath)
+	out, err := reporter.NewService(logger, &runner.DefaultPromptMetaProvider{}).Generate(context.Background(), spec, evaluationPath)
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, "regenerate report failed: "+err.Error())
 		return
@@ -933,8 +2536,98 @@ func (s *Server) handleRunRegenerateReport(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// handleRunDelete 删除一个已完成的 run 及其磁盘数据。
+// 只允许删除终态（completed/failed/canceled）的 run，运行中的不能删。
+func (s *Server) handleRunDelete(w http.ResponseWriter, r *http.Request, runID string) {
+	// 检查内存中的活跃 run
+	if entry, ok := s.mgr.Get(runID); ok {
+		entry.mu.RLock()
+		status := entry.Status
+		entry.mu.RUnlock()
+		if status == StatusRunning || status == StatusPending {
+			errJSON(w, http.StatusConflict, "cannot delete a running or pending task")
+			return
+		}
+	}
+
+	runDir := filepath.Join(s.outputRoot, "runs", runID)
+	if _, err := os.Stat(runDir); os.IsNotExist(err) {
+		errJSON(w, http.StatusNotFound, "run not found: "+runID)
+		return
+	}
+
+	if err := os.RemoveAll(runDir); err != nil {
+		errJSON(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		return
+	}
+
+	// 从内存中移除
+	s.mgr.mu.Lock()
+	delete(s.mgr.runs, runID)
+	s.mgr.mu.Unlock()
+
+	// 清除列表缓存
+	s.cacheMu.Lock()
+	s.runsCache = nil
+	s.cacheMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "run_id": runID})
+}
+
+// handleRunRename 为 run 设置/更新自定义标签名。
+// 标签名写入 run_summary.json 的 "label" 字段。
+func (s *Server) handleRunRename(w http.ResponseWriter, r *http.Request, runID string) {
+	var req struct {
+		Label string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+
+	runDir := filepath.Join(s.outputRoot, "runs", runID)
+	summaryPath := filepath.Join(runDir, "run_summary.json")
+
+	data, err := os.ReadFile(summaryPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			errJSON(w, http.StatusNotFound, "run not found: "+runID)
+		} else {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	// 解析为 map 以保留未知字段
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		errJSON(w, http.StatusInternalServerError, "invalid run_summary.json: "+err.Error())
+		return
+	}
+
+	raw["label"] = strings.TrimSpace(req.Label)
+
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := os.WriteFile(summaryPath, out, 0o644); err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 清除列表缓存
+	s.cacheMu.Lock()
+	s.runsCache = nil
+	s.cacheMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "run_id": runID, "label": req.Label})
+}
+
 type runDetailResponse struct {
 	RunID     string            `json:"run_id"`
+	Label     string            `json:"label,omitempty"`
 	Status    RunStatus         `json:"status"`
 	Paused    bool              `json:"paused,omitempty"`
 	StartedAt time.Time         `json:"started_at"`
@@ -956,8 +2649,10 @@ func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request, runID stri
 			errJSON(w, http.StatusNotFound, "run not found: "+runID)
 			return
 		}
+		label := s.loadRunLabel(runID)
 		writeJSON(w, http.StatusOK, runDetailResponse{
 			RunID:  runID,
+			Label:  label,
 			Status: StatusCompleted,
 			Spec:   spec,
 			Logs:   []string{},
@@ -1212,6 +2907,266 @@ func (s *Server) handleDBDatasetSamples(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, rows)
 }
 
+type datasetPackageImportResponse struct {
+	Uploaded     string                   `json:"uploaded"`
+	Imported     int                      `json:"imported"`
+	Skipped      int                      `json:"skipped"`
+	Files        []string                 `json:"files"`
+	IndexPath    string                   `json:"index_path,omitempty"`
+	IndexSamples int                      `json:"index_samples,omitempty"`
+	Validation   dataset.ValidationReport `json:"validation"`
+}
+
+func (s *Server) handleDBDatasetPackages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if err := r.ParseMultipartForm(128 << 20); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid multipart form: "+err.Error())
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		errJSON(w, http.StatusBadRequest, "file is required")
+		return
+	}
+	defer file.Close()
+	if !strings.EqualFold(filepath.Ext(header.Filename), ".zip") {
+		errJSON(w, http.StatusBadRequest, "dataset package must be a .zip file")
+		return
+	}
+	overwrite := strings.EqualFold(r.FormValue("overwrite"), "true") || r.FormValue("overwrite") == "1"
+
+	tmp, err := os.CreateTemp("", "utbench-dataset-*.zip")
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "cannot create temp file: "+err.Error())
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmp, io.LimitReader(file, 128<<20)); err != nil {
+		tmp.Close()
+		errJSON(w, http.StatusInternalServerError, "cannot save upload: "+err.Error())
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		errJSON(w, http.StatusInternalServerError, "cannot close upload: "+err.Error())
+		return
+	}
+
+	datasetRoot, err := filepath.Abs(filepath.Clean(s.mgr.datasetRoot))
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	files, skipped, err := importDatasetZip(tmpPath, datasetRoot, overwrite)
+	if err != nil {
+		errJSON(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(files) == 0 {
+		errJSON(w, http.StatusBadRequest, "no importable dataset samples found")
+		return
+	}
+
+	ds := dataset.NewService()
+	indexPath := filepath.Join(filepath.Dir(filepath.Clean(s.configPath)), "dataset_index.json")
+	summary, indexErr := ds.BuildIndex(datasetRoot, indexPath)
+	report := ds.ValidateReadiness(dataset.ValidateOptions{DatasetRoot: datasetRoot})
+	if indexErr != nil {
+		errJSON(w, http.StatusInternalServerError, "dataset imported but index rebuild failed: "+indexErr.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, datasetPackageImportResponse{
+		Uploaded:     header.Filename,
+		Imported:     len(files),
+		Skipped:      skipped,
+		Files:        files,
+		IndexPath:    filepath.ToSlash(indexPath),
+		IndexSamples: summary.Total,
+		Validation:   report,
+	})
+}
+
+func importDatasetZip(zipPath, datasetRoot string, overwrite bool) ([]string, int, error) {
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer reader.Close()
+
+	imported := []string{}
+	skipped := 0
+	for _, f := range reader.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		rel, ok := normalizeDatasetPackagePath(f.Name)
+		if !ok {
+			skipped++
+			continue
+		}
+		target := filepath.Join(datasetRoot, filepath.FromSlash(rel))
+		if !pathWithinRoot(datasetRoot, target) {
+			return imported, skipped, fmt.Errorf("unsafe dataset path: %s", f.Name)
+		}
+		if f.UncompressedSize64 > 1_000_000 {
+			return imported, skipped, fmt.Errorf("dataset sample too large: %s", f.Name)
+		}
+		if _, err := os.Stat(target); err == nil && !overwrite {
+			skipped++
+			continue
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return imported, skipped, err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return imported, skipped, err
+		}
+		src, err := f.Open()
+		if err != nil {
+			return imported, skipped, err
+		}
+		dst, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			src.Close()
+			return imported, skipped, err
+		}
+		_, copyErr := io.Copy(dst, io.LimitReader(src, 1_000_001))
+		closeErr := dst.Close()
+		src.Close()
+		if copyErr != nil {
+			return imported, skipped, copyErr
+		}
+		if closeErr != nil {
+			return imported, skipped, closeErr
+		}
+		imported = append(imported, rel)
+	}
+	sort.Strings(imported)
+	return imported, skipped, nil
+}
+
+func normalizeDatasetPackagePath(name string) (string, bool) {
+	cleanName := filepath.ToSlash(filepath.Clean(filepath.FromSlash(name)))
+	if cleanName == "." || strings.HasPrefix(cleanName, "../") || strings.Contains(cleanName, "/../") {
+		return "", false
+	}
+	parts := strings.Split(cleanName, "/")
+	for i, part := range parts {
+		if part == "datasets" {
+			parts = parts[i+1:]
+			break
+		}
+	}
+	for len(parts) > 0 && !isSupportedDatasetLanguage(parts[0]) {
+		parts = parts[1:]
+	}
+	if len(parts) != 4 {
+		return normalizeRepoLevelDatasetPackagePath(parts)
+	}
+	lang := parts[0]
+	classDir := parts[1]
+	if classDir != lang+"_code_files_self_contained" && classDir != lang+"_code_files_repo_level" {
+		return "", false
+	}
+	scenario := parts[2]
+	if !isSupportedDatasetScenario(scenario) {
+		return "", false
+	}
+	filename := parts[3]
+	if classDir == lang+"_code_files_repo_level" && isRepoLevelMetaFile(filename) {
+		return strings.Join(parts, "/"), true
+	}
+	ext := filepath.Ext(filename)
+	sampleID := strings.TrimSuffix(filename, ext)
+	if ext != datasetExtForLanguage(lang) || !validDatasetToken(sampleID) || !strings.HasPrefix(sampleID, scenario+"_") {
+		return "", false
+	}
+	return strings.Join(parts, "/"), true
+}
+
+func normalizeRepoLevelDatasetPackagePath(parts []string) (string, bool) {
+	if len(parts) < 5 {
+		return "", false
+	}
+	lang := parts[0]
+	if !isSupportedDatasetLanguage(lang) || parts[1] != lang+"_code_files_repo_level" || !isSupportedDatasetScenario(parts[2]) {
+		return "", false
+	}
+	if parts[3] != "workspace" {
+		return "", false
+	}
+	for _, part := range parts[4:] {
+		if part == "" || part == "." || part == ".." {
+			return "", false
+		}
+	}
+	return strings.Join(parts, "/"), true
+}
+
+func isRepoLevelMetaFile(filename string) bool {
+	if filename == "meta.json" {
+		return true
+	}
+	return strings.HasSuffix(filename, ".meta.json") && validDatasetToken(strings.TrimSuffix(filename, ".meta.json"))
+}
+
+func isSupportedDatasetLanguage(lang string) bool {
+	for _, item := range contracts.SupportedLanguages {
+		if lang == item {
+			return true
+		}
+	}
+	return false
+}
+
+func isSupportedDatasetScenario(scenario string) bool {
+	switch scenario {
+	case "boundary", "simple_function", "complex_dependency", "interface_mock":
+		return true
+	default:
+		return false
+	}
+}
+
+func datasetExtForLanguage(lang string) string {
+	switch lang {
+	case "python":
+		return ".py"
+	case "go":
+		return ".go"
+	case "java":
+		return ".java"
+	case "cpp":
+		return ".cpp"
+	default:
+		return ""
+	}
+}
+
+func validDatasetToken(value string) bool {
+	if value == "" || strings.Contains(value, ".") {
+		return false
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func pathWithinRoot(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != "" && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
+}
+
 func (s *Server) handleDBDatasetSnapshots(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1228,6 +3183,131 @@ func (s *Server) handleDBDatasetSnapshots(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)
+}
+
+func (s *Server) handleDBAssetSubjects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rows, err := db.ListAssetSubjects(r.Context(), parseLimit(r, 100))
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (s *Server) handleDBSubjectVersions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	rows, err := db.ListSubjectVersions(r.Context(), q.Get("subject"), parseLimit(r, 100))
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (s *Server) handleDBAssetGenerations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	rows, err := db.ListAssetGenerations(r.Context(), q.Get("subject"), q.Get("language"), q.Get("sample"), parseLimit(r, 100))
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (s *Server) handleDBAssetEvaluations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	rows, err := db.ListAssetEvaluations(r.Context(), q.Get("subject"), q.Get("language"), q.Get("sample"), parseLimit(r, 100))
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (s *Server) handleDBAssetExplainReuse(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	q := r.URL.Query()
+	subjectID := strings.TrimSpace(q.Get("subject"))
+	lang := strings.TrimSpace(q.Get("language"))
+	sampleID := strings.TrimSpace(q.Get("sample"))
+	if subjectID == "" || lang == "" || sampleID == "" {
+		errJSON(w, http.StatusBadRequest, "subject, language, sample are required")
+		return
+	}
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rows, err := db.ListAssetGenerations(r.Context(), subjectID, lang, sampleID, parseLimit(r, 20))
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	response := map[string]any{
+		"subject_id":  subjectID,
+		"language":    lang,
+		"sample_id":   sampleID,
+		"matched":     false,
+		"miss_reason": "no_successful_generation_asset",
+		"candidates":  rows,
+	}
+	for _, row := range rows {
+		if row.Success && row.GeneratedTestPath != "" && row.GenerationKey != "" {
+			response["matched"] = true
+			response["miss_reason"] = ""
+			response["generation_key"] = row.GenerationKey
+			response["latest_reusable"] = row
+			response["comparisons"] = map[string]string{
+				"stored_subject_version_id":  row.SubjectVersionID,
+				"stored_sandbox_fingerprint": row.SandboxFingerprint,
+				"stored_sample_uid":          row.SampleUID,
+				"dependency_fingerprint":     row.DependencyFingerprint,
+				"generation_env_fingerprint": row.GenerationEnvFingerprint,
+			}
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleDBModelConfigs(w http.ResponseWriter, r *http.Request) {
