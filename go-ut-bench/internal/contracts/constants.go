@@ -54,24 +54,25 @@ var ScenarioLabels = map[string]string{
 }
 
 // ScoreWeights 定义综合评分的权重结构
-// 综合得分 = Compile×W.Compile + Test×W.Test + Coverage×W.Coverage + Mutation×W.Mutation
+// 场景C公式（强调检测能力）：Score = C × P × (W.Coverage·V + W.Assertion·A_norm + W.Mutation·M) × 100
+// 其中 C=编译通过率, P=单测通过率, V=覆盖率, A_norm=断言密度归一化(min(1,A/3)), M=变异得分
 type ScoreWeights struct {
-	Compile   float64 // 编译通过率权重
-	Test      float64 // 样本测试通过率权重
-	Coverage  float64 // 行覆盖率权重
-	Mutation  float64 // 变异分数权重
+	Assertion  float64 // 断言密度归一化权重
+	Coverage   float64 // 行覆盖率权重
+	Mutation   float64 // 变异分数权重
+	AssertSat  float64 // 断言密度饱和值（超过此值不再加分）
 }
 
-// DefaultWeights 是默认评分权重
+// DefaultWeights 是默认评分权重（场景C：强调检测能力）
 var DefaultWeights = ScoreWeights{
-	Compile:  0.3,
-	Test:     0.3,
-	Coverage: 0.2,
-	Mutation: 0.2,
+	Assertion: 0.20,
+	Coverage:  0.20,
+	Mutation:  0.60,
+	AssertSat: 3.0,
 }
 
 // String 返回评分公式的可读描述
 func (w ScoreWeights) String() string {
-	return fmt.Sprintf("编译×%.1f + 样本测试×%.1f + 行覆盖率×%.1f + 变异分数×%.1f",
-		w.Compile, w.Test, w.Coverage, w.Mutation)
+	return fmt.Sprintf("Score = C × P × (%.2f×V + %.2f×A_norm + %.2f×M) × 100, A_sat=%.1f",
+		w.Coverage, w.Assertion, w.Mutation, w.AssertSat)
 }
