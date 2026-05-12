@@ -596,6 +596,8 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						ResponsePath:             reused.ResponsePath,
 						MetadataPath:             metadataPath,
 						TracePath:                reused.TracePath,
+						RawTracePath:             reused.RawTracePath,
+						TrajectoryPath:           reused.TrajectoryPath,
 						WorkspaceDiffPath:        reused.WorkspaceDiffPath,
 						SandboxProvider:          frameworkSandboxProvider(target.subject.Framework),
 						SandboxFingerprint:       reused.SandboxFingerprint,
@@ -692,6 +694,8 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						ResponsePath:             reused.ResponsePath,
 						MetadataPath:             metadataPath,
 						TracePath:                reused.TracePath,
+						RawTracePath:             reused.RawTracePath,
+						TrajectoryPath:           reused.TrajectoryPath,
 						WorkspaceDiffPath:        reused.WorkspaceDiffPath,
 						SandboxProvider:          frameworkSandboxProvider(target.subject.Framework),
 						SandboxFingerprint:       reused.SandboxFingerprint,
@@ -732,7 +736,7 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		agentSummary = agentSmry
 		truncated = isTruncated
 		if genErr != nil {
-			_ = contracts.WriteJSON(respPath, map[string]any{"error": genErr, "truncated": truncated, "trace_path": trace.TracePath, "workspace_diff_path": trace.WorkspaceDiffPath})
+			_ = contracts.WriteJSON(respPath, map[string]any{"error": genErr, "truncated": truncated, "trace_path": trace.TracePath, "raw_trace_path": trace.RawTracePath, "trajectory_path": trace.TrajectoryPath, "workspace_diff_path": trace.WorkspaceDiffPath})
 			return contracts.GeneratedCase{
 				Model:                    model,
 				SubjectID:                subject.ID,
@@ -758,6 +762,8 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 				EstimatedCostUSD:         trace.EstimatedCostUSD,
 				CostSource:               trace.CostSource,
 				TracePath:                trace.TracePath,
+				RawTracePath:             trace.RawTracePath,
+				TrajectoryPath:           trace.TrajectoryPath,
 				WorkspaceDiffPath:        trace.WorkspaceDiffPath,
 				SandboxProvider:          trace.SandboxProvider,
 				SandboxFingerprint:       trace.SandboxFingerprint,
@@ -799,6 +805,8 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 			SamplePath:         sample.Path,
 			GeneratedTestPath:  testPath,
 			TracePath:          trace.TracePath,
+			RawTracePath:       trace.RawTracePath,
+			TrajectoryPath:     trace.TrajectoryPath,
 			WorkspaceDiffPath:  trace.WorkspaceDiffPath,
 			SandboxProvider:    trace.SandboxProvider,
 			SandboxFingerprint: trace.SandboxFingerprint,
@@ -838,6 +846,8 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		"generated_test_path":        testPath,
 		"response_path":              respPath,
 		"trace_path":                 trace.TracePath,
+		"raw_trace_path":             trace.RawTracePath,
+		"trajectory_path":            trace.TrajectoryPath,
 		"workspace_diff_path":        trace.WorkspaceDiffPath,
 		"sandbox_provider":           trace.SandboxProvider,
 		"sandbox_fingerprint":        trace.SandboxFingerprint,
@@ -899,6 +909,8 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		EstimatedCostUSD:         trace.EstimatedCostUSD,
 		CostSource:               trace.CostSource,
 		TracePath:                trace.TracePath,
+		RawTracePath:             trace.RawTracePath,
+		TrajectoryPath:           trace.TrajectoryPath,
 		WorkspaceDiffPath:        trace.WorkspaceDiffPath,
 		SandboxProvider:          trace.SandboxProvider,
 		SandboxFingerprint:       trace.SandboxFingerprint,

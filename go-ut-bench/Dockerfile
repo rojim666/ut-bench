@@ -9,6 +9,17 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
+# Clear proxy vars that Docker may inject from the host.
+# On Windows + Docker Desktop the host's 127.0.0.1 proxy is unreachable
+# inside the container, causing every apt-get / curl / wget to fail with
+# ECONNREFUSED.
+ENV http_proxy=""
+ENV https_proxy=""
+ENV HTTP_PROXY=""
+ENV HTTPS_PROXY=""
+ENV no_proxy=""
+ENV NO_PROXY=""
+
 ARG UBUNTU_MIRROR=
 
 # Optionally override Ubuntu archive/security hosts for build environments

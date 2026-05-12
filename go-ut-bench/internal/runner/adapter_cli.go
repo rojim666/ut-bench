@@ -86,6 +86,10 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	// 7. 准备 trace 输出目录
 	traceDir := filepath.Join(req.MetaRoot, "agent_traces", subjectID, sample.Language)
 	tracePath := filepath.Join(traceDir, sample.ID+".trace.jsonl")
+	rawTracePath := filepath.Join(traceDir, sample.ID+".raw_trace.jsonl")
+	rawStdoutPath := filepath.Join(traceDir, sample.ID+".stdout.log")
+	rawStderrPath := filepath.Join(traceDir, sample.ID+".stderr.log")
+	trajectoryPath := filepath.Join(traceDir, sample.ID+".trajectory.json")
 	diffPath := filepath.Join(traceDir, sample.ID+".diff.json")
 	if err := os.MkdirAll(traceDir, 0o755); err != nil {
 		return agentError("trace_error", err)
@@ -152,6 +156,10 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 			SandboxProvider:    sandboxReq.Provider,
 			SandboxImage:       sandboxReq.DockerImage,
 			SandboxFingerprint: sandboxFingerprintForRequest(sandboxReq),
+			RawTracePath:       rawTracePath,
+			RawStdoutPath:      rawStdoutPath,
+			RawStderrPath:      rawStderrPath,
+			TrajectoryPath:     trajectoryPath,
 			TracePath:          tracePath,
 			WorkspaceDiffPath:  diffPath,
 		}
@@ -198,6 +206,10 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 			SandboxProvider:    sandboxReq.Provider,
 			SandboxImage:       sandboxReq.DockerImage,
 			SandboxFingerprint: sandboxFingerprintForRequest(sandboxReq),
+			RawTracePath:       rawTracePath,
+			RawStdoutPath:      rawStdoutPath,
+			RawStderrPath:      rawStderrPath,
+			TrajectoryPath:     trajectoryPath,
 			TracePath:          tracePath,
 			WorkspaceDiffPath:  diffPath,
 		}
@@ -232,6 +244,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	runOutput, runErr := sandboxRunner.Run(ctx, sandboxReq)
 	finished := time.Now()
 	latency := int(finished.Sub(started).Milliseconds())
+	_ = writeRawAgentOutputs(rawTracePath, rawStdoutPath, rawStderrPath, runOutput.Stdout, runOutput.Stderr)
 
 	// 12. 执行后快照 + diff
 	after, _ := snapshotWorkspace(workRoot)
@@ -258,6 +271,10 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		SandboxProvider:    sandboxReq.Provider,
 		SandboxImage:       sandboxReq.DockerImage,
 		SandboxFingerprint: sandboxFingerprintForRequest(sandboxReq),
+		RawTracePath:       rawTracePath,
+		RawStdoutPath:      rawStdoutPath,
+		RawStderrPath:      rawStderrPath,
+		TrajectoryPath:     trajectoryPath,
 		TracePath:          tracePath,
 		WorkspaceDiffPath:  diffPath,
 	}
@@ -266,6 +283,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	parseAgentOutput(&trace, runOutput.Stdout, runOutput.Stderr)
 	collectOpenCodeSessionExport(ctx, sandboxRunner, sandboxReq, workRoot, traceDir, sample.ID, &trace)
 	finalizeAgentAccounting(&trace, req.Prompt, "", req.Model)
+	_ = writeAgentTrajectory(trajectoryPath, trace, "", "", runOutput.Stdout, runOutput.Stderr)
 
 	// 14. 写入 trace 文件（完整结构化数据）
 	_ = writeAgentTrace(tracePath, trace)
@@ -286,6 +304,10 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		"exit_code":           runOutput.ExitCode,
 		"latency_ms":          latency,
 		"trace_path":          tracePath,
+		"raw_trace_path":      rawTracePath,
+		"raw_stdout_path":     rawStdoutPath,
+		"raw_stderr_path":     rawStderrPath,
+		"trajectory_path":     trajectoryPath,
 		"workspace_diff_path": diffPath,
 		"stdout":              trimText(runOutput.Stdout, 4000),
 		"stderr":              trimText(runOutput.Stderr, 4000),
@@ -312,6 +334,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 
 	// 16. 处理执行错误
 	if runErr != nil {
+		_ = writeAgentTrajectory(trajectoryPath, trace, "", fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000)), runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
 			RawResponse: rawResponse,
 			Trace:       trace,
@@ -327,6 +350,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	// 17. 拦截环境漂移行为
 	if violation := detectSandboxPolicyViolation(trace.CommandsExecuted, frameworkForbiddenCommandPatterns(framework)); violation != "" {
 		rawResponse["policy_violation"] = violation
+		_ = writeAgentTrajectory(trajectoryPath, trace, "", violation, runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
 			RawResponse: rawResponse,
 			Trace:       trace,
@@ -342,6 +366,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	// 18. 查找生成的测试文件
 	generatedPath := findGeneratedTest(workRoot, outputFile, framework.OutputGlobs, changes, sample.Language)
 	if generatedPath == "" {
+		_ = writeAgentTrajectory(trajectoryPath, trace, "", "agent did not produce a test file", runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
 			RawResponse: rawResponse,
 			Trace:       trace,
@@ -356,6 +381,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 
 	raw, err := os.ReadFile(generatedPath)
 	if err != nil {
+		_ = writeAgentTrajectory(trajectoryPath, trace, "", err.Error(), runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
 			RawResponse: rawResponse,
 			Trace:       trace,
@@ -374,8 +400,10 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	if trace.SessionExportError != "" {
 		rawResponse["session_export_error"] = trace.SessionExportError
 	}
+	_ = writeAgentTrajectory(trajectoryPath, trace, generatedPath, "", runOutput.Stdout, runOutput.Stderr)
 	_ = writeAgentTrace(tracePath, trace)
 	if err := validateGeneratedTest(code, sample.Language); err != nil {
+		_ = writeAgentTrajectory(trajectoryPath, trace, generatedPath, err.Error(), runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
 			Code:             code,
 			RawResponse:      rawResponse,

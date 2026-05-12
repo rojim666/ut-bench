@@ -20,6 +20,8 @@ import (
 // 新代码应直接使用 AgentTrace。
 type subjectTrace struct {
 	TracePath          string
+	RawTracePath       string
+	TrajectoryPath     string
 	WorkspaceDiffPath  string
 	SandboxProvider    string
 	SandboxFingerprint string
@@ -181,6 +183,8 @@ func (s *Service) generateWithSubject(
 	// 转换为旧的 subjectTrace 格式（向后兼容）
 	trace := subjectTrace{
 		TracePath:          result.Trace.TracePath,
+		RawTracePath:       result.Trace.RawTracePath,
+		TrajectoryPath:     result.Trace.TrajectoryPath,
 		WorkspaceDiffPath:  result.Trace.WorkspaceDiffPath,
 		SandboxProvider:    result.Trace.SandboxProvider,
 		SandboxFingerprint: result.Trace.SandboxFingerprint,

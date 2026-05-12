@@ -89,6 +89,10 @@ type AgentTrace struct {
 	SessionID          string `json:"session_id,omitempty"`
 	SessionExportPath  string `json:"session_export_path,omitempty"`
 	SessionExportError string `json:"session_export_error,omitempty"`
+	RawTracePath       string `json:"raw_trace_path,omitempty"`
+	RawStdoutPath      string `json:"raw_stdout_path,omitempty"`
+	RawStderrPath      string `json:"raw_stderr_path,omitempty"`
+	TrajectoryPath     string `json:"trajectory_path,omitempty"`
 	TracePath          string `json:"trace_path"`
 	WorkspaceDiffPath  string `json:"workspace_diff_path"`
 }

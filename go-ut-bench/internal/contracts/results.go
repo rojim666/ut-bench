@@ -36,6 +36,8 @@ type GeneratedCase struct {
 	EstimatedCostUSD         *float64   `json:"estimated_cost_usd,omitempty"`         // 按模型定价估算的成本
 	CostSource               string     `json:"cost_source,omitempty"`                // actual_tokens+configured_pricing / estimated_tokens+configured_pricing / unavailable
 	TracePath                string     `json:"trace_path,omitempty"`                 // Agent操作轨迹JSONL路径
+	RawTracePath             string     `json:"raw_trace_path,omitempty"`             // Agent原始stdout/stderr事件流路径
+	TrajectoryPath           string     `json:"trajectory_path,omitempty"`            // 统一step-by-step trajectory路径
 	WorkspaceDiffPath        string     `json:"workspace_diff_path,omitempty"`        // Agent工作区diff/文件变更路径
 	SandboxProvider          string     `json:"sandbox_provider,omitempty"`           // 沙箱提供方：local / docker / remote / e2b
 	SandboxFingerprint       string     `json:"sandbox_fingerprint,omitempty"`        // 沙箱环境指纹
@@ -130,6 +132,8 @@ type EvaluationResult struct {
 	MutationError            string   `json:"mutation_error,omitempty"`             // 变异测试错误信息
 	MutationTool             string   `json:"mutation_tool,omitempty"`              // 使用的变异测试工具名称
 	TracePath                string   `json:"trace_path,omitempty"`                 // Agent操作轨迹JSONL路径
+	RawTracePath             string   `json:"raw_trace_path,omitempty"`             // Agent原始stdout/stderr事件流路径
+	TrajectoryPath           string   `json:"trajectory_path,omitempty"`            // 统一step-by-step trajectory路径
 	WorkspaceDiffPath        string   `json:"workspace_diff_path,omitempty"`        // Agent工作区diff/文件变更路径
 	SandboxProvider          string   `json:"sandbox_provider,omitempty"`           // 沙箱提供方
 	SandboxFingerprint       string   `json:"sandbox_fingerprint,omitempty"`        // 沙箱环境指纹
@@ -368,26 +372,26 @@ type ReportPayload struct {
 // ComparisonView 控制变量对比视图
 // 按"对比视角"组织：固定两个维度、变化一个维度
 type ComparisonView struct {
-	Dimension string          `json:"dimension"` // 变化的维度：platform / model / skill
-	Label     string          `json:"label"`     // 视图中文标签
-	Groups    []ComparisonGroup `json:"groups"`   // 每组是一个控制变量组合
+	Dimension string            `json:"dimension"` // 变化的维度：platform / model / skill
+	Label     string            `json:"label"`     // 视图中文标签
+	Groups    []ComparisonGroup `json:"groups"`    // 每组是一个控制变量组合
 }
 
 // ComparisonGroup 一组控制变量下的对比
 // 例如：固定 model=deepseek-v4-flash, skill=no_skill，比较不同 platform
 type ComparisonGroup struct {
-	FixedModel   string              `json:"fixed_model,omitempty"`   // 固定的模型
-	FixedSkill   string              `json:"fixed_skill,omitempty"`   // 固定的Skill
-	FixedPlatform string             `json:"fixed_platform,omitempty"` // 固定的平台
-	Entries      []ComparisonEntry   `json:"entries"`                 // 按综合得分降序
+	FixedModel    string            `json:"fixed_model,omitempty"`    // 固定的模型
+	FixedSkill    string            `json:"fixed_skill,omitempty"`    // 固定的Skill
+	FixedPlatform string            `json:"fixed_platform,omitempty"` // 固定的平台
+	Entries       []ComparisonEntry `json:"entries"`                  // 按综合得分降序
 }
 
 // ComparisonEntry 对比项（一行）
 type ComparisonEntry struct {
 	Rank             int     `json:"rank"`
-	Platform         string  `json:"platform"`                       // 平台/框架
-	Model            string  `json:"model"`                          // 模型
-	Skill            string  `json:"skill"`                          // Skill
+	Platform         string  `json:"platform"` // 平台/框架
+	Model            string  `json:"model"`    // 模型
+	Skill            string  `json:"skill"`    // Skill
 	SubjectID        string  `json:"subject_id,omitempty"`
 	SampleCount      int     `json:"sample_count"`
 	CompilePassRate  float64 `json:"compile_pass_rate"`

@@ -349,3 +349,70 @@ func TestParseUsageAndSessionWithClaudeCodeJSONL(t *testing.T) {
 		t.Fatalf("unexpected tools: %+v", tools)
 	}
 }
+
+func TestBuildTrajectoryFromStreamJSON(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will inspect the file."},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/workspace/foo.py"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"def add(a,b): return a+b"}]}}`,
+		`{"type":"result","usage":{"input_tokens":1200,"output_tokens":300,"total_tokens":1500}}`,
+	}, "\n")
+	trace := AgentTrace{
+		SubjectID:      "claudecode__m__skill",
+		Framework:      "claudecode",
+		Model:          "m",
+		Skill:          "skill",
+		SampleID:       "sample",
+		Language:       "python",
+		RawTracePath:   "raw.jsonl",
+		RawStdoutPath:  "stdout.log",
+		RawStderrPath:  "stderr.log",
+		TrajectoryPath: "trajectory.json",
+	}
+	traj := buildAgentTrajectory(trace, "generated_test.py", "", stdout, "")
+
+	if traj.RawTracePath != "raw.jsonl" {
+		t.Fatalf("raw trace path = %q", traj.RawTracePath)
+	}
+	if len(traj.Steps) < 4 {
+		t.Fatalf("steps len = %d, want at least 4: %+v", len(traj.Steps), traj.Steps)
+	}
+	if traj.Steps[1].Kind != "tool_call" || traj.Steps[1].Tool != "Read" || traj.Steps[1].ToolCallID != "toolu_1" {
+		t.Fatalf("tool call step unexpected: %+v", traj.Steps[1])
+	}
+	foundResult := false
+	for _, step := range traj.Steps {
+		if step.Kind == "tool_result" && step.ToolCallID == "toolu_1" {
+			foundResult = true
+			break
+		}
+	}
+	if !foundResult {
+		t.Fatalf("expected tool_result for toolu_1 in steps: %+v", traj.Steps)
+	}
+}
+
+func TestParseOpenCodeSessionTrajectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session_export.json")
+	raw := `{
+	  "info": {"id": "ses_test"},
+	  "messages": [
+	    {"role":"assistant","content":[{"type":"text","text":"Reading source"},{"type":"tool_use","id":"call_1","name":"read","input":{"path":"foo.py"}}]},
+	    {"role":"tool","content":[{"type":"tool_result","tool_use_id":"call_1","content":"source"}]}
+	  ]
+	}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write session export: %v", err)
+	}
+
+	steps := parseOpenCodeSessionTrajectory(path)
+	if len(steps) < 3 {
+		t.Fatalf("steps len = %d, want at least 3: %+v", len(steps), steps)
+	}
+	if steps[1].Kind != "tool_call" || steps[1].Tool != "read" {
+		t.Fatalf("tool call step unexpected: %+v", steps[1])
+	}
+	if steps[2].Kind != "tool_result" || steps[2].ToolCallID != "call_1" {
+		t.Fatalf("tool result step unexpected: %+v", steps[2])
+	}
+}

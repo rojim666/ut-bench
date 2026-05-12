@@ -10,6 +10,14 @@
 
 FROM node:22-bookworm-slim AS agent-clis
 
+# Clear proxy vars (same reason as the final stage)
+ENV http_proxy=""
+ENV https_proxy=""
+ENV HTTP_PROXY=""
+ENV HTTPS_PROXY=""
+ENV no_proxy=""
+ENV NO_PROXY=""
+
 ARG NPM_REGISTRY=
 ARG EXTRA_NPM_PACKAGES=
 
@@ -29,6 +37,16 @@ RUN npm install -g @openai/codex@^0.42.0
 RUN if [ -n "${EXTRA_NPM_PACKAGES}" ]; then npm install -g ${EXTRA_NPM_PACKAGES}; fi
 
 FROM node:22-bookworm-slim
+
+# Clear proxy vars that Docker may inject from the host.
+# On Windows + Docker Desktop the host's 127.0.0.1 proxy is unreachable
+# inside the container, causing every apt-get / npm to fail with ECONNREFUSED.
+ENV http_proxy=""
+ENV https_proxy=""
+ENV HTTP_PROXY=""
+ENV HTTPS_PROXY=""
+ENV no_proxy=""
+ENV NO_PROXY=""
 
 ARG DEBIAN_MIRROR=
 
