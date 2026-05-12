@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
 const trajectorySchemaVersion = "trajectory.v0.1.0"
+
+var toolExitCodePattern = regexp.MustCompile(`(?i)(?:exit code|exit status)\s*:?\s*(-?\d+)`)
 
 func writeRawAgentOutputs(rawTracePath, rawStdoutPath, rawStderrPath, stdout, stderr string) error {
 	if err := os.MkdirAll(filepath.Dir(rawTracePath), 0o755); err != nil {
@@ -192,41 +196,59 @@ func trajectoryStepsFromEvent(event map[string]any, source string) []TrajectoryS
 		}
 	}
 	if text := eventText(event); text != "" {
-		steps = append(steps, TrajectoryStep{Kind: "message", Role: role, Text: trimText(text, 4000), Source: source, RawType: rawType, RawEvent: shallowRawEvent(event)})
+		steps = append(steps, TrajectoryStep{Kind: "message", Role: role, Text: trimText(text, 4000), Source: source, RawType: rawType, RawEvent: compactRawEvent(event)})
 	}
 	for _, block := range contentBlocks(event) {
 		blockType := firstString(block, "type")
 		switch blockType {
+		case "thinking":
+			if text := firstString(block, "thinking", "text"); text != "" {
+				steps = append(steps, TrajectoryStep{
+					Kind:     "thinking",
+					Role:     role,
+					Text:     trimText(text, 4000),
+					Source:   source,
+					RawType:  blockType,
+					RawEvent: compactRawEvent(event),
+				})
+			}
 		case "tool_use", "function_call":
 			steps = append(steps, TrajectoryStep{
 				Kind:       "tool_call",
 				Role:       role,
 				Tool:       firstString(block, "name"),
 				ToolCallID: firstString(block, "id", "tool_use_id", "tool_call_id"),
-				Input:      firstAny(block, "input", "arguments", "args"),
+				Input:      compactAny(firstAny(block, "input", "arguments", "args"), 3, 4000),
 				Source:     source,
 				RawType:    blockType,
-				RawEvent:   shallowRawEvent(event),
+				RawEvent:   compactRawEvent(event),
 			})
 		case "tool_result", "function_result":
+			output := compactAny(firstAny(block, "content", "output", "result"), 3, 4000)
+			success := successFromBlock(block)
+			exitCode := exitCodeFromValue(output)
+			if exitCode != nil && *exitCode != 0 {
+				success = boolPtr(false)
+			}
 			steps = append(steps, TrajectoryStep{
 				Kind:       "tool_result",
 				Role:       role,
 				ToolCallID: firstString(block, "tool_use_id", "tool_call_id", "id"),
-				Output:     firstAny(block, "content", "output", "result"),
-				Success:    successFromBlock(block),
+				Output:     output,
+				Success:    success,
+				ExitCode:   exitCode,
 				Source:     source,
 				RawType:    blockType,
-				RawEvent:   shallowRawEvent(event),
+				RawEvent:   compactRawEvent(event),
 			})
 		case "text":
 			if text := firstString(block, "text"); text != "" {
-				steps = append(steps, TrajectoryStep{Kind: "message", Role: role, Text: trimText(text, 4000), Source: source, RawType: blockType, RawEvent: shallowRawEvent(event)})
+				steps = append(steps, TrajectoryStep{Kind: "message", Role: role, Text: trimText(text, 4000), Source: source, RawType: blockType, RawEvent: compactRawEvent(event)})
 			}
 		}
 	}
 	if len(steps) == 0 && (rawType != "" || len(event) > 0) {
-		steps = append(steps, TrajectoryStep{Kind: "raw_event", Role: role, Source: source, RawType: rawType, RawEvent: shallowRawEvent(event)})
+		steps = append(steps, TrajectoryStep{Kind: "raw_event", Role: role, Source: source, RawType: rawType, RawEvent: compactRawEvent(event)})
 	}
 	return steps
 }
@@ -315,12 +337,97 @@ func firstAny(m map[string]any, keys ...string) any {
 	return nil
 }
 
-func shallowRawEvent(event map[string]any) map[string]any {
+func compactRawEvent(event map[string]any) map[string]any {
 	raw := make(map[string]any, len(event))
 	for key, value := range event {
-		raw[key] = value
+		raw[key] = compactAny(value, 3, 1200)
 	}
 	return raw
+}
+
+func compactAny(value any, depth int, maxString int) any {
+	if depth <= 0 {
+		switch v := value.(type) {
+		case string:
+			return trimText(v, maxString)
+		case nil, bool, float64, int, int64, json.Number:
+			return v
+		default:
+			return "[truncated]"
+		}
+	}
+	switch v := value.(type) {
+	case string:
+		return trimText(v, maxString)
+	case []any:
+		limit := len(v)
+		if limit > 12 {
+			limit = 12
+		}
+		out := make([]any, 0, limit+1)
+		for i := 0; i < limit; i++ {
+			out = append(out, compactAny(v[i], depth-1, maxString))
+		}
+		if len(v) > limit {
+			out = append(out, map[string]any{"truncated_items": len(v) - limit})
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		count := 0
+		for key, child := range v {
+			if count >= 40 {
+				out["_truncated_keys"] = len(v) - count
+				break
+			}
+			out[key] = compactAny(child, depth-1, maxString)
+			count++
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func exitCodeFromValue(value any) *int {
+	text := strings.TrimSpace(textFromAny(value, 0))
+	if text == "" {
+		return nil
+	}
+	match := toolExitCodePattern.FindStringSubmatch(text)
+	if len(match) != 2 {
+		return nil
+	}
+	code, err := strconv.Atoi(match[1])
+	if err != nil {
+		return nil
+	}
+	return &code
+}
+
+func textFromAny(value any, depth int) string {
+	if depth > 4 || value == nil {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return v
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if text := textFromAny(item, depth+1); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	case map[string]any:
+		for _, key := range []string{"text", "content", "output", "result"} {
+			if text := textFromAny(v[key], depth+1); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func boolPtr(value bool) *bool {

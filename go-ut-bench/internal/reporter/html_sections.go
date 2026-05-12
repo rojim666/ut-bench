@@ -356,7 +356,7 @@ func buildLeaderboardHTMLNew(models []contracts.ModelRank, views []contracts.Com
 		testWidth := int(m.AvgTestPassRate * 100)
 		coverWidth := int(m.AvgLineCoverage * 100)
 		mutWidth := int(m.AvgMutationScore * 100)
-		compositePct := m.CompositeScore * 100
+		compositePct := m.CompositeScore
 		latencyStr := fmt.Sprintf("%.1fs", m.AvgLatencyMS/1000)
 		tokensStr := fmt.Sprintf("%.0f", m.AvgTotalTokens)
 		assertionDensityStr := fmt.Sprintf("%.2f", m.AvgAssertionDensity)

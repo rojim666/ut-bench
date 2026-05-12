@@ -694,17 +694,120 @@ func looksLikeFilePath(s string) bool {
 	return false
 }
 
-// writeAgentTrace 将完整 trace 写入 JSONL 文件。
+// writeAgentTrace 将 Agent trace 写成真正的 JSONL 事件流。
 func writeAgentTrace(path string, trace AgentTrace) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(trace)
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	raw = append(raw, '\n')
-	return os.WriteFile(path, raw, 0o644)
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	emit := func(event string, payload map[string]any) error {
+		payload["schema_version"] = "agent_trace.v0.2.0"
+		payload["event"] = event
+		return enc.Encode(payload)
+	}
+
+	if err := emit("summary", map[string]any{
+		"subject_id":            trace.SubjectID,
+		"framework":             trace.Framework,
+		"model":                 trace.Model,
+		"skill":                 trace.Skill,
+		"sample_id":             trace.SampleID,
+		"language":              trace.Language,
+		"started_at":            trace.StartedAt,
+		"finished_at":           trace.FinishedAt,
+		"session_id":            trace.SessionID,
+		"session_export_path":   trace.SessionExportPath,
+		"session_export_error":  trace.SessionExportError,
+		"raw_trace_path":        trace.RawTracePath,
+		"raw_stdout_path":       trace.RawStdoutPath,
+		"raw_stderr_path":       trace.RawStderrPath,
+		"trajectory_path":       trace.TrajectoryPath,
+		"workspace_diff_path":   trace.WorkspaceDiffPath,
+		"sandbox_provider":      trace.SandboxProvider,
+		"sandbox_image":         trace.SandboxImage,
+		"sandbox_fingerprint":   trace.SandboxFingerprint,
+		"interaction_count":     trace.InteractionCount,
+		"tool_call_count":       len(trace.ToolCalls),
+		"commands_count":        len(trace.CommandsExecuted),
+		"files_read_count":      len(trace.FilesRead),
+		"files_written_count":   len(trace.FilesWritten),
+		"prompt_tokens":         trace.PromptTokens,
+		"completion_tokens":     trace.CompletionTokens,
+		"total_tokens":          trace.TotalTokens,
+		"token_source":          trace.TokenSource,
+		"estimated_cost":        trace.EstimatedCost,
+		"cost_source":           trace.CostSource,
+		"usage_source_detail":   trace.UsageSourceDetail,
+	}); err != nil {
+		return err
+	}
+
+	for i, check := range trace.EnvironmentSetup {
+		if err := emit("environment_setup", preflightTracePayload(i+1, check)); err != nil {
+			return err
+		}
+	}
+	for i, check := range trace.PreflightChecks {
+		if err := emit("preflight_check", preflightTracePayload(i+1, check)); err != nil {
+			return err
+		}
+	}
+	for i, call := range trace.ToolCalls {
+		if err := emit("tool_call", map[string]any{
+			"index":       i + 1,
+			"tool":        call.Tool,
+			"input":       trimText(call.Input, 4000),
+			"output":      trimText(call.Output, 4000),
+			"duration_ms": call.DurationMS,
+			"success":     call.Success,
+		}); err != nil {
+			return err
+		}
+	}
+	for i, command := range trace.CommandsExecuted {
+		if err := emit("command", map[string]any{
+			"index":   i + 1,
+			"command": command,
+		}); err != nil {
+			return err
+		}
+	}
+	for i, file := range trace.FilesRead {
+		if err := emit("file_read", map[string]any{"index": i + 1, "path": file}); err != nil {
+			return err
+		}
+	}
+	for i, file := range trace.FilesWritten {
+		if err := emit("file_written", map[string]any{"index": i + 1, "path": file}); err != nil {
+			return err
+		}
+	}
+
+	return emit("outcome", map[string]any{
+		"exit_code":      trace.ExitCode,
+		"duration_ms":    trace.DurationMS,
+		"workspace_diff": trace.WorkspaceDiff,
+		"stdout_excerpt": trimText(trace.Stdout, 4000),
+		"stderr_excerpt": trimText(trace.Stderr, 4000),
+	})
+}
+
+func preflightTracePayload(index int, check PreflightCheck) map[string]any {
+	return map[string]any{
+		"index":       index,
+		"command":     check.Command,
+		"exit_code":   check.ExitCode,
+		"duration_ms": check.DurationMS,
+		"stdout":      trimText(check.Stdout, 4000),
+		"stderr":      trimText(check.Stderr, 4000),
+		"passed":      check.Passed,
+	}
 }
 
 // agentError 构建一个包含错误的 AgentGenerateResult。

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -388,6 +389,124 @@ func TestBuildTrajectoryFromStreamJSON(t *testing.T) {
 	}
 	if !foundResult {
 		t.Fatalf("expected tool_result for toolu_1 in steps: %+v", traj.Steps)
+	}
+}
+
+func TestBuildTrajectoryCompactsRawEventsAndParsesExitCode(t *testing.T) {
+	longText := strings.Repeat("long trace content ", 800)
+	stdout := strings.Join([]string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"I will inspect the source and generate tests. ` + longText + `"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"javac -cp . Source.java generated_test.java 2>&1","huge":"` + longText + `"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bash","content":"javac: not found\nExit Code: 127","is_error":false}]}}`,
+	}, "\n")
+	trace := AgentTrace{
+		SubjectID: "claudecode__m__skill",
+		Framework: "claudecode",
+		Model:     "m",
+		Skill:     "skill",
+		SampleID:  "sample",
+		Language:  "java",
+	}
+
+	traj := buildAgentTrajectory(trace, "generated_test.java", "", stdout, "")
+	raw, err := json.Marshal(traj)
+	if err != nil {
+		t.Fatalf("marshal trajectory: %v", err)
+	}
+	var decoded AgentTrajectory
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal trajectory: %v", err)
+	}
+
+	foundThinking := false
+	foundFailedBash := false
+	for _, step := range decoded.Steps {
+		if step.Kind == "thinking" {
+			foundThinking = true
+			if len(step.Text) > 4500 {
+				t.Fatalf("thinking text was not compacted: len=%d", len(step.Text))
+			}
+		}
+		if step.Kind == "tool_result" && step.ToolCallID == "toolu_bash" {
+			foundFailedBash = true
+			if step.ExitCode == nil || *step.ExitCode != 127 {
+				t.Fatalf("exit_code = %v, want 127", step.ExitCode)
+			}
+			if step.Success == nil || *step.Success {
+				t.Fatalf("success = %v, want false for non-zero exit", step.Success)
+			}
+		}
+		if step.RawEvent != nil {
+			if b, err := json.Marshal(step.RawEvent); err == nil && len(b) > 20000 {
+				t.Fatalf("raw_event too large: %d bytes", len(b))
+			}
+		}
+	}
+	if !foundThinking {
+		t.Fatalf("expected thinking step in %+v", decoded.Steps)
+	}
+	if !foundFailedBash {
+		t.Fatalf("expected failed bash tool_result in %+v", decoded.Steps)
+	}
+}
+
+func TestWriteAgentTraceJSONLEvents(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.trace.jsonl")
+	trace := AgentTrace{
+		SubjectID:        "claudecode__m__skill",
+		Framework:        "claudecode",
+		Model:            "m",
+		Skill:            "skill",
+		SampleID:         "sample",
+		Language:         "java",
+		InteractionCount: 3,
+		ToolCalls: []ToolCall{
+			{Tool: "Bash", Input: "go test ./...", Output: "ok", Success: true},
+		},
+		CommandsExecuted: []string{"go test ./..."},
+		FilesRead:        []string{"src/main.go"},
+		FilesWritten:     []string{"src/main_test.go"},
+		RawTracePath:     "raw.jsonl",
+		TrajectoryPath:   "trajectory.json",
+		ExitCode:         0,
+		Stdout:           strings.Repeat("stdout ", 900),
+	}
+	if err := writeAgentTrace(path, trace); err != nil {
+		t.Fatalf("write agent trace: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read agent trace: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) < 5 {
+		t.Fatalf("trace lines = %d, want at least 5: %s", len(lines), string(raw))
+	}
+	events := make([]string, 0, len(lines))
+	for _, line := range lines {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("invalid jsonl line %q: %v", line, err)
+		}
+		events = append(events, event["event"].(string))
+		if event["event"] == "outcome" {
+			if stdout, _ := event["stdout_excerpt"].(string); len(stdout) > 4500 {
+				t.Fatalf("stdout excerpt too large: %d", len(stdout))
+			}
+		}
+	}
+	for _, want := range []string{"summary", "tool_call", "command", "file_read", "file_written", "outcome"} {
+		found := false
+		for _, got := range events {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing event %q in %v", want, events)
+		}
 	}
 }
 
