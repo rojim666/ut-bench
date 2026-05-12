@@ -310,21 +310,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		rawResponse["session_export_error"] = trace.SessionExportError
 	}
 
-	// 16. 处理执行错误
-	if runErr != nil {
-		return AgentGenerateResult{
-			RawResponse: rawResponse,
-			Trace:       trace,
-			LatencyMS:   latency,
-			Error: &contracts.ErrorInfo{
-				Kind:      "agent_execution_error",
-				Message:   fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000)),
-				Retryable: false,
-			},
-		}
-	}
-
-	// 17. 拦截环境漂移行为
+	// 16. 拦截环境漂移行为
 	if violation := detectSandboxPolicyViolation(trace.CommandsExecuted, frameworkForbiddenCommandPatterns(framework)); violation != "" {
 		rawResponse["policy_violation"] = violation
 		return AgentGenerateResult{
@@ -339,9 +325,22 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		}
 	}
 
-	// 18. 查找生成的测试文件
+	// 17. 查找生成的测试文件。即使 Agent 非零退出或超时，也先尝试回收已经写出的测试文件；
+	// 项目级任务里常见情况是 Agent 把测试写到包目录下的 *_test.go，但没有复制到 generated_test.go。
 	generatedPath := findGeneratedTest(workRoot, outputFile, framework.OutputGlobs, changes, sample.Language)
 	if generatedPath == "" {
+		if runErr != nil {
+			return AgentGenerateResult{
+				RawResponse: rawResponse,
+				Trace:       trace,
+				LatencyMS:   latency,
+				Error: &contracts.ErrorInfo{
+					Kind:      "agent_execution_error",
+					Message:   fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000)),
+					Retryable: false,
+				},
+			}
+		}
 		return AgentGenerateResult{
 			RawResponse: rawResponse,
 			Trace:       trace,
@@ -352,6 +351,9 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 				Retryable: false,
 			},
 		}
+	}
+	if runErr != nil {
+		rawResponse["agent_execution_warning"] = summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000)
 	}
 
 	raw, err := os.ReadFile(generatedPath)

@@ -113,6 +113,37 @@ func TestBuildPrompt_PythonIncludesImportDiscipline(t *testing.T) {
 	}
 }
 
+func TestBuildPrompt_RepoLevelUsesProjectWideTask(t *testing.T) {
+	dir := t.TempDir()
+	samplePath := filepath.Join(dir, "adapter.go")
+	if err := os.WriteFile(samplePath, []byte("package runner\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"sample_id":"adapter","module_import":"go-ut-bench/internal/runner","package_name":"runner","target_file":"internal/runner/adapter.go","workspace_root":"../../"}`
+	if err := os.WriteFile(filepath.Join(dir, "adapter.meta.json"), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := buildPrompt("go", samplePath, "package runner\n\nfunc Add(a, b int) int { return a + b }\n")
+	checks := []string{
+		"Task: Complete unit tests for all testable files in this project/workspace",
+		"Mode: repo_level",
+		"Add or update unit tests for the project/workspace",
+		"For Go, the returned single test file must belong to the entry target package and begin with `package runner`",
+		"Entry target module: go-ut-bench/internal/runner",
+		"Project/workspace root: ../../",
+		"Project entry file:",
+	}
+	for _, item := range checks {
+		if !strings.Contains(prompt, item) {
+			t.Fatalf("repo_level prompt missing expected content: %q\n%s", item, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Task: Generate one complete test file for the target module") {
+		t.Fatalf("repo_level prompt still uses old target-module task")
+	}
+}
+
 func TestPromptCatalog_WriteAndLoad(t *testing.T) {
 	dir := t.TempDir()
 	catalog, err := WritePromptCatalog(dir)
@@ -135,6 +166,33 @@ func TestPromptCatalog_WriteAndLoad(t *testing.T) {
 	}
 	if loaded.Templates["python"][PromptModeFullFile] == "" {
 		t.Fatalf("expected python full-file template to be present")
+	}
+}
+
+func TestValidateGeneratedTestAllowsReasoningTagsInsideStringLiterals(t *testing.T) {
+	code := `package runner
+
+import "testing"
+
+func TestValidateGeneratedTestRejectsReasoning(t *testing.T) {
+	if err := validateGeneratedTest("<think>reasoning</think>", "go"); err == nil {
+		t.Fatal("expected error")
+	}
+}`
+	if err := validateGeneratedTest(code, "go"); err != nil {
+		t.Fatalf("expected valid Go test with tag fixture string, got %v", err)
+	}
+}
+
+func TestValidateGeneratedTestRejectsReasoningTagsOutsideCode(t *testing.T) {
+	code := `<think>reasoning</think>
+package runner
+
+import "testing"
+
+func TestX(t *testing.T) {}`
+	if err := validateGeneratedTest(code, "go"); err == nil {
+		t.Fatal("expected leaked reasoning tag to be rejected")
 	}
 }
 

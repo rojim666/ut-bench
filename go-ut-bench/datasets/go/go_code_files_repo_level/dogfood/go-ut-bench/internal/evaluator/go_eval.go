@@ -1,0 +1,463 @@
+// go_eval.go 提供 Go 语言单元测试评测功能
+// 使用 go test 进行编译检查、测试执行、覆盖率收集
+// 使用 go-mutesting 进行变异测试
+package evaluator
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"time"
+)
+
+// goCompileCheck 检查 Go 测试代码是否能编译通过
+// 使用 go test -c 命令（go build 会拒绝 *_test.go 文件）
+//
+// 参数:
+//   - workdir: 工作目录
+//   - testFile: 测试文件名（相对路径）
+//
+// 返回值:
+//   - bool: 编译是否通过
+//   - string: 编译错误信息（成功时为空）
+func goCompileCheck(workdir, testFile string) (bool, string) {
+	_ = testFile
+	// Compile check for Go tests must use `go test -c`; `go build` rejects *_test.go files.
+	tempOutput := filepath.Join(workdir, "compile_check_output.test")
+	if runtime.GOOS == "windows" {
+		tempOutput = filepath.Join(workdir, "compile_check_output.test.exe")
+	}
+	defer os.Remove(tempOutput)
+
+	runCtx, cancel := context.WithTimeout(context.Background(), defaultTestTimeoutSeconds*time.Second)
+	defer cancel()
+	output, err := runCommandWithProcessGroupKill(runCtx, "go", []string{"test", "-c", "-o", tempOutput, "."}, workdir, nil)
+	if runCtx.Err() != nil {
+		return false, fmt.Sprintf("go compile timed out after %ds", defaultTestTimeoutSeconds)
+	}
+	if err == nil {
+		return true, ""
+	}
+	return false, trimErr(string(output), 2000)
+}
+
+// prepareGoWorkspace 准备 Go 评测工作区
+// 创建临时目录，复制源码和测试文件，生成 go.mod
+//
+// 参数:
+//   - testPath: 生成的测试文件路径
+//   - samplePath: 源码文件路径
+//
+// 返回值:
+//   - string: 工作目录路径（失败时为空）
+//   - string: 测试文件名（失败时为错误信息）
+//   - string: 源码文件名
+//   - string: 源码文件名（去掉扩展名）
+func prepareGoWorkspace(testPath, samplePath string) (string, string, string, string) {
+	testSource, err := os.ReadFile(testPath)
+	if err != nil {
+		return "", "", "", fmt.Sprintf("failed to read generated test: %s", err)
+	}
+
+	sourceBase := filepath.Base(samplePath)
+	sourceStem := strings.TrimSuffix(sourceBase, filepath.Ext(sourceBase))
+	testFileName := sourceStem + "_test.go"
+
+	workdir, err := os.MkdirTemp("", "utbench_go_eval_")
+	if err != nil {
+		return "", "", "", fmt.Sprintf("failed to create temp dir: %s", err)
+	}
+
+	sourceData, err := os.ReadFile(samplePath)
+	if err != nil {
+		_ = os.RemoveAll(workdir)
+		return "", "", "", fmt.Sprintf("failed to read source: %s", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(workdir, sourceBase), sourceData, 0o644); err != nil {
+		_ = os.RemoveAll(workdir)
+		return "", "", "", fmt.Sprintf("failed to write source: %s", err)
+	}
+
+	goModContent := "module utbench_eval\n\ngo 1.24\n"
+	if err := os.WriteFile(filepath.Join(workdir, "go.mod"), []byte(goModContent), 0o644); err != nil {
+		_ = os.RemoveAll(workdir)
+		return "", "", "", fmt.Sprintf("failed to write go.mod: %s", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(workdir, testFileName), testSource, 0o644); err != nil {
+		_ = os.RemoveAll(workdir)
+		return "", "", "", fmt.Sprintf("failed to write test: %s", err)
+	}
+
+	return workdir, testFileName, sourceBase, sourceStem
+}
+
+// executeGoTests 执行 Go 测试
+// 使用 go test -v 运行测试并收集输出
+//
+// 参数:
+//   - workdir: 工作目录
+//   - testFile: 测试文件名
+//   - sourceFile: 源码文件名
+//
+// 返回值:
+//   - bool: 测试是否通过
+//   - string: 测试输出或错误信息
+//   - int: 执行耗时（毫秒）
+func executeGoTests(workdir, testFile, sourceFile string) (bool, string, int) {
+	runCtx, cancel := context.WithTimeout(context.Background(), defaultTestTimeoutSeconds*time.Second)
+	defer cancel()
+	started := time.Now()
+	args := []string{"test", "-v", fmt.Sprintf("-timeout=%ds", defaultTestTimeoutSeconds), filepath.Base(testFile), filepath.Base(sourceFile)}
+	output, err := runCommandWithProcessGroupKill(runCtx, "go", args, workdir, nil)
+	latency := int(time.Since(started).Milliseconds())
+	if runCtx.Err() != nil {
+		return false, fmt.Sprintf("go test timed out after %ds", defaultTestTimeoutSeconds), latency
+	}
+	if err == nil {
+		return true, string(output), latency
+	}
+	return false, trimErr(string(output), 4000), latency
+}
+
+// parseGoTestCounts 解析 go test 输出中的测试结果计数
+// 从 "--- PASS:" 和 "--- FAIL:" 行统计通过和失败数
+//
+// 参数:
+//   - output: go test 输出内容
+//
+// 返回值:
+//   - *int: 通过的测试数
+//   - *int: 总测试数（通过+失败）
+func parseGoTestCounts(output string) (*int, *int) {
+	passed := 0
+	failed := 0
+	for _, match := range regexp.MustCompile(`--- (PASS|FAIL):`).FindAllStringSubmatch(output, -1) {
+		if len(match) >= 2 {
+			if match[1] == "PASS" {
+				passed++
+			} else if match[1] == "FAIL" {
+				failed++
+			}
+		}
+	}
+	if passed > 0 || failed > 0 {
+		total := passed + failed
+		return &passed, &total
+	}
+	return nil, nil
+}
+
+// collectGoCoverage 收集 Go 测试覆盖率数据
+// 使用 go test -coverprofile 生成覆盖率文件并解析
+//
+// 参数:
+//   - workdir: 工作目录
+//   - testFile: 测试文件名
+//   - sourceBase: 源码文件名
+//
+// 返回值:
+//   - float64: 行覆盖率（0-1）
+//   - float64: 分支覆盖率（0-1）
+//   - string: 错误信息（成功时为空）
+func collectGoCoverage(workdir, testFile, sourceBase string) (float64, float64, string) {
+	coverFile := filepath.Join(workdir, "cover.out")
+	runCtx, cancel := context.WithTimeout(context.Background(), defaultTestTimeoutSeconds*time.Second)
+	defer cancel()
+	args := []string{"test", fmt.Sprintf("-timeout=%ds", defaultTestTimeoutSeconds), "-coverprofile=" + filepath.Base(coverFile), filepath.Base(testFile), filepath.Base(sourceBase)}
+	out, err := runCommandWithProcessGroupKill(runCtx, "go", args, workdir, nil)
+	if runCtx.Err() != nil {
+		return 0, 0, fmt.Sprintf("go coverage timed out after %ds", defaultTestTimeoutSeconds)
+	}
+	if err != nil {
+		return 0, 0, "go coverage failed: " + trimErr(string(out), 1000)
+	}
+
+	raw, err := os.ReadFile(coverFile)
+	if err != nil {
+		return 0, 0, fmt.Sprintf("failed to read coverage file: %s", err)
+	}
+
+	return parseGoCoverageOutput(string(raw), sourceBase)
+}
+
+// parseGoCoverageOutput 解析 Go 覆盖率输出文件
+// 从 cover.out 格式解析行覆盖率数据
+//
+// 参数:
+//   - content: 覆盖率文件内容
+//   - sourceBase: 目标源码文件名（用于过滤）
+//
+// 返回值:
+//   - float64: 行覆盖率（0-1）
+//   - float64: 分支覆盖率（0-1）
+//   - string: 错误信息（成功时为空）
+func parseGoCoverageOutput(content, sourceBase string) (float64, float64, string) {
+	lines := strings.Split(content, "\n")
+	if len(lines) < 2 {
+		return 0, 0, "coverage file too short"
+	}
+
+	modeLine := lines[0]
+	if !strings.HasPrefix(modeLine, "mode:") {
+		return 0, 0, "invalid coverage format"
+	}
+
+	totalStmts := 0
+	coveredStmts := 0
+	totalBranches := 0
+	coveredBranches := 0
+
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, " ")
+		if len(parts) < 3 {
+			continue
+		}
+
+		filePathWithRange := parts[0]
+		colonIdx := strings.Index(filePathWithRange, ":")
+		if colonIdx == -1 {
+			continue
+		}
+		filePath := filePathWithRange[:colonIdx]
+		if !strings.HasSuffix(filePath, sourceBase) {
+			continue
+		}
+
+		countStr := parts[len(parts)-1]
+		var count int
+		if countStr == "1" {
+			count = 1
+		} else {
+			count = 0
+		}
+
+		rangeStr := parts[1]
+		stmtCount := estimateGoStmtCount(rangeStr)
+		totalStmts += stmtCount
+		if count > 0 {
+			coveredStmts += stmtCount
+		}
+
+		totalBranches += 2
+		if count > 0 {
+			coveredBranches += 2
+		}
+	}
+
+	if totalStmts == 0 {
+		return 0, 0, "no coverage data for target file"
+	}
+
+	lineCov := round(float64(coveredStmts)/float64(totalStmts), 6)
+	branchCov := round(float64(coveredBranches)/float64(totalBranches), 6)
+	return lineCov, branchCov, ""
+}
+
+// estimateGoStmtCount 从覆盖率范围字符串估算语句数
+// 用于将覆盖率范围转换为语句计数
+func estimateGoStmtCount(rangeStr string) int {
+	count := 1
+	for _, ch := range rangeStr {
+		if ch == ',' || ch == '.' {
+			count++
+		}
+	}
+	if count > 1 {
+		count = count / 2
+	}
+	if count < 1 {
+		count = 1
+	}
+	return count
+}
+
+// collectGoMutation 执行 Go 变异测试
+// 使用 go-mutesting 工具对源码进行变异并计算变异得分
+//
+// 参数:
+//   - ctx: 上下文
+//   - workdir: 工作目录
+//   - testFile: 测试文件名
+//   - sourceBase: 源码文件名
+//   - timeoutSeconds: 超时时间（秒）
+//   - testPassRate: 测试通过率（用于判断是否运行变异测试）
+//   - testPassed: 通过的测试数
+//   - testTotal: 总测试数
+//
+// 返回值:
+//   - float64: 变异得分（0-1）
+//   - mutationStats: 变异统计数据
+//   - string: 错误信息（成功时为空）
+func collectGoMutation(ctx context.Context, workdir, testFile, sourceBase string, timeoutSeconds int, testPassRate *float64, testPassed, testTotal int) (float64, mutationStats, string) {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = MutationTimeoutSeconds
+	}
+
+	fmt.Printf("        [MUTATION] Go go-mutesting 开始 | 目标: %s | 超时: %ds\n", sourceBase, timeoutSeconds)
+	logMutation("DEBUG-1", "mutation_start", "language", "go", "tool", "go-mutesting", "source_base", sourceBase, "timeout_seconds", timeoutSeconds)
+
+	minPassRate := GetMinPassRateForTool("go-mutesting")
+	passed := 0
+	total := 0
+	if testPassed > 0 || testTotal > 0 {
+		passed = testPassed
+		total = testTotal
+	} else if testPassRate != nil {
+		total = 100
+		passed = int(math.Round(*testPassRate * float64(total)))
+	}
+
+	checkResult := CheckTestPassRate(passed, total, "go-mutesting", minPassRate)
+	if !checkResult.ShouldRun {
+		fmt.Printf("        [MUTATION] 跳过: %s\n", checkResult.Message)
+		logMutation("DEBUG-2", "mutation_skip", "reason", checkResult.Message)
+		return 0, mutationStats{}, checkResult.Message
+	}
+
+	targetPath := filepath.Join(workdir, sourceBase)
+	if _, err := os.Stat(targetPath); err != nil {
+		fmt.Printf("        [MUTATION] 错误: 目标文件不存在\n")
+		logMutation("ERROR", "mutation_error", "error", "target file not found", "source_base", sourceBase)
+		return 0, mutationStats{}, fmt.Sprintf("target file not found: %s", sourceBase)
+	}
+
+	goMutestingPath := findGoMutesting()
+	if goMutestingPath == "" {
+		fmt.Printf("        [MUTATION] 错误: go-mutesting 未安装\n")
+		logMutation("ERROR", "mutation_error", "error", "go-mutesting not installed")
+		return 0, mutationStats{}, "go-mutesting not installed. Install: go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest"
+	}
+
+	fmt.Printf("        [MUTATION] 步骤1: 运行 go-mutesting (超时=%ds)...\n", timeoutSeconds)
+	logMutation("DEBUG-1", "mutation_step", "step", "go_mutesting", "go_mutesting_path", goMutestingPath)
+	mutmutRunStart := time.Now()
+	runCtx, cancelRun := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+	defer cancelRun()
+
+	runOut, runErr := runCommandWithProcessGroupKill(runCtx, goMutestingPath, []string{filepath.Base(sourceBase)}, workdir, nil)
+	mutmutRunElapsed := time.Since(mutmutRunStart)
+	logMutation("DEBUG-1", "mutation_step_done", "step", "go_mutesting", "elapsed_ms", mutmutRunElapsed.Milliseconds(), "run_err", runErr)
+
+	if runErr != nil {
+		fmt.Printf("        [MUTATION] 步骤1完成(有错误) | 耗时: %dms | 错误: %v\n", mutmutRunElapsed.Milliseconds(), runErr)
+	} else {
+		fmt.Printf("        [MUTATION] 步骤1完成 | 耗时: %dms\n", mutmutRunElapsed.Milliseconds())
+	}
+
+	stats, parseErr := parseGoMutestingOutput(string(runOut))
+	if parseErr != "" {
+		return 0, stats, formatMutationToolError("go-mutesting", parseErr, runErr, runOut, nil, nil)
+	}
+
+	if stats.Total <= 0 {
+		return 0, stats, formatMutationToolError("go-mutesting", "go-mutesting produced zero mutants", runErr, runOut, nil, nil)
+	}
+
+	processed := stats.Killed + stats.Survived + stats.NoTests + stats.Timeout + stats.Skipped + stats.Suspicious
+	if processed <= 0 {
+		return 0, stats, formatMutationToolError("go-mutesting", "go-mutesting did not execute any mutants", runErr, runOut, nil, nil)
+	}
+
+	if stats.Killed+stats.Survived <= 0 {
+		return 0, stats, formatMutationToolError("go-mutesting", "go-mutesting no killed/survived results", runErr, runOut, nil, nil)
+	}
+
+	if stats.Total == 0 {
+		return 0, stats, "no effective mutants found"
+	}
+	score := round(float64(stats.Killed)/float64(stats.Total), 6)
+	return score, stats, ""
+}
+
+// findGoMutesting 查找 go-mutesting 工具路径
+// 从多个候选路径查找安装位置
+func findGoMutesting() string {
+	candidates := []string{
+		"go-mutesting",
+		filepath.Join(os.Getenv("HOME"), "go", "bin", "go-mutesting"),
+		"/usr/local/go/bin/go-mutesting",
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	if path, err := exec.LookPath("go-mutesting"); err == nil {
+		return path
+	}
+	return ""
+}
+
+func parseGoMutestingOutput(output string) (mutationStats, string) {
+	stats := mutationStats{}
+	normalized := strings.ToLower(output)
+	if strings.Contains(normalized, "no mutations") || strings.Contains(normalized, "no mutants") {
+		return stats, "go-mutesting no results to report"
+	}
+
+	summary := regexp.MustCompile(`(?i)mutation score is\s+([0-9]*\.?[0-9]+)\s*\(\s*(\d+)\s+passed,\s*(\d+)\s+failed,\s*(?:(\d+)\s+duplicated,\s*)?(\d+)\s+skipped,\s*total\s+is\s+(\d+)\s*\)`)
+	if match := summary.FindStringSubmatch(output); len(match) == 7 {
+		stats.Killed = atoiOrZero(match[2])
+		stats.Survived = atoiOrZero(match[3])
+		stats.Duplicated = atoiOrZero(match[4])
+		stats.Skipped = atoiOrZero(match[5])
+		stats.Total = atoiOrZero(match[6])
+		return stats, ""
+	}
+
+	stats.Killed = countGoMutestingStatus(output, "PASS")
+	stats.Survived = countGoMutestingStatus(output, "FAIL")
+	stats.Skipped = countGoMutestingStatus(output, "SKIP")
+	stats.Total = stats.Killed + stats.Survived + stats.Skipped
+
+	if stats.Total == 0 {
+		return stats, "no go-mutesting output found"
+	}
+	return stats, ""
+}
+
+func countGoMutestingStatus(output, status string) int {
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(status) + `\s+"`)
+	return len(re.FindAllString(output, -1))
+}
+
+func extractFirstIntOrZero(s, pattern string) int {
+	if match := extractFirstInt(s, pattern); match != nil {
+		return *match
+	}
+	return 0
+}
+
+func atoiOrZero(s string) int {
+	var v int
+	if _, err := fmt.Sscanf(s, "%d", &v); err != nil {
+		return 0
+	}
+	return v
+}
+
+func inferGoMutationTargets(workdir, testFile, sourceBase string) []string {
+	testContent, err := os.ReadFile(filepath.Join(workdir, testFile))
+	if err != nil {
+		return []string{sourceBase}
+	}
+
+	testText := string(testContent)
+	if strings.Contains(testText, filepath.Base(strings.TrimSuffix(sourceBase, ".go"))) {
+		return []string{strings.TrimSuffix(sourceBase, ".go")}
+	}
+	return []string{sourceBase}
+}

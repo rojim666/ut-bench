@@ -1,0 +1,865 @@
+// Chart renderer. Reports are self-contained and do not depend on external CDNs.
+(function() {
+  const banner = document.getElementById('runtime-banner');
+  function showBanner(message) {
+    if (!banner) return;
+    banner.textContent = message;
+    banner.classList.add('visible');
+  }
+  function loadScript(url) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = url;
+      script.async = true;
+      script.onload = () => resolve(url);
+      script.onerror = () => reject(new Error('Failed to load: ' + url));
+      document.head.appendChild(script);
+    });
+  }
+  function installMiniChart() {
+    if (window.Chart) return;
+    class MiniChart {
+      constructor(canvas, config) {
+        this.canvas = canvas;
+        this.config = config || {};
+        this.ctx = canvas && canvas.getContext ? canvas.getContext('2d') : null;
+        this._resize = () => this.draw();
+        window.addEventListener('resize', this._resize);
+        this.draw();
+      }
+      destroy() {
+        window.removeEventListener('resize', this._resize);
+        if (this.ctx && this.canvas) this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      }
+      draw() {
+        if (!this.ctx || !this.canvas) return;
+        const rect = this.canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const width = Math.max(320, Math.floor(rect.width || this.canvas.clientWidth || 640));
+        const height = Math.max(220, Math.floor(rect.height || this.canvas.clientHeight || 320));
+        if (this.canvas.width !== Math.floor(width * dpr) || this.canvas.height !== Math.floor(height * dpr)) {
+          this.canvas.width = Math.floor(width * dpr);
+          this.canvas.height = Math.floor(height * dpr);
+        }
+        const ctx = this.ctx;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        const type = this.config.type || 'bar';
+        if (type === 'pie' || type === 'doughnut') return this.drawPie(ctx, width, height, type === 'doughnut');
+        if (type === 'scatter') return this.drawScatter(ctx, width, height);
+        return this.drawBars(ctx, width, height);
+      }
+      palette(i) {
+        return ['#315f9c', '#2f7d72', '#d5902f', '#c43d2f', '#5b6472', '#0f766e', '#7c5f35', '#475569'][i % 8];
+      }
+      datasets() { return (this.config.data && this.config.data.datasets) || []; }
+      labels() { return (this.config.data && this.config.data.labels) || []; }
+      drawLegend(ctx, datasets, x, y) {
+        ctx.font = '12px system-ui, sans-serif';
+        datasets.slice(0, 8).forEach((ds, i) => {
+          ctx.fillStyle = ds.borderColor || ds.backgroundColor || this.palette(i);
+          ctx.fillRect(x, y + i * 18, 10, 10);
+          ctx.fillStyle = '#475569';
+          ctx.fillText(String(ds.label || '数据 ' + (i + 1)).slice(0, 26), x + 16, y + 9 + i * 18);
+        });
+      }
+      drawLegendBottom(ctx, datasets, width, y) {
+        ctx.font = '12px system-ui, sans-serif';
+        let x = 18;
+        datasets.slice(0, 8).forEach((ds, i) => {
+          const text = String(ds.label || 'Data ' + (i + 1)).slice(0, 18);
+          const itemWidth = Math.min(170, ctx.measureText(text).width + 28);
+          if (x + itemWidth > width - 18) {
+            x = 18;
+            y += 18;
+          }
+          ctx.fillStyle = ds.borderColor || ds.backgroundColor || this.palette(i);
+          ctx.fillRect(x, y, 10, 10);
+          ctx.fillStyle = '#475569';
+          ctx.fillText(text, x + 16, y + 9);
+          x += itemWidth;
+        });
+      }
+      drawAxes(ctx, left, top, right, bottom) {
+        ctx.strokeStyle = '#d8e0e7';
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= 4; i++) {
+          const y = bottom - (bottom - top) * i / 4;
+          ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
+          ctx.fillStyle = '#64748b';
+          ctx.font = '11px system-ui, sans-serif';
+          ctx.fillText(String(i * 25) + '%', 8, y + 4);
+        }
+        ctx.strokeStyle = '#7d8793';
+        ctx.beginPath(); ctx.moveTo(left, top); ctx.lineTo(left, bottom); ctx.lineTo(right, bottom); ctx.stroke();
+      }
+      drawBars(ctx, width, height) {
+        const labels = this.labels();
+        const datasets = this.datasets();
+        const left = 42, right = width - 20, top = 18, bottom = height - 88;
+        this.drawAxes(ctx, left, top, right, bottom);
+        const groups = Math.max(1, labels.length);
+        const groupW = (right - left) / groups;
+        const barW = Math.max(3, Math.min(18, groupW / Math.max(1, datasets.length) * 0.72));
+        datasets.forEach((ds, di) => {
+          const color = ds.backgroundColor || ds.borderColor || this.palette(di);
+          (ds.data || []).forEach((raw, i) => {
+            const value = Math.max(0, Math.min(1, Number(raw) || 0));
+            const x = left + i * groupW + groupW * 0.18 + di * barW;
+            const y = bottom - value * (bottom - top);
+            ctx.fillStyle = color;
+            ctx.fillRect(x, y, barW, bottom - y);
+          });
+        });
+        ctx.fillStyle = '#475569';
+        ctx.font = '11px system-ui, sans-serif';
+        labels.slice(0, 14).forEach((label, i) => {
+          const text = String(label).slice(0, 14);
+          ctx.save();
+          ctx.translate(left + i * groupW + groupW * 0.2, bottom + 32);
+          ctx.rotate(-0.35);
+          ctx.fillText(text, 0, 0);
+          ctx.restore();
+        });
+        this.drawLegendBottom(ctx, datasets, width, height - 34);
+      }
+      drawScatter(ctx, width, height) {
+        const datasets = this.datasets();
+        const left = 42, right = width - 20, top = 20, bottom = height - 62;
+        this.drawAxes(ctx, left, top, right, bottom);
+        const points = datasets.map(ds => (ds.data && ds.data[0]) || { x: 0, y: 0 });
+        const maxX = Math.max(1, ...points.map(p => Number(p.x) || 0));
+        const maxY = Math.max(100, ...points.map(p => Number(p.y) || 0));
+        datasets.forEach((ds, i) => {
+          const p = (ds.data && ds.data[0]) || { x: 0, y: 0 };
+          const x = left + ((Number(p.x) || 0) / maxX) * (right - left);
+          const y = bottom - ((Number(p.y) || 0) / maxY) * (bottom - top);
+          ctx.beginPath();
+          ctx.fillStyle = ds.backgroundColor || ds.borderColor || this.palette(i);
+          ctx.arc(x, y, Number(ds.pointRadius || 6), 0, Math.PI * 2);
+          ctx.fill();
+        });
+        this.drawLegendBottom(ctx, datasets, width, height - 34);
+      }
+      drawPie(ctx, width, height, doughnut) {
+        const ds = this.datasets()[0] || {};
+        const values = (ds.data || []).map(v => Math.max(0, Number(v) || 0));
+        const labels = this.labels();
+        const total = values.reduce((a, b) => a + b, 0) || 1;
+        const cx = Math.floor(width * 0.5), cy = Math.floor(height * 0.42);
+        const radius = Math.max(55, Math.min(width, height) * 0.24);
+        let start = -Math.PI / 2;
+        values.forEach((value, i) => {
+          const angle = value / total * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.arc(cx, cy, radius, start, start + angle);
+          ctx.closePath();
+          const colors = Array.isArray(ds.backgroundColor) ? ds.backgroundColor : [];
+          ctx.fillStyle = colors[i] || this.palette(i);
+          ctx.fill();
+          start += angle;
+        });
+        if (doughnut) {
+          ctx.beginPath();
+          ctx.fillStyle = '#fff';
+          ctx.arc(cx, cy, radius * 0.55, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        const legend = labels.map((label, i) => ({ label, backgroundColor: (Array.isArray(ds.backgroundColor) && ds.backgroundColor[i]) || this.palette(i) }));
+        this.drawLegendBottom(ctx, legend, width, height - Math.min(50, Math.max(28, Math.ceil(legend.length / 3) * 18)));
+      }
+    }
+    window.Chart = MiniChart;
+    window.__utBenchMiniChart = true;
+  }
+  async function ensureChartJS() {
+    if (window.Chart) return 'builtin';
+    installMiniChart();
+    return 'mini-chart';
+  }
+  window.__utBenchEnsureChartJS = ensureChartJS;
+  window.__utBenchShowBanner = showBanner;
+})();
+
+const reportTopModels = __TOP_MODELS_JSON_PLACEHOLDER__;
+const evaluationRows = __ROWS_JSON_PLACEHOLDER__;
+
+let modelBarChart;
+let radarChart;
+let efficiencyQualityChart;
+let errorTypeChart;
+let stageChart;
+let scenarioBarChart;
+let scenarioTrendChart;
+
+function safeText(value) {
+  if (value === null || value === undefined || value === '') return '-';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function metricCell(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '<span class="badge">-</span>';
+  const width = Math.max(0, Math.min(100, Math.round(value * 100)));
+  const fillClass = value >= 0.7 ? 'ok' : 'bad';
+  return '<div class="metric"><div class="bar"><span class="' + fillClass + '" style="width:' + width + '%"></span></div><span class="val">' + width + '%</span></div>';
+}
+
+// 场景列表和标签由 Go 端注入，保持与后端单一来源同步
+const SUPPORTED_SCENARIOS = __SUPPORTED_SCENARIOS_JSON__;
+const SCENARIO_LABELS = __SCENARIO_LABELS_JSON__;
+
+function getScenarioFromSample(sampleID) {
+  if (!sampleID) return 'unknown';
+  for (const prefix of SUPPORTED_SCENARIOS) {
+    if (sampleID === prefix || sampleID.startsWith(prefix + '_')) return prefix;
+  }
+  const idx = sampleID.indexOf('_');
+  return idx > 0 ? sampleID.slice(0, idx) : sampleID;
+}
+
+function scenarioLabel(value) {
+  return SCENARIO_LABELS[value] || value || SCENARIO_LABELS['unknown'] || '未知 / Unknown';
+}
+
+function stageLabel(value) {
+  const labels = {
+    generate: '生成 / Generate',
+    compile: '编译 / Compile',
+    test: '测试 / Test',
+    coverage: '覆盖率 / Coverage',
+    mutation: '变异测试 / Mutation'
+  };
+  return labels[value] || value || '-';
+}
+
+function errorTypeLabel(value) {
+  const labels = {
+    truncated: '输出截断 / Truncated',
+    module_not_found: '模块缺失 / Module not found',
+    name_error: '名称错误 / Name error',
+    assertion_failure: '断言失败 / Assertion failure',
+    syntax_error: '语法错误 / Syntax error',
+    indentation_error: '缩进错误 / Indentation',
+    timeout: '超时 / Timeout',
+    permission_error: '权限错误 / Permission',
+    mutation_skipped_baseline_failed: '变异前测试失败 / Mutation baseline failed',
+    mutation_target_not_exercised: '未覆盖变异目标 / Target not exercised',
+    mutation_no_results: '无变异结果 / No mutation results',
+    mutation_no_coverage: '无覆盖数据 / No coverage',
+    mutation_no_effective_mutants: '无有效变异体 / No effective mutants',
+    mutation_timeout: '变异超时 / Mutation timeout',
+    mutation_tool_error: '变异工具错误 / Mutation tool error',
+    mutation_error: '变异错误 / Mutation error',
+    coverage_error: '覆盖率错误 / Coverage error',
+    other: '其他 / Other'
+  };
+  return labels[value] || value || '-';
+}
+
+function getStageFromRow(row) {
+  if (row.truncated) return 'generate';
+  if (row.compile_error) return 'compile';
+  if (row.test_error) return 'test';
+  if (row.coverage_error) return 'coverage';
+  if (row.mutation_error) return 'mutation';
+  return '';
+}
+
+function getErrorTypeFromRow(row) {
+  const message = String(row.compile_error || row.test_error || row.coverage_error || row.mutation_error || '').toLowerCase();
+  if (row.truncated) return 'truncated';
+  if (message.includes('modulenotfound') || message.includes('importerror') || message.includes('no module')) return 'module_not_found';
+  if (message.includes('nameerror') || message.includes("name '")) return 'name_error';
+  if (message.includes('assertionerror') || message.includes('assert')) return 'assertion_failure';
+  if (message.includes('syntaxerror')) return 'syntax_error';
+  if (message.includes('indentation')) return 'indentation_error';
+  if (message.includes('timeout')) return 'timeout';
+  if (message.includes('permission')) return 'permission_error';
+  return message ? 'other' : '';
+}
+
+function filterMatch(value, selectedValues) {
+  return !selectedValues || selectedValues.length === 0 || selectedValues.includes(value);
+}
+
+function isScoreEligibleRow(row) {
+  return row.score_eligible === undefined || row.score_eligible === null || row.score_eligible === true;
+}
+
+function createAgg(key, extra = {}) {
+  return Object.assign({ key, total: 0, compilePass: 0, testPass: 0, testTotal: 0, lineSum: 0, lineCnt: 0, branchSum: 0, branchCnt: 0, mutationSum: 0, mutationCnt: 0 }, extra);
+}
+
+function aggRow(agg, row) {
+  agg.total += 1;
+  if (row.compile_pass) agg.compilePass += 1;
+  if (row.test_pass_count !== null && row.test_pass_count !== undefined && row.test_total_count !== null && row.test_total_count !== undefined) {
+    agg.testPass += row.test_pass_count;
+    agg.testTotal += row.test_total_count;
+  } else if (row.test_pass !== null && row.test_pass !== undefined) {
+    agg.testTotal += 1;
+    if (row.test_pass) agg.testPass += 1;
+  }
+  if (row.line_coverage !== null && row.line_coverage !== undefined) { agg.lineSum += row.line_coverage; agg.lineCnt += 1; }
+  if (row.branch_coverage !== null && row.branch_coverage !== undefined) { agg.branchSum += row.branch_coverage; agg.branchCnt += 1; }
+  if (row.mutation_score !== null && row.mutation_score !== undefined) { agg.mutationSum += row.mutation_score; agg.mutationCnt += 1; }
+}
+
+function aggToMetrics(item) {
+  return {
+    total: item.total,
+    compilePassRate: item.total ? item.compilePass / item.total : 0,
+    testPassRate: item.testTotal ? item.testPass / item.testTotal : 0,
+    lineCoverage: item.lineCnt ? normalizeRateValue(item.lineSum / item.lineCnt) : 0,
+    branchCoverage: item.branchCnt ? normalizeRateValue(item.branchSum / item.branchCnt) : 0,
+    mutationScore: item.mutationCnt ? normalizeRateValue(item.mutationSum / item.mutationCnt) : 0
+  };
+}
+
+function aggregateRows(selectedModels, selectedLanguages, selectedScenarios) {
+  const filtered = evaluationRows.filter(row => {
+    const scenario = getScenarioFromSample(row.sample_id);
+    return isScoreEligibleRow(row) &&
+      filterMatch(row.model || '', selectedModels) &&
+      filterMatch(row.language || 'unknown', selectedLanguages) &&
+      filterMatch(scenario, selectedScenarios);
+  });
+  const byModel = new Map();
+  const byLanguage = new Map();
+  const byScenario = new Map();
+  const failures = new Map();
+
+  for (const row of filtered) {
+    const modelKey = row.model || 'unknown';
+    if (!byModel.has(modelKey)) byModel.set(modelKey, createAgg(modelKey, { model: modelKey }));
+    aggRow(byModel.get(modelKey), row);
+
+    const langKey = row.language || 'unknown';
+    if (!byLanguage.has(langKey)) byLanguage.set(langKey, createAgg(langKey, { language: langKey }));
+    aggRow(byLanguage.get(langKey), row);
+
+    const scenario = getScenarioFromSample(row.sample_id);
+    const scenKey = langKey + '|' + scenario;
+    if (!byScenario.has(scenKey)) byScenario.set(scenKey, createAgg(scenKey, { scenario, language: langKey }));
+    aggRow(byScenario.get(scenKey), row);
+
+    const stage = getStageFromRow(row);
+    const errorType = getErrorTypeFromRow(row);
+    if (stage && errorType) {
+      const key = stage + '|' + errorType;
+      if (!failures.has(key)) failures.set(key, { stage, errorType, count: 0, exampleModel: row.model || '', exampleSample: row.sample_id || '' });
+      failures.get(key).count += 1;
+    }
+  }
+
+  const models = Array.from(byModel.values()).map(item => Object.assign({ model: item.model }, aggToMetrics(item))).sort((a, b) => b.mutationScore - a.mutationScore || b.testPassRate - a.testPassRate);
+  const languages = Array.from(byLanguage.values()).map(item => Object.assign({ language: item.language }, aggToMetrics(item))).sort((a, b) => a.language.localeCompare(b.language));
+  const scenarios = Array.from(byScenario.values()).map(item => Object.assign({ scenario: item.scenario, language: item.language }, aggToMetrics(item))).sort((a, b) => (a.language + a.scenario).localeCompare(b.language + b.scenario));
+
+  const failureRows = Array.from(failures.values()).sort((a, b) => b.count - a.count);
+  return { models, languages, scenarios, failureRows, filtered };
+}
+
+function renderModelTable(items) {
+  const body = document.getElementById('by-model-body');
+  const empty = document.getElementById('by-model-empty');
+  if (!body || !empty) return;
+  body.innerHTML = items.map(item => '<tr><td><strong>' + safeText(item.model) + '</strong></td><td>' + item.total + '</td><td>' + metricCell(item.compilePassRate) + '</td><td>' + metricCell(item.testPassRate) + '</td><td>' + metricCell(item.lineCoverage) + '</td><td>' + metricCell(item.branchCoverage) + '</td><td>' + metricCell(item.mutationScore) + '</td></tr>').join('');
+  empty.style.display = items.length ? 'none' : 'block';
+}
+
+function renderLanguageTable(items) {
+  const body = document.getElementById('by-language-body');
+  const empty = document.getElementById('by-language-empty');
+  if (!body || !empty) return;
+  body.innerHTML = items.map(item => '<tr><td><strong>' + safeText(String(item.language).toUpperCase()) + '</strong></td><td>' + item.total + '</td><td>' + metricCell(item.compilePassRate) + '</td><td>' + metricCell(item.testPassRate) + '</td><td>' + metricCell(item.lineCoverage) + '</td><td>' + metricCell(item.branchCoverage) + '</td><td>' + metricCell(item.mutationScore) + '</td></tr>').join('');
+  empty.style.display = items.length ? 'none' : 'block';
+}
+
+function renderScenarioTable(items) {
+  const body = document.getElementById('by-scenario-body');
+  const empty = document.getElementById('by-scenario-empty');
+  if (!body || !empty) return;
+  body.innerHTML = items.map(item => '<tr><td><strong>' + safeText(scenarioLabel(item.scenario)) + '</strong></td><td>' + safeText(String(item.language).toUpperCase()) + '</td><td>' + item.total + '</td><td>' + metricCell(item.compilePassRate) + '</td><td>' + metricCell(item.testPassRate) + '</td><td>' + metricCell(item.lineCoverage) + '</td><td>' + metricCell(item.branchCoverage) + '</td><td>' + metricCell(item.mutationScore) + '</td></tr>').join('');
+  empty.style.display = items.length ? 'none' : 'block';
+}
+
+function renderErrorTable(items) {
+  const body = document.getElementById('error-analysis-body');
+  const empty = document.getElementById('error-analysis-empty');
+  body.innerHTML = items.map(item => '<tr><td>' + safeText(stageLabel(item.stage)) + '</td><td>' + safeText(errorTypeLabel(item.errorType)) + '</td><td>' + item.count + '</td><td>' + safeText(item.exampleModel) + '</td><td>' + safeText(item.exampleSample) + '</td></tr>').join('');
+  empty.style.display = items.length ? 'none' : 'block';
+}
+
+function buildPieData(items, field) {
+  const counter = new Map();
+  for (const item of items) counter.set(item[field], (counter.get(item[field]) || 0) + item.count);
+  return { labels: Array.from(counter.keys()), values: Array.from(counter.values()) };
+}
+
+function upsertChart(instance, canvasId, type, labels, values, colors) {
+  if (instance) instance.destroy();
+  return new Chart(document.getElementById(canvasId), {
+    type,
+    data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: chartLegendBottomOptions() } }
+  });
+}
+
+function chartAxisFont() {
+  return { size: 11, weight: '600' };
+}
+
+function chartLegendBottomOptions(overrides) {
+  const baseLabels = { boxWidth: 10, boxHeight: 10, padding: 10, font: { size: 11, weight: '700' } };
+  const extra = overrides || {};
+  return {
+    position: 'bottom',
+    align: 'center',
+    labels: Object.assign({}, baseLabels, extra.labels || {})
+  };
+}
+
+function normalizeRateValue(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return 0;
+  const normalized = num > 1 ? num / 100 : num;
+  return Math.max(0, Math.min(1, normalized));
+}
+
+function scenarioAxisLabel(item) {
+  return scenarioLabel(item.scenario) + ' / ' + String(item.language || '').toUpperCase();
+}
+
+function compactChartLabel(value) {
+  if (Array.isArray(value)) return value.join(' / ');
+  return String(value || '');
+}
+
+function percentTick(value) {
+  return Math.round(value * 100) + '%';
+}
+
+function resizeScenarioChart(canvasId, count) {
+  const canvas = document.getElementById(canvasId);
+  const box = canvas ? canvas.closest('.chart-box') : null;
+  if (!box) return;
+  box.style.height = Math.max(340, Math.min(680, 128 + count * 28)) + 'px';
+}
+
+function scenarioChartOptions() {
+  return {
+    indexAxis: 'y',
+    responsive: true,
+    maintainAspectRatio: false,
+    layout: { padding: { top: 8, right: 16, bottom: 8, left: 0 } },
+    plugins: {
+      legend: chartLegendBottomOptions(),
+      tooltip: { callbacks: { title: items => items.map(item => compactChartLabel(item.label)).join(', ') } }
+    },
+    datasets: { bar: { categoryPercentage: 0.72, barPercentage: 0.82, maxBarThickness: 18 } },
+    scales: {
+      x: {
+        beginAtZero: true,
+        max: 1,
+        ticks: { callback: percentTick, font: chartAxisFont() },
+        grid: { color: '#d8e0e7' }
+      },
+      y: {
+        ticks: { autoSkip: false, font: chartAxisFont(), padding: 6 },
+        grid: { display: false }
+      }
+    }
+  };
+}
+
+function renderErrorCharts(items) {
+  const typeData = buildPieData(items, 'errorType');
+  const stageData = buildPieData(items, 'stage');
+  const typeLabels = typeData.labels.length ? typeData.labels.map(errorTypeLabel) : ['无错误 / No Errors'];
+  const stageLabels = stageData.labels.length ? stageData.labels.map(stageLabel) : ['无错误 / No Errors'];
+  errorTypeChart = upsertChart(errorTypeChart, 'errorTypeChart', 'doughnut', typeLabels, typeData.values.length ? typeData.values : [1], ['#c43d2f', '#d5902f', '#2f7d72', '#315f9c', '#6b7280', '#111827']);
+  stageChart = upsertChart(stageChart, 'stageChart', 'pie', stageLabels, stageData.values.length ? stageData.values : [1], ['#c43d2f', '#d5902f', '#2f7d72', '#315f9c', '#6b7280']);
+}
+
+function renderScenarioCharts(items) {
+  const labels = items.map(scenarioAxisLabel);
+  const compileRates = items.map(item => item.compilePassRate);
+  const testRates = items.map(item => item.testPassRate);
+  const mutationRates = items.map(item => item.mutationScore);
+
+  resizeScenarioChart('scenarioBarChart', labels.length);
+  if (scenarioBarChart) scenarioBarChart.destroy();
+  scenarioBarChart = new Chart(document.getElementById('scenarioBarChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: '编译通过率', data: compileRates, backgroundColor: '#315f9c' },
+        { label: '测试通过率', data: testRates, backgroundColor: '#2f7d72' }
+      ]
+    },
+    options: scenarioChartOptions()
+  });
+
+  const lineRates = items.map(item => item.lineCoverage);
+
+  resizeScenarioChart('scenarioTrendChart', labels.length);
+  if (scenarioTrendChart) scenarioTrendChart.destroy();
+  scenarioTrendChart = new Chart(document.getElementById('scenarioTrendChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: '行覆盖率', data: lineRates, borderColor: '#315f9c', backgroundColor: 'rgba(49,95,156,.28)' },
+        { label: '变异分数', data: mutationRates, borderColor: '#d5902f', backgroundColor: 'rgba(213,144,47,.32)' }
+      ]
+    },
+    options: scenarioChartOptions()
+  });
+}
+
+function exportScenarioCSV(items) {
+  const header = ['scenario','language','total_samples','compile_pass_rate','test_pass_rate','line_coverage','branch_coverage','mutation_score'];
+  const lines = [header.join(',')];
+  items.forEach(item => {
+    lines.push([item.scenario, item.language, item.total, item.compilePassRate, item.testPassRate, item.lineCoverage, item.branchCoverage, item.mutationScore].join(','));
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'scenario-analysis.csv';
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function initRawColumnToggles() {
+  document.querySelectorAll('[data-raw-column]').forEach(input => {
+    const apply = () => {
+      const name = input.getAttribute('data-raw-column');
+      document.querySelectorAll('.raw-col-' + name).forEach(cell => {
+        cell.style.display = input.checked ? 'table-cell' : 'none';
+      });
+    };
+    input.addEventListener('change', apply);
+    apply();
+  });
+}
+
+function normalizedAssertionDensity(value) {
+  const raw = Number(value || 0);
+  return Math.max(0, Math.min(1, raw / 5));
+}
+
+function qualityScore(item) {
+  return (
+    Number(item.compile_pass_rate || 0) * 0.25 +
+    Number(item.avg_test_pass_rate || 0) * 0.30 +
+    Number(item.avg_line_coverage || 0) * 0.15 +
+    Number(item.avg_mutation_score || 0) * 0.25 +
+    normalizedAssertionDensity(item.avg_assertion_density) * 0.05
+  ) * 100;
+}
+
+function modelColor(index) {
+  return ['#315f9c', '#2f7d72', '#c43d2f', '#d5902f', '#5b6472', '#0f766e', '#7c5f35', '#475569', '#4d7c0f', '#9f4f3b', '#111827', '#287f9c'][index % 12];
+}
+
+function shortModelName(value) {
+  return String(value || '');
+}
+
+function renderEfficiencyLegend(datasets) {
+  const box = document.getElementById('efficiencyQualityLegend');
+  if (!box) return;
+  box.innerHTML = datasets.map(dataset =>
+    '<span class="chart-legend-item" title="' + safeText(dataset.label) + '">' +
+      '<i style="background:' + safeText(dataset.borderColor) + '"></i>' +
+      '<span>' + safeText(dataset.label) + '</span>' +
+    '</span>'
+  ).join('');
+}
+
+function renderEfficiencyQualityChart(axis = 'latency') {
+  const canvas = document.getElementById('efficiencyQualityChart');
+  if (!canvas) return;
+
+  const axisIsTokens = axis === 'tokens';
+  const denseMode = reportTopModels.length > 8;
+  const points = reportTopModels.map((item, index) => {
+    const xRaw = axisIsTokens ? Number(item.avg_total_tokens || 0) : Number(item.avg_latency_ms || 0) / 1000;
+    const yRaw = qualityScore(item);
+    const sampleSize = denseMode
+      ? Math.max(4, Math.min(8, 4 + Math.log2(Number(item.total_samples || 1) + 1) * 0.6))
+      : Math.max(5, Math.min(10, 5 + Math.log2(Number(item.total_samples || 1) + 1) * 0.8));
+    return {
+      label: item.model,
+      data: [{ x: xRaw, y: yRaw }],
+      pointRadius: sampleSize,
+      pointHoverRadius: sampleSize + 2,
+      pointHitRadius: 10,
+      backgroundColor: modelColor(index) + (denseMode ? '99' : 'bb'),
+      borderColor: modelColor(index),
+      borderWidth: 1.5
+    };
+  });
+
+  if (efficiencyQualityChart) efficiencyQualityChart.destroy();
+  efficiencyQualityChart = new Chart(canvas, {
+    type: 'scatter',
+    data: { datasets: points },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { top: 18, right: 28, bottom: 10, left: 8 } },
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: {
+          display: false
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const item = reportTopModels[ctx.datasetIndex] || {};
+              const x = ctx.parsed.x;
+              const unit = axisIsTokens ? ' tokens' : 's';
+              return [
+                item.model,
+                '质量分: ' + ctx.parsed.y.toFixed(1),
+                (axisIsTokens ? '平均 Token: ' : '平均耗时: ') + x.toFixed(axisIsTokens ? 0 : 1) + unit,
+                '样本数: ' + safeText(item.total_samples)
+              ];
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          title: { display: true, text: axisIsTokens ? '平均 Token Avg Total Tokens（越低越省）' : '平均耗时 Avg Latency（秒，越低越快）' },
+          ticks: { callback: value => axisIsTokens ? Math.round(value) : Number(value).toFixed(0) + 's' },
+          grid: { color: '#d8e0e7', tickLength: 0 },
+          border: { color: '#7d8793', width: 2 }
+        },
+        y: {
+          beginAtZero: true,
+          suggestedMax: 100,
+          title: { display: true, text: '质量分 Quality Score（越高越好）' },
+          ticks: { callback: value => value + '' },
+          grid: { color: '#d8e0e7', tickLength: 0 },
+          border: { color: '#7d8793', width: 2 }
+        }
+      }
+    }
+  });
+
+  renderEfficiencyLegend(points);
+  renderEfficiencyNotes(axis);
+}
+
+function renderEfficiencyNotes(axis) {
+  const box = document.getElementById('efficiencyQualityNotes');
+  if (!box) return;
+  const axisIsTokens = axis === 'tokens';
+  const ranked = reportTopModels
+    .map(item => ({ item, score: qualityScore(item) }))
+    .sort((a, b) => b.score - a.score);
+  const visible = ranked.slice(0, 6);
+  const extra = ranked.length > visible.length ? '<div class="muted">其余 ' + (ranked.length - visible.length) + ' 个模型请悬停图中点查看。</div>' : '';
+  box.innerHTML = visible.map(({ item, score }) => {
+    const x = axisIsTokens ? Number(item.avg_total_tokens || 0).toFixed(0) + ' tokens' : (Number(item.avg_latency_ms || 0) / 1000).toFixed(1) + 's';
+    return '<div><strong>' + safeText(item.model) + '</strong>：质量分 ' + score.toFixed(1) + '，' + (axisIsTokens ? '平均 Token ' : '平均耗时 ') + x + '。</div>';
+  }).join('') + extra;
+}
+
+function initEfficiencyAxisToggle() {
+  const buttons = document.querySelectorAll('[data-efficiency-axis]');
+  if (!buttons.length) return;
+  buttons.forEach(button => {
+    button.addEventListener('click', () => {
+      buttons.forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+      renderEfficiencyQualityChart(button.getAttribute('data-efficiency-axis') || 'latency');
+    });
+  });
+}
+
+function renderModelCharts() {
+  const modelNames = reportTopModels.map(item => item.model);
+  const compileRates = reportTopModels.map(item => item.compile_pass_rate);
+  const testRates = reportTopModels.map(item => item.avg_test_pass_rate);
+  const lineRates = reportTopModels.map(item => item.avg_line_coverage);
+  const mutationRates = reportTopModels.map(item => item.avg_mutation_score);
+
+  modelBarChart = new Chart(document.getElementById('modelBarChart'), {
+    type: 'bar',
+    data: { labels: modelNames, datasets: [
+      { label: '编译', data: compileRates, backgroundColor: '#315f9c' },
+      { label: '测试', data: testRates, backgroundColor: '#2f7d72' },
+      { label: '覆盖', data: lineRates, backgroundColor: '#d5902f' },
+      { label: '变异', data: mutationRates, backgroundColor: '#c43d2f' }
+    ]},
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { bottom: 18 } },
+      plugins: { legend: chartLegendBottomOptions() },
+      scales: {
+        x: { ticks: { autoSkip: false, maxRotation: 0, minRotation: 0, font: chartAxisFont(), padding: 8 } },
+        y: { beginAtZero: true, max: 1, ticks: { callback: percentTick } }
+      }
+    }
+  });
+
+  radarChart = new Chart(document.getElementById('radarChart'), {
+    type: 'radar',
+    data: {
+      labels: ['编译', '测试', '覆盖', '变异'],
+      datasets: reportTopModels.map((item, index) => ({
+        label: item.model,
+        data: [item.compile_pass_rate, item.avg_test_pass_rate, item.avg_line_coverage, item.avg_mutation_score],
+        fill: true,
+        backgroundColor: ['rgba(49,95,156,0.16)', 'rgba(47,125,114,0.16)', 'rgba(213,144,47,0.18)', 'rgba(196,61,47,0.16)'][index % 4],
+        borderColor: ['#315f9c', '#2f7d72', '#d5902f', '#c43d2f'][index % 4],
+        pointBackgroundColor: ['#315f9c', '#2f7d72', '#d5902f', '#c43d2f'][index % 4]
+      }))
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: chartLegendBottomOptions({ labels: { padding: 8 } }) },
+      scales: { r: { beginAtZero: true, max: 1, ticks: { callback: value => Math.round(value * 100) + '%' } } }
+    }
+  });
+
+  renderEfficiencyQualityChart('latency');
+  initEfficiencyAxisToggle();
+}
+
+function selectedFilterValues(kind) {
+  const all = document.querySelector('[data-filter-all="' + kind + '"]');
+  if (all && all.checked) return [];
+  return Array.from(document.querySelectorAll('[data-filter-' + kind + ']:checked')).map(item => item.value);
+}
+
+function formatFilterSummary(kind, values, allText) {
+  if (!values.length) return allText;
+  if (values.length <= 3) return values.map(value => kind === 'scenario' ? scenarioLabel(value) : value).join(', ');
+  return values.slice(0, 3).map(value => kind === 'scenario' ? scenarioLabel(value) : value).join(', ') + ' 等' + values.length + '项';
+}
+
+function updateFilterSummary(models, languages, scenarios) {
+  const box = document.getElementById('filter-summary');
+  if (!box) return;
+  box.textContent = '当前筛选：' +
+    formatFilterSummary('model', models, '全部模型') + ' · ' +
+    formatFilterSummary('language', languages.map(item => item.toUpperCase()), '全部语言') + ' · ' +
+    formatFilterSummary('scenario', scenarios, '全部场景');
+}
+
+function initAnalysisFilters() {
+  document.querySelectorAll('[data-filter-all]').forEach(all => {
+    const kind = all.getAttribute('data-filter-all');
+    all.addEventListener('change', () => {
+      if (all.checked) {
+        document.querySelectorAll('[data-filter-' + kind + ']').forEach(item => { item.checked = false; });
+      }
+      renderFilteredSections();
+    });
+  });
+  ['model', 'language', 'scenario'].forEach(kind => {
+    document.querySelectorAll('[data-filter-' + kind + ']').forEach(item => {
+      item.addEventListener('change', () => {
+        const all = document.querySelector('[data-filter-all="' + kind + '"]');
+        if (all) all.checked = document.querySelectorAll('[data-filter-' + kind + ']:checked').length === 0;
+        renderFilteredSections();
+      });
+    });
+  });
+  const reset = document.getElementById('reset-analysis-filters');
+  if (reset) {
+    reset.addEventListener('click', () => {
+      document.querySelectorAll('[data-filter-model], [data-filter-language], [data-filter-scenario]').forEach(item => { item.checked = false; });
+      document.querySelectorAll('[data-filter-all]').forEach(item => { item.checked = true; });
+      renderFilteredSections();
+    });
+  }
+}
+
+function renderFilteredSections() {
+  const selectedModels = selectedFilterValues('model');
+  const selectedLanguages = selectedFilterValues('language');
+  const selectedScenarios = selectedFilterValues('scenario');
+  updateFilterSummary(selectedModels, selectedLanguages, selectedScenarios);
+  const aggregated = aggregateRows(selectedModels, selectedLanguages, selectedScenarios);
+  renderModelTable(aggregated.models);
+  renderLanguageTable(aggregated.languages);
+  renderScenarioTable(aggregated.scenarios);
+  renderErrorTable(aggregated.failureRows);
+  renderErrorCharts(aggregated.failureRows);
+  renderScenarioCharts(aggregated.scenarios);
+  const exportBtn = document.getElementById('export-scenario-csv');
+  if (exportBtn) exportBtn.onclick = () => exportScenarioCSV(aggregated.scenarios);
+}
+
+function initReportSidebar() {
+  const links = Array.from(document.querySelectorAll('.report-sidebar a[href^="#"]'));
+  if (!links.length) return;
+  const sections = links
+    .map(link => ({ link, section: document.querySelector(link.getAttribute('href')) }))
+    .filter(item => item.section);
+  if (!sections.length) return;
+
+  function setActive() {
+    const currentY = window.scrollY + 120;
+    let active = sections[0];
+    sections.forEach(item => {
+      if (item.section.offsetTop <= currentY) active = item;
+    });
+    links.forEach(link => link.classList.toggle('active', link === active.link));
+  }
+
+  links.forEach(link => {
+    link.addEventListener('click', () => {
+      links.forEach(item => item.classList.remove('active'));
+      link.classList.add('active');
+    });
+  });
+  setActive();
+  window.addEventListener('scroll', setActive, { passive: true });
+}
+
+(async function init() {
+  try {
+    if (window.__utBenchEnsureChartJS) {
+      await window.__utBenchEnsureChartJS();
+    }
+    renderModelCharts();
+    renderFilteredSections();
+    initAnalysisFilters();
+  } catch (e) {
+    if (window.__utBenchShowBanner) {
+      window.__utBenchShowBanner('图表渲染失败，请查看浏览器控制台错误。');
+    }
+    if (window.console && console.error) console.error(e);
+  }
+
+  initRawColumnToggles();
+  initReportSidebar();
+
+  const backToTop = document.getElementById('back-to-top');
+  window.addEventListener('scroll', () => {
+    if (!backToTop) return;
+    if (window.scrollY > 400) backToTop.classList.add('visible'); else backToTop.classList.remove('visible');
+  });
+  if (backToTop) backToTop.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+})();

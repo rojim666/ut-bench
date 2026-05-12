@@ -119,10 +119,10 @@ func (s *Service) ValidateSpec(spec contracts.RunSpec) error {
 //  5. 如果指定了 MaxSamples，按语言+场景分组后限制样本数
 //
 // 目录结构推断规则:
-//  - Language: 第一级目录名（python/go/java/cpp）
-//  - Category: 第二级目录名（self_contained/repo_level）
-//  - Scenario: 第三级目录名（boundary/simple_function等）
-//  - SampleID: 文件名（去掉扩展名）
+//   - Language: 第一级目录名（python/go/java/cpp）
+//   - Category: 第二级目录名（self_contained/repo_level）
+//   - Scenario: 第三级目录名（boundary/simple_function等）
+//   - SampleID: 文件名（去掉扩展名）
 func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef, error) {
 	if err := s.ValidateSpec(spec); err != nil {
 		return nil, err
@@ -164,11 +164,26 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 					return nil
 				}
 
+				if strings.HasSuffix(strings.ToLower(d.Name()), "_test"+filepath.Ext(d.Name())) {
+					return nil
+				}
 				id := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
 				cat := classifySampleClass(id, rel)
 				scenario := classifySampleScenario(id, rel)
 				if !matchDatasetClassFilter(spec.DatasetClasses, cat) {
 					return nil
+				}
+				if cat == contracts.DatasetClassRepoLevel {
+					meta, ok := loadRepoLevelMeta(path)
+					if !ok {
+						meta, ok = SynthesizeRepoLevelMeta(path)
+					}
+					if !ok {
+						return nil
+					}
+					if strings.TrimSpace(meta.SampleID) != "" {
+						id = meta.SampleID
+					}
 				}
 				if spec.DatasetScenario != "" {
 					allowedScenarios := make(map[string]struct{})
@@ -202,7 +217,7 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 				return filepath.SkipDir
 			}
 
-			if d.Name() == "workspace" {
+			if shouldSkipRepoLevelDir(d.Name()) {
 				return filepath.SkipDir
 			}
 
@@ -554,7 +569,10 @@ func classifySampleClass(sampleID string, relPath string) contracts.DatasetClass
 }
 
 // classifySampleScenario 从样本ID和相对路径推断场景类型
-// 根据路径中的 boundary/simple_function/complex_dependency/interface_mock 关键字判断
+// 优先匹配内置 SupportedScenarios（boundary/simple_function/...）。
+// 未命中时，从相对路径形如 "<lang>_code_files_<class>/<scenario>/..." 中提取
+// 第二级目录名作为自定义 scenario（例如 dogfood），通过 normalizeScenario 校验。
+// 仍无法识别时返回 "unknown"。
 func classifySampleScenario(sampleID string, relPath string) string {
 	lower := strings.ToLower(sampleID + "|" + relPath)
 	lower = strings.ReplaceAll(lower, "\\", "/")
@@ -563,21 +581,40 @@ func classifySampleScenario(sampleID string, relPath string) string {
 			return scenario
 		}
 	}
+	// 自定义 scenario 提取：路径第二段（class 目录之后）
+	parts := strings.Split(strings.ReplaceAll(relPath, "\\", "/"), "/")
+	if len(parts) >= 2 && strings.Contains(parts[0], "_code_files_") {
+		if n := normalizeScenario(parts[1]); n != "" && n != "unknown" {
+			return n
+		}
+	}
 	return "unknown"
 }
 
 // normalizeScenario 规范化场景名称
-// 返回有效的场景名称，无效输入返回空字符串
+// 内置场景（contracts.SupportedScenarios + "unknown"）原样返回。
+// 其它场景名只要是合法标识符（小写字母/数字/下划线/连字符），即视为自定义 scenario
+// 并按原值返回，以支持动态新增数据集（例如 dogfood）。
+// 完全不合法的输入返回空字符串。
 func normalizeScenario(raw string) string {
 	val := strings.ToLower(strings.TrimSpace(raw))
-	valid := map[string]bool{"unknown": true}
-	for _, s := range contracts.SupportedScenarios {
-		valid[s] = true
+	if val == "" {
+		return ""
 	}
-	if valid[val] {
+	if val == "unknown" {
 		return val
 	}
-	return ""
+	for _, s := range contracts.SupportedScenarios {
+		if val == s {
+			return val
+		}
+	}
+	for _, r := range val {
+		if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+			return ""
+		}
+	}
+	return val
 }
 
 // matchDatasetClassFilter 检查样本类别是否匹配过滤条件
@@ -713,4 +750,138 @@ func loadRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {
 		return nil, false
 	}
 	return &meta, true
+}
+
+// SynthesizeRepoLevelMeta builds repo-level metadata directly from a source file.
+// It lets a repo_level scenario behave like one shared workspace containing many
+// target files, without requiring a hand-written <file>.meta.json for each one.
+func SynthesizeRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {
+	samplePath = filepath.Clean(samplePath)
+	ext := strings.ToLower(filepath.Ext(samplePath))
+	if ext != ".go" || strings.HasSuffix(strings.ToLower(filepath.Base(samplePath)), "_test.go") {
+		return nil, false
+	}
+	workspaceRoot, modulePath, ok := findGoWorkspaceRoot(samplePath)
+	if !ok {
+		return nil, false
+	}
+	targetRel, err := filepath.Rel(workspaceRoot, samplePath)
+	if err != nil || strings.HasPrefix(targetRel, "..") {
+		return nil, false
+	}
+	targetRel = filepath.ToSlash(targetRel)
+	if shouldSkipSyntheticRepoTarget(targetRel) {
+		return nil, false
+	}
+	packageName, ok := parseGoPackageName(samplePath)
+	if !ok {
+		return nil, false
+	}
+	packageDir := filepath.ToSlash(filepath.Dir(targetRel))
+	moduleImport := modulePath
+	if packageDir != "." && packageDir != "" {
+		moduleImport = strings.TrimRight(modulePath, "/") + "/" + packageDir
+	}
+	workspaceRef, err := filepath.Rel(filepath.Dir(samplePath), workspaceRoot)
+	if err != nil {
+		workspaceRef = workspaceRoot
+	}
+	if workspaceRef == "" {
+		workspaceRef = "."
+	}
+	return &contracts.RepoLevelMeta{
+		SampleID:      sanitizeSyntheticSampleID(strings.TrimSuffix(targetRel, ext)),
+		ModuleImport:  moduleImport,
+		PackageName:   packageName,
+		TargetFile:    targetRel,
+		WorkspaceRoot: filepath.ToSlash(workspaceRef),
+	}, true
+}
+
+func findGoWorkspaceRoot(samplePath string) (string, string, bool) {
+	dir := filepath.Dir(samplePath)
+	for {
+		modPath := filepath.Join(dir, "go.mod")
+		raw, err := os.ReadFile(modPath)
+		if err == nil {
+			for _, line := range strings.Split(string(raw), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "module ") {
+					modulePath := strings.TrimSpace(strings.TrimPrefix(line, "module "))
+					if modulePath != "" {
+						return dir, modulePath, true
+					}
+				}
+			}
+			return "", "", false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", "", false
+		}
+		dir = parent
+	}
+}
+
+func parseGoPackageName(path string) (string, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "package ") {
+			name := strings.Fields(line)
+			if len(name) >= 2 && name[1] != "main" {
+				return name[1], true
+			}
+			if len(name) >= 2 {
+				return name[1], true
+			}
+		}
+	}
+	return "", false
+}
+
+func shouldSkipRepoLevelDir(name string) bool {
+	switch strings.ToLower(name) {
+	case ".git", ".cache", "artifacts", "build", "dist", "generated", "node_modules", "storage", "vendor", "workspace":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldSkipSyntheticRepoTarget(rel string) bool {
+	rel = strings.ToLower(filepath.ToSlash(rel))
+	parts := strings.Split(rel, "/")
+	for _, part := range parts {
+		if shouldSkipRepoLevelDir(part) {
+			return true
+		}
+	}
+	return strings.HasPrefix(rel, "datasets/") || strings.HasPrefix(rel, "docs/")
+}
+
+func sanitizeSyntheticSampleID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(filepath.ToSlash(value)))
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "repo_sample"
+	}
+	return out
 }

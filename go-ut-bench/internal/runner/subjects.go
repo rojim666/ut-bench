@@ -124,6 +124,21 @@ func (s *Service) generateWithSubject(
 	metaRoot string,
 ) (string, map[string]any, subjectTrace, int, *int, *int, *int, bool, *contracts.ErrorInfo, agentTraceSummary) {
 	prompt = appendSkillInstruction(prompt, target.subject.Skill)
+	if meta := loadRepoLevelMetaForRunner(sample.Path); meta != nil {
+		workspaceRoot := meta.WorkspaceRoot
+		if !filepath.IsAbs(workspaceRoot) {
+			workspaceRoot = filepath.Join(filepath.Dir(sample.Path), workspaceRoot)
+		}
+		s.logger.Info("repo_level generation context",
+			"subject", target.subject.Spec.ID,
+			"language", sample.Language,
+			"sample_id", sample.ID,
+			"workspace_root", filepath.Clean(workspaceRoot),
+			"target_file", meta.TargetFile,
+			"module_import", meta.ModuleImport,
+			"package_name", meta.PackageName,
+		)
+	}
 
 	// 选择 adapter
 	var adapter AgentAdapter
@@ -196,6 +211,19 @@ func (s *Service) generateWithSubject(
 		FilesWritten:     len(result.Trace.FilesWritten),
 		CommandsExecuted: len(result.Trace.CommandsExecuted),
 	}
+	if target.subject.Spec.Kind == agentconfig.KindCLIAgent && result.Trace.TracePath != "" {
+		s.logger.Info("agent trace captured",
+			"subject", target.subject.Spec.ID,
+			"language", sample.Language,
+			"sample_id", sample.ID,
+			"trace_path", result.Trace.TracePath,
+			"tool_calls", len(result.Trace.ToolCalls),
+			"files_read", len(result.Trace.FilesRead),
+			"files_written", len(result.Trace.FilesWritten),
+			"commands", len(result.Trace.CommandsExecuted),
+			"session_id", result.Trace.SessionID,
+		)
+	}
 
 	return result.Code, result.RawResponse, trace, result.LatencyMS,
 		result.PromptTokens, result.CompletionTokens, result.TotalTokens,
@@ -248,7 +276,7 @@ func buildSampleEnvironmentSetupCommands(sample contracts.SampleRef, workRoot st
 		}
 	case "go":
 		if fileExists(filepath.Join(workRoot, "go.mod")) {
-			commands = append(commands, "go mod download")
+			commands = append(commands, "if command -v go >/dev/null 2>&1; then go mod download || echo 'go mod download failed; continuing without module cache'; else echo 'go not found; skipping go mod download'; fi")
 		}
 	case "java":
 		if fileExists(filepath.Join(workRoot, "pom.xml")) {

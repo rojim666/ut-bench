@@ -33,6 +33,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 所有子命令共享：尝试加载 .env 到进程环境变量
+	_ = web.LoadEnvFile("./.env")
+
 	cmd := os.Args[1]
 	var args []string
 	if len(os.Args) > 2 {

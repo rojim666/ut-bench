@@ -185,9 +185,28 @@ func (s *Service) evalWithLanguageEvaluator(
 	if ws.ShouldCleanup {
 		defer cleanupWorkspaceAsync(ws.Workdir, item.Model, item.Language, item.SampleID, s.logger)
 	}
+	if ws.Extra["isRepoLevel"] == "true" {
+		s.logger.Info("repo_level evaluation workspace",
+			"model", item.Model,
+			"language", item.Language,
+			"sample_id", item.SampleID,
+			"workdir", ws.Workdir,
+			"package_dir", ws.Extra["packageDir"],
+			"target_file", ws.Extra["targetFile"],
+			"generated_test", ws.TestPath,
+		)
+	}
 
 	// 2. CompileCheck
 	setPhase(lang + ".compile")
+	if ws.Extra["isRepoLevel"] == "true" {
+		s.logger.Info("repo_level compile command",
+			"model", item.Model,
+			"language", item.Language,
+			"sample_id", item.SampleID,
+			"command", repoLevelCommandPreview(lang, "compile", ws),
+		)
+	}
 	compilePass, compileErr := langEval.CompileCheck(ws)
 	row.CompilePass = compilePass
 	if !compilePass {
@@ -201,6 +220,14 @@ func (s *Service) evalWithLanguageEvaluator(
 		testTimeout = defaultTestTimeoutSeconds
 	}
 	setPhase(lang + ".test")
+	if ws.Extra["isRepoLevel"] == "true" {
+		s.logger.Info("repo_level test command",
+			"model", item.Model,
+			"language", item.Language,
+			"sample_id", item.SampleID,
+			"command", repoLevelCommandPreview(lang, "test", ws),
+		)
+	}
 	pass, testOutput, runtimeMs := langEval.ExecuteTests(ws, testTimeout)
 	row.TestPass = &pass
 	if !pass && testOutput != "" {
@@ -253,4 +280,25 @@ func (s *Service) evalWithLanguageEvaluator(
 			row.MutationTool = langEval.MutationTool()
 		}
 	}
+}
+
+func repoLevelCommandPreview(lang, phase string, ws *WorkspaceContext) string {
+	switch lang {
+	case "go":
+		pkg := ws.Extra["packageDir"]
+		if pkg == "" || pkg == "." {
+			pkg = "."
+		} else if !strings.HasPrefix(pkg, "./") && !strings.HasPrefix(pkg, "../") {
+			pkg = "./" + pkg
+		}
+		if phase == "compile" {
+			return "go test -c -o compile_check_output.test " + pkg
+		}
+		return "go test -v " + pkg
+	case "python":
+		if ws.TestPath != "" {
+			return "python -m pytest " + ws.TestPath
+		}
+	}
+	return lang + "." + phase
 }

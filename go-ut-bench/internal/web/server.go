@@ -688,17 +688,18 @@ type subjectInfo struct {
 }
 
 type configResponse struct {
-	Models            []modelInfo     `json:"models"`
-	Frameworks        []frameworkInfo `json:"frameworks,omitempty"`
-	Skills            []skillInfo     `json:"skills,omitempty"`
-	Subjects          []subjectInfo   `json:"subjects,omitempty"`
-	Languages         []string        `json:"languages"`
-	Scenarios         []string        `json:"scenarios"`
-	Classes           []string        `json:"classes"`
-	DatasetRoot       string          `json:"dataset_root"`
-	ConfigPath        string          `json:"config_path"`
-	AgentsConfigPath  string          `json:"agents_config_path,omitempty"`
-	AgentsConfigError string          `json:"agents_config_error,omitempty"`
+	Models            []modelInfo         `json:"models"`
+	Frameworks        []frameworkInfo     `json:"frameworks,omitempty"`
+	Skills            []skillInfo         `json:"skills,omitempty"`
+	Subjects          []subjectInfo       `json:"subjects,omitempty"`
+	Languages         []string            `json:"languages"`
+	Scenarios         []string            `json:"scenarios"`
+	ScenariosByClass  map[string][]string `json:"scenarios_by_class,omitempty"`
+	Classes           []string            `json:"classes"`
+	DatasetRoot       string              `json:"dataset_root"`
+	ConfigPath        string              `json:"config_path"`
+	AgentsConfigPath  string              `json:"agents_config_path,omitempty"`
+	AgentsConfigError string              `json:"agents_config_error,omitempty"`
 }
 
 type modelsYAML struct {
@@ -1856,7 +1857,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Skills:            catalog.skills,
 		Subjects:          catalog.subjects,
 		Languages:         contracts.SupportedLanguages,
-		Scenarios:         contracts.SupportedScenarios,
+		Scenarios:         mergedDatasetScenarios(s.mgr.datasetRoot),
+		ScenariosByClass:  datasetScenariosByClass(s.mgr.datasetRoot),
 		Classes:           []string{"self_contained", "repo_level"},
 		DatasetRoot:       s.mgr.datasetRoot,
 		ConfigPath:        s.configPath,
@@ -2200,6 +2202,8 @@ func (s *Server) handleRunSub(w http.ResponseWriter, r *http.Request) {
 		s.handleRunEvents(w, r, runID)
 	case "report":
 		s.handleRunReport(w, r, runID)
+	case "traces":
+		s.handleRunTraces(w, r, runID)
 	case "report-html":
 		s.handleRunReportHTML(w, r, runID)
 	case "rerun":
@@ -2761,6 +2765,97 @@ func (s *Server) handleRunReport(w http.ResponseWriter, r *http.Request, runID s
 	_, _ = w.Write(data)
 }
 
+type runTraceItem struct {
+	SubjectID string            `json:"subject_id"`
+	Framework string            `json:"framework"`
+	Model     string            `json:"model"`
+	Skill     string            `json:"skill"`
+	Language  string            `json:"language"`
+	SampleID  string            `json:"sample_id"`
+	TracePath string            `json:"trace_path"`
+	Error     string            `json:"error,omitempty"`
+	Trace     runner.AgentTrace `json:"trace"`
+}
+
+func (s *Server) handleRunTraces(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	manifestPath := filepath.Join(s.outputRoot, "runs", runID, "generated", "generated_manifest.json")
+	manifest, err := contracts.ReadGeneratedManifest(manifestPath)
+	if err != nil {
+		errJSON(w, http.StatusNotFound, "generated manifest not available yet")
+		return
+	}
+	items := make([]runTraceItem, 0, len(manifest.Cases))
+	for _, c := range manifest.Cases {
+		if strings.TrimSpace(c.TracePath) == "" {
+			continue
+		}
+		item := runTraceItem{
+			SubjectID: c.SubjectID,
+			Framework: c.AgentFramework,
+			Model:     c.AgentModel,
+			Skill:     c.SkillName,
+			Language:  c.Language,
+			SampleID:  c.SampleID,
+			TracePath: c.TracePath,
+		}
+		tracePath := s.resolveRunArtifactPath(c.TracePath)
+		trace, readErr := readAgentTraceFile(tracePath)
+		if readErr != nil {
+			item.Error = readErr.Error()
+		} else {
+			item.Trace = trace
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"run_id": runID,
+		"items":  items,
+	})
+}
+
+func (s *Server) resolveRunArtifactPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = s.containerPathToHost(path)
+	if filepath.IsAbs(path) {
+		return path
+	}
+	if strings.HasPrefix(filepath.ToSlash(path), "artifacts/") {
+		root := filepath.Dir(s.outputRoot)
+		return filepath.Join(root, filepath.FromSlash(filepath.ToSlash(path)))
+	}
+	return filepath.Clean(path)
+}
+
+func readAgentTraceFile(path string) (runner.AgentTrace, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return runner.AgentTrace{}, err
+	}
+	var last runner.AgentTrace
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var trace runner.AgentTrace
+		if err := json.Unmarshal([]byte(line), &trace); err != nil {
+			return runner.AgentTrace{}, err
+		}
+		last = trace
+	}
+	if last.TracePath == "" && last.SubjectID == "" {
+		return runner.AgentTrace{}, fmt.Errorf("trace file is empty")
+	}
+	return last, nil
+}
+
 func (s *Server) handleRunReportHTML(w http.ResponseWriter, r *http.Request, runID string) {
 	if r.Method != http.MethodGet {
 		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -3129,6 +3224,74 @@ func isSupportedDatasetScenario(scenario string) bool {
 	default:
 		return false
 	}
+}
+
+// mergedDatasetScenarios 返回内置 SupportedScenarios 与从 datasetRoot 实扫到的
+// scenario 目录名的并集，用于前端筛选下拉框动态发现新增数据集（例如 dogfood）。
+//
+// 扫描路径：<datasetRoot>/<lang>/<lang>_code_files_<class>/<scenario>/
+// - lang ∈ contracts.SupportedLanguages
+// - class ∈ {"self_contained", "repo_level"}
+//
+// 任何 IO 错误都被静默忽略，最坏情况下只返回内置列表，保证 UI 可用性。
+func mergedDatasetScenarios(datasetRoot string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, scenarios := range datasetScenariosByClass(datasetRoot) {
+		for _, sc := range scenarios {
+			if !seen[sc] {
+				seen[sc] = true
+				out = append(out, sc)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func datasetScenariosByClass(datasetRoot string) map[string][]string {
+	classes := []string{"self_contained", "repo_level"}
+	seen := map[string]map[string]bool{}
+	out := map[string][]string{}
+	for _, class := range classes {
+		seen[class] = map[string]bool{}
+		out[class] = []string{}
+	}
+	add := func(class, scenario string) {
+		if _, ok := seen[class]; !ok {
+			return
+		}
+		if scenario == "" || strings.HasPrefix(scenario, ".") || seen[class][scenario] {
+			return
+		}
+		seen[class][scenario] = true
+		out[class] = append(out[class], scenario)
+	}
+	for _, sc := range contracts.SupportedScenarios {
+		add("self_contained", sc)
+	}
+	if strings.TrimSpace(datasetRoot) == "" {
+		return out
+	}
+	for _, lang := range contracts.SupportedLanguages {
+		for _, class := range classes {
+			classDir := filepath.Join(datasetRoot, lang, lang+"_code_files_"+class)
+			entries, err := os.ReadDir(classDir)
+			if err != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				add(class, entry.Name())
+			}
+		}
+	}
+	for class := range out {
+		sort.Strings(out[class])
+	}
+	return out
 }
 
 func datasetExtForLanguage(lang string) string {

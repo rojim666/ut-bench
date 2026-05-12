@@ -28,12 +28,15 @@ RUN npm install -g @openai/codex@^0.42.0
 #   --build-arg EXTRA_NPM_PACKAGES="@openai/codex"
 RUN if [ -n "${EXTRA_NPM_PACKAGES}" ]; then npm install -g ${EXTRA_NPM_PACKAGES}; fi
 
+FROM golang:1.24-bookworm AS go-runtime
+
 FROM node:22-bookworm-slim
 
 ARG DEBIAN_MIRROR=
 
 COPY --from=agent-clis /usr/local/bin/ /usr/local/bin/
 COPY --from=agent-clis /usr/local/lib/ /usr/local/lib/
+COPY --from=go-runtime /usr/local/go/ /usr/local/go/
 
 RUN set -eux; \
     if [ -n "${DEBIAN_MIRROR}" ]; then \
@@ -68,4 +71,4 @@ RUN useradd -m -s /bin/bash agent \
     && chown -R agent:agent /home/agent /workspace
 
 WORKDIR /workspace
-ENV PATH="/usr/local/bin:${PATH}"
+ENV PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"

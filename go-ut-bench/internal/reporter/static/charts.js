@@ -395,6 +395,7 @@ function renderScenarioTable(items) {
 function renderErrorTable(items) {
   const body = document.getElementById('error-analysis-body');
   const empty = document.getElementById('error-analysis-empty');
+  if (!body || !empty) return;
   body.innerHTML = items.map(item => '<tr><td>' + safeText(stageLabel(item.stage)) + '</td><td>' + safeText(errorTypeLabel(item.errorType)) + '</td><td>' + item.count + '</td><td>' + safeText(item.exampleModel) + '</td><td>' + safeText(item.exampleSample) + '</td></tr>').join('');
   empty.style.display = items.length ? 'none' : 'block';
 }
@@ -406,8 +407,10 @@ function buildPieData(items, field) {
 }
 
 function upsertChart(instance, canvasId, type, labels, values, colors) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return instance || null;
   if (instance) instance.destroy();
-  return new Chart(document.getElementById(canvasId), {
+  return new Chart(canvas, {
     type,
     data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: chartLegendBottomOptions() } }

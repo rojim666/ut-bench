@@ -72,6 +72,10 @@ func TestDiscoverSamplesScenarioAndRepoLevelClass(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "boundary_000.py"), []byte("def f():\n    return 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// repo_level 样本要求显式 sidecar meta；discovery 仅检查存在性
+	if err := os.WriteFile(filepath.Join(path, "boundary_000.meta.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	svc := NewService()
 	spec := contracts.RunSpec{
@@ -103,6 +107,51 @@ func TestDiscoverSamplesScenarioAndRepoLevelClass(t *testing.T) {
 	samples2, err := svc.DiscoverSamples(spec)
 	if err == nil {
 		t.Fatalf("expected no samples for self_contained filter, got %d", len(samples2))
+	}
+}
+
+func TestDiscoverSamplesAutoSynthesizesGoRepoLevelSamples(t *testing.T) {
+	root := t.TempDir()
+	repoRoot := filepath.Join(root, "datasets", "go", "go_code_files_repo_level", "dogfood", "sample_repo")
+	pkgDir := filepath.Join(repoRoot, "internal", "calc")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module example.com/sample\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "calc.go"), []byte("package calc\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "calc_test.go"), []byte("package calc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService()
+	samples, err := svc.DiscoverSamples(contracts.RunSpec{
+		RunID:           "r_auto_repo",
+		DatasetRoot:     filepath.Join(root, "datasets"),
+		OutputRoot:      root,
+		ConfigPath:      "dummy",
+		Languages:       []string{"go"},
+		DatasetClasses:  []string{"repo_level"},
+		DatasetScenario: "dogfood",
+		MaxSamples:      10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("expected 1 auto repo sample, got %d: %+v", len(samples), samples)
+	}
+	if samples[0].ID != "internal_calc_calc" {
+		t.Fatalf("unexpected sample id: %s", samples[0].ID)
+	}
+	if _, ok := SynthesizeRepoLevelMeta(samples[0].Path); !ok {
+		t.Fatalf("expected synthetic repo meta for %s", samples[0].Path)
+	}
+	if _, err := os.Stat(filepath.Join(pkgDir, "calc.meta.json")); err == nil {
+		t.Fatal("auto discovery should not write sidecar meta files")
 	}
 }
 

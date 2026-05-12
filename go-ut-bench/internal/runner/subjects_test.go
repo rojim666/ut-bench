@@ -185,6 +185,71 @@ func main() {
 	}
 }
 
+func TestGenerateWithCLIAgentRecoversGeneratedTestAfterCommandError(t *testing.T) {
+	tmp := t.TempDir()
+	samplePath := filepath.Join(tmp, "sample.py")
+	if err := os.WriteFile(samplePath, []byte("def add(a, b):\n    return a + b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeAgent := filepath.Join(tmp, "fake_agent_nonzero.go")
+	fakeAgentSrc := `package main
+import (
+	"os"
+	"path/filepath"
+)
+func main() {
+	if len(os.Args) < 2 { panic("missing workspace") }
+	outPath := filepath.Join(os.Args[1], "test_generated.py")
+	content := "def test_generated():\n    assert True\n"
+	if err := os.WriteFile(outPath, []byte(content), 0644); err != nil { panic(err) }
+	os.Exit(1)
+}`
+	if err := os.WriteFile(fakeAgent, []byte(fakeAgentSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subject := agentconfig.ResolvedSubject{
+		Spec: contracts.SubjectSpec{
+			ID:        "fake_agent__deepseek__no_skill",
+			Kind:      agentconfig.KindCLIAgent,
+			Framework: "fake_agent",
+			Model:     "deepseek",
+			Skill:     agentconfig.NoSkill,
+		},
+		Framework: agentconfig.FrameworkSpec{
+			Name:        "fake_agent",
+			Kind:        agentconfig.KindCLIAgent,
+			Enabled:     true,
+			SandboxMode: "local",
+			Command:     `go run "` + fakeAgent + `" "{{.Workspace}}"`,
+			OutputGlobs: []string{"test_*.py"},
+			Preflight: map[string][]string{
+				"python": {"go version"},
+			},
+		},
+		Skill: contracts.SkillSpec{Name: agentconfig.NoSkill, Enabled: true},
+	}
+	adapter := newCLIAgentAdapter(NewSandboxRunner())
+	result := adapter.Generate(context.Background(), AgentGenerateRequest{
+		Subject:    subject,
+		Model:      modelConfig{Name: "deepseek", Model: "deepseek-chat"},
+		Sample:     contracts.SampleRef{ID: "sample_nonzero", Language: "python", Path: samplePath},
+		Prompt:     "Generate tests",
+		TestPath:   filepath.Join(tmp, "out.py"),
+		MetaRoot:   filepath.Join(tmp, "metadata"),
+		OutputRoot: tmp,
+		RunID:      "run_cli_agent_nonzero",
+	})
+	if result.Error != nil {
+		t.Fatalf("expected generated test to be recovered after command error, got %+v raw=%+v", result.Error, result.RawResponse)
+	}
+	if !strings.Contains(result.Code, "def test_generated") {
+		t.Fatalf("unexpected generated code: %s", result.Code)
+	}
+	if _, ok := result.RawResponse["agent_execution_warning"]; !ok {
+		t.Fatalf("expected agent_execution_warning in raw response: %+v", result.RawResponse)
+	}
+}
+
 func TestFrameworkDockerImageAndPreflightCommands(t *testing.T) {
 	// 新优先级: Sandbox.Image → DockerImage → DockerImages[lang] → images["default"]
 	fw := agentconfig.FrameworkSpec{
@@ -349,7 +414,7 @@ func TestBuildSampleEnvironmentSetupCommandsWorkspaceFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	goCommands := buildSampleEnvironmentSetupCommands(contracts.SampleRef{Language: "go"}, tmp)
-	if len(goCommands) != 1 || goCommands[0] != "go mod download" {
+	if len(goCommands) != 1 || !strings.Contains(goCommands[0], "go mod download") || !strings.Contains(goCommands[0], "go not found; skipping go mod download") {
 		t.Fatalf("unexpected go commands: %+v", goCommands)
 	}
 	javaCommands := buildSampleEnvironmentSetupCommands(contracts.SampleRef{Language: "java"}, tmp)

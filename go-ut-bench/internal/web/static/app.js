@@ -137,7 +137,7 @@
     dbRunArtifactFilter: { run_id:'' },
     form: {
       run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill'}], languages:[], class:'self_contained', scenario:'', level:'',
-      max_samples:1, workers:4, mode:'full', phase:'full', source_run_id:'', manifest_path:'', evaluation_path:'',
+      max_samples:10, workers:4, mode:'full', phase:'full', source_run_id:'', manifest_path:'', evaluation_path:'',
       dry_run:false, reuse_generated:true, reuse_evaluation:false, mutation_enabled:true,
       mutation_timeout:360, mutation_policy:'warn', ingest:true, use_docker:true,
     },
@@ -183,6 +183,8 @@
     currentRun: null,
     currentLogs: [],
     currentReport: null,
+    agentTraces: [],
+    agentTracesLoading: false,
     detailTab: 'logs',
     sseSource: null,
     runActionBusy: '',
@@ -272,7 +274,13 @@
     },
 
     async loadConfig() {
-      try { const r = await fetch('/api/config', { cache: 'no-store' }); this.config = await r.json(); this._comboKey++ }
+      try {
+        const r = await fetch('/api/config', { cache: 'no-store' })
+        this.config = await r.json()
+        this.normalizeDatasetScenario()
+        this.normalizeAutomationDatasetScenario()
+        this._comboKey++
+      }
       catch(e) { console.error('config', e) }
     },
 
@@ -739,7 +747,7 @@
     get selectedScenarioCount() {
       if (this.form.phase !== 'full' && this.form.phase !== 'generate') return 0
       if (this.form.scenario) return 1
-      return (this.config?.scenarios ?? []).length || 4
+      return this.datasetScenariosForClass(this.form.class).length || 4
     },
 
     get selectedLanguageCount() {
@@ -751,11 +759,11 @@
     },
 
     get selectedModelCount() {
-      return this.form.models.length
+      return 0
     },
 
     get selectedExecutionTargetCount() {
-      return this.selectedSubjectCount || this.selectedModelCount
+      return this.selectedSubjectCount
     },
 
     get selectedFrameworkCount() {
@@ -770,10 +778,7 @@
       if (this.selectedSubjectCount > 0) {
         return `将按 ${this.selectedSubjectCount} 个 subject 下发任务；模型列表只用于补齐这些 subject 所引用的模型配置。`
       }
-      if (this.selectedModelCount > 0) {
-        return '当前未选择 subject，将按纯模型 baseline 执行。'
-      }
-      return '添加组合或退回到纯模型 baseline。'
+      return '请至少添加一个 Subject 组合。'
     },
 
     get estimatedTaskCount() {
@@ -996,7 +1001,7 @@
         class: this.form.class || 'self_contained',
         scenario: this.form.scenario || '',
         level: this.form.level || '',
-        max_samples: this.form.max_samples || 1,
+        max_samples: this.form.max_samples || 10,
         workers: this.form.workers || 4,
         dry_run: false,
         reuse_generated: true,
@@ -1091,6 +1096,24 @@
       return out.length ? out : subjects.map(s => String(s).split('__')[1]).filter(Boolean)
     },
 
+    datasetScenariosForClass(className) {
+      const cls = String(className || '').trim()
+      const byClass = this.config?.scenarios_by_class || {}
+      if (cls && Array.isArray(byClass[cls])) return byClass[cls]
+      if (cls) return []
+      return this.config?.scenarios ?? []
+    },
+
+    normalizeDatasetScenario() {
+      const scenarios = this.datasetScenariosForClass(this.form.class)
+      if (this.form.scenario && !scenarios.includes(this.form.scenario)) this.form.scenario = ''
+    },
+
+    normalizeAutomationDatasetScenario() {
+      const scenarios = this.datasetScenariosForClass(this.automationPlan?.class)
+      if (this.automationPlan?.scenario && !scenarios.includes(this.automationPlan.scenario)) this.automationPlan.scenario = ''
+    },
+
     refreshAutomationJSONFromPlan() {
       this.automationForm.run_spec_json = JSON.stringify(this.buildAutomationRunSpecFromPlan(), null, 2)
       this.automationForm.orchestrator_options_json = JSON.stringify(this.buildAutomationOptionsFromPlan(), null, 2)
@@ -1101,18 +1124,18 @@
     },
 
     get automationModelCount() {
-      return (this.automationPlan.models || []).length
+      return 0
     },
 
     get automationExecutionTargetCount() {
-      return this.automationSubjectCount || this.automationModelCount
+      return this.automationSubjectCount
     },
 
     get automationScenarioCount() {
       const p = this.automationPlan || {}
       if (p.phase !== 'full' && p.phase !== 'generate') return 0
       if (p.scenario) return 1
-      return (this.config?.scenarios ?? []).length || 4
+      return this.datasetScenariosForClass(p.class).length || 4
     },
 
     get automationEstimatedTaskCount() {
@@ -1218,7 +1241,7 @@
       try {
         const p = this.automationPlan || {}
         if (p.phase === 'generate' || p.phase === 'full') {
-          if (!this.automationExecutionTargetCount) throw new Error('请至少选择一个 Subject 或模型')
+          if (!this.automationExecutionTargetCount) throw new Error('请至少选择一个 Subject')
           if (!(p.languages || []).length) throw new Error('请至少选择一种语言')
         }
         if (p.phase === 'evaluate' && !p.source_run_id && !p.manifest_path) {
@@ -2944,7 +2967,7 @@
     _comboFrameworks() {
       const seen = new Set()
       const fws = []
-      // model_api 作为 baseline 始终在第一位
+      // model_api 作为纯 API Subject 始终在第一位
       fws.push({ value: 'model_api', label: 'model_api（纯 API）' }); seen.add('model_api')
       for (const fw of (this.config?.frameworks ?? [])) {
         if (!seen.has(fw.name)) { fws.push({ value: fw.name, label: fw.name }); seen.add(fw.name) }
@@ -3130,7 +3153,7 @@
         .map(c => this.buildSubjectId(c))
       // 只有 generate 和 full 阶段需要被测对象和语言选择
       if (this.form.phase === 'generate' || this.form.phase === 'full') {
-        if (!this.selectedExecutionTargetCount) { this.formError = '请至少选择一个 subject 或模型'; return }
+        if (!this.selectedExecutionTargetCount) { this.formError = '请至少选择一个 subject'; return }
         if (!this.form.languages.length) { this.formError = '请至少选择一种语言'; return }
       }
       // evaluate 阶段需要数据源（source_run_id 或 manifest_path）
@@ -3151,6 +3174,7 @@
       payload.run_id = optimisticRunId
       this.stopSSE()
       this.currentReport = null
+      this.agentTraces = []
       this.currentLogs = []
       this._logCount = 0
       this.detailTab = 'logs'
@@ -3197,7 +3221,7 @@
     },
 
     async openRun(runId) {
-      this.stopSSE(); this.currentReport = null; this.currentLogs = []; this._logCount = 0; this.detailTab = 'logs'
+      this.stopSSE(); this.currentReport = null; this.agentTraces = []; this.currentLogs = []; this._logCount = 0; this.detailTab = 'logs'
       this._resetLogPre()
       this.page = 'run-detail'
       this.syncPageVisibility()
@@ -3326,6 +3350,41 @@
         this.currentReport = await r.json()
         this.$nextTick(() => { this.renderChart(); this.renderRadar() })
       }
+    },
+
+    async loadAgentTraces() {
+      if (!this.currentRun || this.agentTracesLoading) return
+      this.agentTracesLoading = true
+      try {
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/traces`, { cache: 'no-store' })
+        if (r.ok) {
+          const data = await r.json()
+          this.agentTraces = data.items || []
+        } else {
+          this.agentTraces = []
+        }
+      } finally {
+        this.agentTracesLoading = false
+      }
+    },
+
+    traceTitle(item) {
+      return [item.framework, item.model, item.skill].filter(Boolean).join(' / ') || item.subject_id || 'agent'
+    },
+
+    traceCounts(trace) {
+      if (!trace) return '无轨迹'
+      const parts = []
+      parts.push(`工具 ${trace.tool_calls?.length || 0}`)
+      parts.push(`读 ${trace.files_read?.length || 0}`)
+      parts.push(`写 ${trace.files_written?.length || 0}`)
+      parts.push(`命令 ${trace.commands_executed?.length || 0}`)
+      return parts.join(' · ')
+    },
+
+    traceOutput(trace) {
+      if (!trace) return ''
+      return [trace.stdout, trace.stderr].filter(Boolean).join('\n').slice(0, 4000)
     },
 
     openHtmlReport() {

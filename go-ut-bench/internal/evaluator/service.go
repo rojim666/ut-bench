@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"go-ut-bench/internal/contracts"
+	"go-ut-bench/internal/dataset"
 	"go-ut-bench/internal/obs"
 	"go-ut-bench/internal/store"
 )
@@ -862,6 +863,7 @@ func cleanupWorkspaceAsync(workdir, model, language, sampleID string, logger *ob
 // 返回值:
 //   - bool: 是否为仓库级别样本
 func isRepoLevelSample(samplePath string) bool {
+	samplePath = normalizeEvalPathForHost(samplePath)
 	dir := filepath.Dir(samplePath)
 	base := filepath.Base(samplePath)
 	ext := filepath.Ext(base)
@@ -885,6 +887,7 @@ func isRepoLevelSample(samplePath string) bool {
 }
 
 func loadRepoLevelMeta(samplePath string) *contracts.RepoLevelMeta {
+	samplePath = normalizeEvalPathForHost(samplePath)
 	sampleDir := filepath.Dir(samplePath)
 	entryBase := filepath.Base(samplePath)
 	entryExt := filepath.Ext(entryBase)
@@ -915,6 +918,12 @@ func loadRepoLevelMeta(samplePath string) *contracts.RepoLevelMeta {
 			}
 			return &meta
 		}
+	}
+	if meta, ok := dataset.SynthesizeRepoLevelMeta(samplePath); ok {
+		if strings.HasPrefix(meta.WorkspaceRoot, ".") {
+			meta.WorkspaceRoot = filepath.Join(dir, meta.WorkspaceRoot)
+		}
+		return meta
 	}
 	return nil
 }
@@ -1694,4 +1703,12 @@ func sha256String(value string) string {
 // 因此需要显式替换以确保跨平台一致性。
 func toSlashCrossPlatform(path string) string {
 	return strings.ReplaceAll(path, `\`, "/")
+}
+
+func normalizeEvalPathForHost(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return filepath.Clean(filepath.FromSlash(toSlashCrossPlatform(path)))
 }

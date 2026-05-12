@@ -25,6 +25,8 @@ Before writing the final file, check only:
 - Add a test only when it checks a distinct behavior.
 - Keep fixtures local and small.
 - Avoid asserting implementation trivia that will make tests brittle.
+- Design assertions to kill mutants: changed branch predicates, altered constants, ignored errors, missing writes, and wrong call arguments should make a test fail.
+- Replace broad smoke checks (`not nil`, `no error`, `does not panic`) with exact expected values whenever the behavior is observable.
 
 ## Mocking rules
 

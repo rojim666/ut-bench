@@ -22,6 +22,8 @@ func TestBuildIndexAndManifest(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(paths[0], "boundary_000.py"), []byte("def f():\n    return 1\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(paths[0], "boundary_001.py"), []byte("def g():\n    return 2\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(paths[1], "boundary_000.py"), []byte("def h():\n    return 3\n"), 0o644)
+	// repo_level 样本要求显式 sidecar meta；用最小可解析内容即可（discovery 仅检查存在性）
+	_ = os.WriteFile(filepath.Join(paths[1], "boundary_000.meta.json"), []byte("{}"), 0o644)
 
 	svc := NewService()
 	indexPath := filepath.Join(root, "dataset_index.json")

@@ -1,0 +1,7 @@
+{
+  "sample_id": "adapter",
+  "module_import": "go-ut-bench/internal/runner",
+  "package_name": "runner",
+  "target_file": "internal/runner/adapter.go",
+  "workspace_root": "../../"
+}

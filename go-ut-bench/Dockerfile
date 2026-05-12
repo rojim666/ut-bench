@@ -28,16 +28,34 @@ RUN if [ -n "${UBUNTU_MIRROR}" ]; then \
       fi; \
     fi
 
-# Install base tools first (needed for adding LLVM repo)
-RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && apt-get install -y --no-install-recommends \
-    apt-transport-https \
-    curl \
-    wget \
-    gnupg \
-    lsb-release \
-    software-properties-common \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Install base tools first (needed for adding LLVM repo). Some build networks
+# intermittently fail against the default Ubuntu archive, so retry once through
+# a regional mirror before giving up.
+RUN set -eux; \
+    APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 -o Acquire::ForceIPv4=true"; \
+    install_base_tools() { \
+      apt-get ${APT_OPTS} update && \
+      apt-get install -y --no-install-recommends \
+        apt-transport-https \
+        curl \
+        wget \
+        gnupg \
+        lsb-release \
+        software-properties-common \
+        ca-certificates; \
+    }; \
+    if ! install_base_tools; then \
+      echo "warning: Ubuntu apt source failed, retrying with mirrors.aliyun.com"; \
+      rm -rf /var/lib/apt/lists/*; \
+      if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i -E 's|https?://[^ ]*/ubuntu/?|http://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources; \
+      fi; \
+      if [ -f /etc/apt/sources.list ]; then \
+        sed -i -E 's|https?://[^ ]*/ubuntu/?|http://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list; \
+      fi; \
+      install_base_tools; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
 
 # System dependencies. Keep apt-get update in the same layer as install so a
 # cached repository setup layer never leaves this step with stale package lists.

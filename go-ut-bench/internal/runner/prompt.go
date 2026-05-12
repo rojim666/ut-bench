@@ -331,16 +331,24 @@ func buildRepoLevelPrompt(req PromptRequest) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("Task: Generate one complete test file for the target module in this multi-file package.\n")
+	b.WriteString("Task: Complete unit tests for all testable files in this project/workspace while prioritizing the target module as the entry point.\n")
 	fmt.Fprintf(&b, "Language: %s\n", lang)
 	fmt.Fprintf(&b, "Framework: %s\n", framework)
 	fmt.Fprintf(&b, "Mode: %s\n\n", PromptModeRepoLevel)
 
 	b.WriteString("Hard requirements:\n")
-	b.WriteString("- Return one complete runnable test file.\n")
+	b.WriteString("- Add or update unit tests for the project/workspace, covering all testable files that can be reached from the provided context.\n")
+	b.WriteString("- If the execution environment only accepts a single returned file, return the most important complete runnable test file for the target package.\n")
+	if lang == "go" && strings.TrimSpace(packageName) != "" {
+		fmt.Fprintf(&b, "- For Go, the returned single test file must belong to the entry target package and begin with `package %s`; never use `package main` unless the source package is main.\n", packageName)
+	}
 	b.WriteString("- Tests must be deterministic.\n")
-	b.WriteString("- Cover normal, boundary, and error paths when they exist in the target module.\n")
+	b.WriteString("- Cover normal, boundary, and error paths when they exist in the project files.\n")
 	b.WriteString("- Derive assertions from implementation behavior, not comments or common sense.\n")
+	b.WriteString("- Optimize for mutation testing: each test should fail if a branch condition, returned value, error path, or side effect in the target file is changed.\n")
+	b.WriteString("- Prefer exact assertions on returned structs, errors, filesystem effects, command arguments, environment values, counters, and serialized fields over smoke checks.\n")
+	b.WriteString("- Avoid weak assertions such as only checking non-nil, no error, no panic, or successful execution when stronger observable behavior is available.\n")
+	b.WriteString("- Include negative cases that prove invalid input is rejected and dependency failures are propagated or wrapped as implemented.\n")
 	b.WriteString("- Use only symbols that appear in the provided package context.\n")
 	b.WriteString("- Do not import from relative helper paths unless they are explicitly shown in the context.\n")
 	b.WriteString("- Keep test inputs small and representative; do not create stress tests or huge inputs.\n")
@@ -353,11 +361,12 @@ func buildRepoLevelPrompt(req PromptRequest) string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\nModule context:\n")
+	b.WriteString("\nProject context:\n")
 	fmt.Fprintf(&b, "- Sample ID: %s\n", sampleID)
-	fmt.Fprintf(&b, "- Target module: %s\n", meta.ModuleImport)
+	fmt.Fprintf(&b, "- Project/workspace root: %s\n", firstNonEmptyString(meta.WorkspaceRoot, "not specified"))
+	fmt.Fprintf(&b, "- Entry target module: %s\n", meta.ModuleImport)
 	fmt.Fprintf(&b, "- Package name: %s\n", packageName)
-	fmt.Fprintf(&b, "- Target file: %s\n", meta.TargetFile)
+	fmt.Fprintf(&b, "- Entry target file: %s\n", meta.TargetFile)
 	fmt.Fprintf(&b, "- Declared requirements: %s\n", requirements)
 	fmt.Fprintf(&b, "- Coverage target (reference only): %s\n", coverageTargetsText())
 
@@ -366,8 +375,17 @@ func buildRepoLevelPrompt(req PromptRequest) string {
 	b.WriteString("- No markdown fences.\n")
 	b.WriteString("- No explanations.\n\n")
 
-	fmt.Fprintf(&b, "Package entry file:\n```%s\n%s\n```", lang, req.SourceCode)
+	fmt.Fprintf(&b, "Project entry file:\n```%s\n%s\n```", lang, req.SourceCode)
 	return b.String()
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // promptLanguageRules 返回各语言特有的测试规则

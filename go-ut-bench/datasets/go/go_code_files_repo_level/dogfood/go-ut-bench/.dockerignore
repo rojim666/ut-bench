@@ -1,0 +1,46 @@
+# Build artifacts
+artifacts/
+storage/
+.cache/
+*.tar
+*.log
+*.exe
+*.exe~
+
+# Datasets (runtime-mounted; not needed inside image; pytest leaves cache dirs
+# with restricted ACLs that break `docker build` context tar)
+datasets/
+**/pytest-cache-files-*
+**/.pytest_cache/
+**/__pycache__/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Scripts (not needed in image)
+*.ps1
+*.sh
+
+# Test files
+tests/
+
+# Claude/Workbuddy
+.claude/
+.workbuddy/
+
+# Temporary files
+__pycache__/
+*.pyc
+*.tmp
+.env.example
+docker-compose.yml
