@@ -88,7 +88,7 @@ ut-bench/
 cd go-ut-bench
 ```
 
-### 2. 配置 API Key
+### 2. 配置 API Key1
 
 ```bash
 cp .env.example .env
