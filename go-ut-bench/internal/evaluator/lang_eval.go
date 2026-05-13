@@ -173,6 +173,7 @@ func (s *Service) evalWithLanguageEvaluator(
 	langEval LanguageEvaluator,
 ) {
 	lang := strings.ToLower(item.Language)
+	strategy := resolveEvaluationStrategy(item)
 
 	// 1. PrepareWorkspace
 	setPhase(lang + ".prepare")
@@ -186,7 +187,7 @@ func (s *Service) evalWithLanguageEvaluator(
 		defer cleanupWorkspaceAsync(ws.Workdir, item.Model, item.Language, item.SampleID, s.logger)
 	}
 	if ws.Extra["isRepoLevel"] == "true" {
-		s.logger.Info("repo_level evaluation workspace",
+		s.logger.Debug("repo_level evaluation workspace",
 			"model", item.Model,
 			"language", item.Language,
 			"sample_id", item.SampleID,
@@ -194,13 +195,15 @@ func (s *Service) evalWithLanguageEvaluator(
 			"package_dir", ws.Extra["packageDir"],
 			"target_file", ws.Extra["targetFile"],
 			"generated_test", ws.TestPath,
+			"dataset_mode", string(strategy.DatasetMode),
+			"evaluation_strategy", string(strategy.EvaluationStrategy),
 		)
 	}
 
 	// 2. CompileCheck
 	setPhase(lang + ".compile")
 	if ws.Extra["isRepoLevel"] == "true" {
-		s.logger.Info("repo_level compile command",
+		s.logger.Debug("repo_level compile command",
 			"model", item.Model,
 			"language", item.Language,
 			"sample_id", item.SampleID,
@@ -221,7 +224,7 @@ func (s *Service) evalWithLanguageEvaluator(
 	}
 	setPhase(lang + ".test")
 	if ws.Extra["isRepoLevel"] == "true" {
-		s.logger.Info("repo_level test command",
+		s.logger.Debug("repo_level test command",
 			"model", item.Model,
 			"language", item.Language,
 			"sample_id", item.SampleID,

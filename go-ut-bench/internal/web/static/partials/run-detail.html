@@ -65,7 +65,6 @@
             <!-- Tabs -->
             <div class="flex gap-0 border-b mb-4" style="border-color:var(--border)">
               <button @click="detailTab = 'logs'" :class="detailTab === 'logs' ? 'active' : ''" class="tab-btn">日志</button>
-              <button @click="detailTab = 'agent-traces'; loadAgentTraces()" :class="detailTab === 'agent-traces' ? 'active' : ''" class="tab-btn">Agent 轨迹</button>
               <button @click="detailTab = 'report'; loadReport()" :class="detailTab === 'report' ? 'active' : ''" class="tab-btn">报告</button>
             </div>
 
@@ -79,72 +78,6 @@
                 <pre id="log-pre" class="log-pre whitespace-pre-wrap break-words m-0" style="font:inherit;color:inherit"></pre>
                 <div x-show="currentRun.status === 'running'" class="animate-pulse mt-1" style="color:var(--yellow)">▊</div>
                 <div id="log-bottom"></div>
-              </div>
-            </div>
-
-            <!-- Agent Traces -->
-            <div x-show="detailTab === 'agent-traces'" class="form-section p-0 overflow-hidden">
-              <div class="px-4 py-2.5 border-b flex items-center justify-between" style="border-color:var(--border);background:var(--bg-elevated)">
-                <span class="text-[12px]" style="color:var(--fg-muted)">工具调用与执行输出 · <span x-text="agentTraces.length"></span> 条</span>
-                <button @click="loadAgentTraces()" class="text-[12px]" style="color:var(--fg-subtle)" x-text="agentTracesLoading ? '加载中...' : '刷新'"></button>
-              </div>
-              <div x-show="agentTracesLoading" class="p-6 text-[13px]" style="color:var(--fg-muted)">正在读取 trace...</div>
-              <div x-show="!agentTracesLoading && !agentTraces.length" class="p-6 text-[13px]" style="color:var(--fg-muted)">暂无 CLI Agent 轨迹。</div>
-              <div x-show="!agentTracesLoading && agentTraces.length" class="divide-y" style="border-color:var(--border)">
-                <template x-for="item in agentTraces" :key="item.trace_path">
-                  <div class="p-4 space-y-3">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <span class="tag-pill" style="background:rgba(59,130,246,.08);color:var(--accent)" x-text="item.language"></span>
-                      <span class="tag-pill" style="background:rgba(16,185,129,.08);color:var(--green)" x-text="traceTitle(item)"></span>
-                      <span class="font-mono text-[12px]" style="color:var(--fg-muted)" x-text="item.sample_id"></span>
-                      <span class="text-[12px]" style="color:var(--fg-subtle)" x-text="traceCounts(item.trace)"></span>
-                      <span x-show="item.trace?.session_id" class="font-mono text-[11px]" style="color:var(--fg-subtle)" x-text="'session=' + item.trace.session_id"></span>
-                    </div>
-                    <div x-show="item.error" class="text-[12px] rounded p-2" style="background:var(--error-bg);color:var(--red)" x-text="item.error"></div>
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-[12px]">
-                      <div>
-                        <div class="mb-1" style="color:var(--fg-subtle)">读取文件</div>
-                        <div class="font-mono leading-5" style="color:var(--fg-muted)">
-                          <template x-for="f in (item.trace?.files_read || []).slice(0, 8)" :key="f"><div x-text="f"></div></template>
-                          <div x-show="(item.trace?.files_read || []).length > 8">...</div>
-                        </div>
-                      </div>
-                      <div>
-                        <div class="mb-1" style="color:var(--fg-subtle)">写入文件</div>
-                        <div class="font-mono leading-5" style="color:var(--fg-muted)">
-                          <template x-for="f in (item.trace?.files_written || []).slice(0, 8)" :key="f"><div x-text="f"></div></template>
-                          <div x-show="(item.trace?.files_written || []).length > 8">...</div>
-                        </div>
-                      </div>
-                      <div>
-                        <div class="mb-1" style="color:var(--fg-subtle)">执行命令</div>
-                        <div class="font-mono leading-5" style="color:var(--fg-muted)">
-                          <template x-for="cmd in (item.trace?.commands_executed || []).slice(0, 8)" :key="cmd"><div x-text="cmd"></div></template>
-                          <div x-show="(item.trace?.commands_executed || []).length > 8">...</div>
-                        </div>
-                      </div>
-                    </div>
-                    <div x-show="(item.trace?.tool_calls || []).length" class="overflow-x-auto">
-                      <table class="data-table">
-                        <thead><tr><th>工具</th><th>输入</th><th>输出</th><th class="text-right">耗时</th></tr></thead>
-                        <tbody>
-                          <template x-for="(tool, idx) in (item.trace?.tool_calls || []).slice(0, 20)" :key="idx">
-                            <tr>
-                              <td class="font-mono text-[12px]" x-text="tool.tool"></td>
-                              <td class="font-mono text-[12px] max-w-sm truncate" style="color:var(--fg-muted)" x-text="tool.input || '-'"></td>
-                              <td class="text-[12px] max-w-md truncate" style="color:var(--fg-muted)" x-text="tool.output || '-'"></td>
-                              <td class="text-right font-mono text-[12px]" style="color:var(--fg-subtle)" x-text="tool.duration_ms ? (tool.duration_ms + 'ms') : '-'"></td>
-                            </tr>
-                          </template>
-                        </tbody>
-                      </table>
-                    </div>
-                    <details x-show="traceOutput(item.trace)" class="text-[12px]">
-                      <summary class="cursor-pointer" style="color:var(--fg-muted)">stdout / stderr 摘要</summary>
-                      <pre class="mt-2 p-3 rounded overflow-auto max-h-72" style="background:#020408;color:var(--green)" x-text="traceOutput(item.trace)"></pre>
-                    </details>
-                  </div>
-                </template>
               </div>
             </div>
 

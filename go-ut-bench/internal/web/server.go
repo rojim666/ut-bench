@@ -2202,8 +2202,6 @@ func (s *Server) handleRunSub(w http.ResponseWriter, r *http.Request) {
 		s.handleRunEvents(w, r, runID)
 	case "report":
 		s.handleRunReport(w, r, runID)
-	case "traces":
-		s.handleRunTraces(w, r, runID)
 	case "report-html":
 		s.handleRunReportHTML(w, r, runID)
 	case "rerun":
@@ -2763,97 +2761,6 @@ func (s *Server) handleRunReport(w http.ResponseWriter, r *http.Request, runID s
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
-}
-
-type runTraceItem struct {
-	SubjectID string            `json:"subject_id"`
-	Framework string            `json:"framework"`
-	Model     string            `json:"model"`
-	Skill     string            `json:"skill"`
-	Language  string            `json:"language"`
-	SampleID  string            `json:"sample_id"`
-	TracePath string            `json:"trace_path"`
-	Error     string            `json:"error,omitempty"`
-	Trace     runner.AgentTrace `json:"trace"`
-}
-
-func (s *Server) handleRunTraces(w http.ResponseWriter, r *http.Request, runID string) {
-	if r.Method != http.MethodGet {
-		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	manifestPath := filepath.Join(s.outputRoot, "runs", runID, "generated", "generated_manifest.json")
-	manifest, err := contracts.ReadGeneratedManifest(manifestPath)
-	if err != nil {
-		errJSON(w, http.StatusNotFound, "generated manifest not available yet")
-		return
-	}
-	items := make([]runTraceItem, 0, len(manifest.Cases))
-	for _, c := range manifest.Cases {
-		if strings.TrimSpace(c.TracePath) == "" {
-			continue
-		}
-		item := runTraceItem{
-			SubjectID: c.SubjectID,
-			Framework: c.AgentFramework,
-			Model:     c.AgentModel,
-			Skill:     c.SkillName,
-			Language:  c.Language,
-			SampleID:  c.SampleID,
-			TracePath: c.TracePath,
-		}
-		tracePath := s.resolveRunArtifactPath(c.TracePath)
-		trace, readErr := readAgentTraceFile(tracePath)
-		if readErr != nil {
-			item.Error = readErr.Error()
-		} else {
-			item.Trace = trace
-		}
-		items = append(items, item)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"run_id": runID,
-		"items":  items,
-	})
-}
-
-func (s *Server) resolveRunArtifactPath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	path = s.containerPathToHost(path)
-	if filepath.IsAbs(path) {
-		return path
-	}
-	if strings.HasPrefix(filepath.ToSlash(path), "artifacts/") {
-		root := filepath.Dir(s.outputRoot)
-		return filepath.Join(root, filepath.FromSlash(filepath.ToSlash(path)))
-	}
-	return filepath.Clean(path)
-}
-
-func readAgentTraceFile(path string) (runner.AgentTrace, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return runner.AgentTrace{}, err
-	}
-	var last runner.AgentTrace
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var trace runner.AgentTrace
-		if err := json.Unmarshal([]byte(line), &trace); err != nil {
-			return runner.AgentTrace{}, err
-		}
-		last = trace
-	}
-	if last.TracePath == "" && last.SubjectID == "" {
-		return runner.AgentTrace{}, fmt.Errorf("trace file is empty")
-	}
-	return last, nil
 }
 
 func (s *Server) handleRunReportHTML(w http.ResponseWriter, r *http.Request, runID string) {

@@ -386,10 +386,8 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 	respPath := filepath.Join(metaRoot, fmt.Sprintf("%s_%s_%s.response.json", model, sample.Language, sample.ID))
 	promptPath := ""
 	promptPathCandidate := filepath.Join(promptRoot, "rendered", model, sample.Language, fmt.Sprintf("%s.prompt.txt", sample.ID))
-	promptMode := string(PromptModeFullFile)
-	if loadRepoLevelMetaForRunner(sample.Path) != nil {
-		promptMode = string(PromptModeRepoLevel)
-	}
+	strategy := resolveGenerationStrategy(sample)
+	promptMode := string(strategy.PromptMode)
 
 	if spec.Mode == contracts.RunModeIncremental {
 		if _, err := os.Stat(testPath); err == nil {
@@ -398,46 +396,52 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 				respPath = ""
 			}
 			return contracts.GeneratedCase{
-				Model:             model,
-				SubjectID:         subject.ID,
-				SubjectKind:       subject.Kind,
-				AgentFramework:    subject.Framework,
-				AgentModel:        subject.Model,
-				SkillName:         subject.Skill,
-				SkillVersion:      skillVersion,
-				Language:          sample.Language,
-				SampleID:          sample.ID,
-				SamplePath:        sample.Path,
-				PromptVersionID:   promptVersionID,
-				PromptMode:        promptMode,
-				GeneratedTestPath: testPath,
-				ResponsePath:      respPath,
-				MetadataPath:      "",
-				LatencyMS:         latency,
-				GeneratedAtUTC:    time.Now().UTC(),
-				Success:           true,
+				Model:              model,
+				SubjectID:          subject.ID,
+				SubjectKind:        subject.Kind,
+				AgentFramework:     subject.Framework,
+				AgentModel:         subject.Model,
+				SkillName:          subject.Skill,
+				SkillVersion:       skillVersion,
+				Language:           sample.Language,
+				SampleID:           sample.ID,
+				SamplePath:         sample.Path,
+				PromptVersionID:    promptVersionID,
+				PromptMode:         promptMode,
+				DatasetMode:        string(strategy.DatasetMode),
+				GenerationStrategy: string(strategy.GenerationStrategy),
+				EvaluationStrategy: string(strategy.EvaluationStrategy),
+				GeneratedTestPath:  testPath,
+				ResponsePath:       respPath,
+				MetadataPath:       "",
+				LatencyMS:          latency,
+				GeneratedAtUTC:     time.Now().UTC(),
+				Success:            true,
 			}
 		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(testPath), 0o755); err != nil {
 		return contracts.GeneratedCase{
-			Model:             model,
-			SubjectID:         subject.ID,
-			SubjectKind:       subject.Kind,
-			AgentFramework:    subject.Framework,
-			AgentModel:        subject.Model,
-			SkillName:         subject.Skill,
-			SkillVersion:      skillVersion,
-			Language:          sample.Language,
-			SampleID:          sample.ID,
-			SamplePath:        sample.Path,
-			PromptVersionID:   promptVersionID,
-			PromptMode:        promptMode,
-			GeneratedTestPath: testPath,
-			ResponsePath:      "",
-			GeneratedAtUTC:    time.Now().UTC(),
-			Success:           false,
+			Model:              model,
+			SubjectID:          subject.ID,
+			SubjectKind:        subject.Kind,
+			AgentFramework:     subject.Framework,
+			AgentModel:         subject.Model,
+			SkillName:          subject.Skill,
+			SkillVersion:       skillVersion,
+			Language:           sample.Language,
+			SampleID:           sample.ID,
+			SamplePath:         sample.Path,
+			PromptVersionID:    promptVersionID,
+			PromptMode:         promptMode,
+			DatasetMode:        string(strategy.DatasetMode),
+			GenerationStrategy: string(strategy.GenerationStrategy),
+			EvaluationStrategy: string(strategy.EvaluationStrategy),
+			GeneratedTestPath:  testPath,
+			ResponsePath:       "",
+			GeneratedAtUTC:     time.Now().UTC(),
+			Success:            false,
 			Error: &contracts.ErrorInfo{
 				Kind:      "write_error",
 				Message:   err.Error(),
@@ -464,6 +468,15 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 	} else {
 		if plan != nil {
 			promptMode = plan.PromptMode
+			if promptMode == string(PromptModeRepoLevel) {
+				strategy = generationStrategySpec{
+					DatasetMode:              contracts.DatasetModeProjectLevel,
+					GenerationStrategy:       contracts.GenerationStrategyProjectLevel,
+					EvaluationStrategy:       contracts.EvaluationStrategyProjectLevel,
+					PromptMode:               PromptModeRepoLevel,
+					RequireGeneratedTestFile: false,
+				}
+			}
 			promptPath = plan.PromptPath
 			renderedPrompt = plan.RenderedPrompt
 			identity = plan.Identity
@@ -471,21 +484,24 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		}
 		if plan != nil && plan.ReadError != nil {
 			return contracts.GeneratedCase{
-				Model:             model,
-				SubjectID:         subject.ID,
-				SubjectKind:       subject.Kind,
-				AgentFramework:    subject.Framework,
-				AgentModel:        subject.Model,
-				SkillName:         subject.Skill,
-				SkillVersion:      skillVersion,
-				Language:          sample.Language,
-				SampleID:          sample.ID,
-				SamplePath:        sample.Path,
-				PromptVersionID:   promptVersionID,
-				PromptMode:        promptMode,
-				GeneratedTestPath: testPath,
-				GeneratedAtUTC:    time.Now().UTC(),
-				Success:           false,
+				Model:              model,
+				SubjectID:          subject.ID,
+				SubjectKind:        subject.Kind,
+				AgentFramework:     subject.Framework,
+				AgentModel:         subject.Model,
+				SkillName:          subject.Skill,
+				SkillVersion:       skillVersion,
+				Language:           sample.Language,
+				SampleID:           sample.ID,
+				SamplePath:         sample.Path,
+				PromptVersionID:    promptVersionID,
+				PromptMode:         promptMode,
+				DatasetMode:        string(strategy.DatasetMode),
+				GenerationStrategy: string(strategy.GenerationStrategy),
+				EvaluationStrategy: string(strategy.EvaluationStrategy),
+				GeneratedTestPath:  testPath,
+				GeneratedAtUTC:     time.Now().UTC(),
+				Success:            false,
 				Error: &contracts.ErrorInfo{
 					Kind:      "sample_read_error",
 					Message:   plan.ReadError.Error(),
@@ -548,6 +564,9 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						"prompt_strategy":              PromptStrategy(),
 						"prompt_version_id":            promptVersionID,
 						"prompt_mode":                  promptMode,
+						"dataset_mode":                 string(strategy.DatasetMode),
+						"generation_strategy":          string(strategy.GenerationStrategy),
+						"evaluation_strategy":          string(strategy.EvaluationStrategy),
 						"prompt_path":                  promptPath,
 						"scenario":                     sample.Scenario,
 						"generated_test_path":          testPath,
@@ -591,6 +610,9 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						SamplePath:               sample.Path,
 						PromptVersionID:          promptVersionID,
 						PromptMode:               promptMode,
+						DatasetMode:              string(strategy.DatasetMode),
+						GenerationStrategy:       string(strategy.GenerationStrategy),
+						EvaluationStrategy:       string(strategy.EvaluationStrategy),
 						PromptPath:               promptPath,
 						GeneratedTestPath:        testPath,
 						ResponsePath:             reused.ResponsePath,
@@ -732,7 +754,7 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		agentSummary = agentSmry
 		truncated = isTruncated
 		if genErr != nil {
-			_ = contracts.WriteJSON(respPath, map[string]any{"error": genErr, "truncated": truncated, "trace_path": trace.TracePath, "workspace_diff_path": trace.WorkspaceDiffPath})
+			_ = contracts.WriteJSON(respPath, map[string]any{"error": genErr, "truncated": truncated})
 			return contracts.GeneratedCase{
 				Model:                    model,
 				SubjectID:                subject.ID,
@@ -833,12 +855,13 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		"prompt_strategy":            PromptStrategy(),
 		"prompt_version_id":          promptVersionID,
 		"prompt_mode":                promptMode,
+		"dataset_mode":               string(strategy.DatasetMode),
+		"generation_strategy":        string(strategy.GenerationStrategy),
+		"evaluation_strategy":        string(strategy.EvaluationStrategy),
 		"prompt_path":                promptPath,
 		"scenario":                   sample.Scenario,
 		"generated_test_path":        testPath,
 		"response_path":              respPath,
-		"trace_path":                 trace.TracePath,
-		"workspace_diff_path":        trace.WorkspaceDiffPath,
 		"sandbox_provider":           trace.SandboxProvider,
 		"sandbox_fingerprint":        trace.SandboxFingerprint,
 		"dataset_class":              sample.Category,
@@ -887,6 +910,9 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		SamplePath:               sample.Path,
 		PromptVersionID:          promptVersionID,
 		PromptMode:               promptMode,
+		DatasetMode:              string(strategy.DatasetMode),
+		GenerationStrategy:       string(strategy.GenerationStrategy),
+		EvaluationStrategy:       string(strategy.EvaluationStrategy),
 		PromptPath:               promptPath,
 		GeneratedTestPath:        testPath,
 		ResponsePath:             respPath,

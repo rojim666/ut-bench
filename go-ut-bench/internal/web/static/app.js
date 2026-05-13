@@ -3352,41 +3352,6 @@
       }
     },
 
-    async loadAgentTraces() {
-      if (!this.currentRun || this.agentTracesLoading) return
-      this.agentTracesLoading = true
-      try {
-        const r = await fetch(`/api/runs/${this.currentRun.run_id}/traces`, { cache: 'no-store' })
-        if (r.ok) {
-          const data = await r.json()
-          this.agentTraces = data.items || []
-        } else {
-          this.agentTraces = []
-        }
-      } finally {
-        this.agentTracesLoading = false
-      }
-    },
-
-    traceTitle(item) {
-      return [item.framework, item.model, item.skill].filter(Boolean).join(' / ') || item.subject_id || 'agent'
-    },
-
-    traceCounts(trace) {
-      if (!trace) return '无轨迹'
-      const parts = []
-      parts.push(`工具 ${trace.tool_calls?.length || 0}`)
-      parts.push(`读 ${trace.files_read?.length || 0}`)
-      parts.push(`写 ${trace.files_written?.length || 0}`)
-      parts.push(`命令 ${trace.commands_executed?.length || 0}`)
-      return parts.join(' · ')
-    },
-
-    traceOutput(trace) {
-      if (!trace) return ''
-      return [trace.stdout, trace.stderr].filter(Boolean).join('\n').slice(0, 4000)
-    },
-
     openHtmlReport() {
       if (!this.currentRun) return
       window.open(`/api/runs/${this.currentRun.run_id}/report-html`, '_blank')

@@ -335,6 +335,7 @@ func (s *Service) Evaluate(ctx context.Context, spec contracts.RunSpec, manifest
 
 func (s *Service) evaluateOne(ctx context.Context, spec contracts.RunSpec, item contracts.GeneratedCase, evaluationEnvFingerprint string, reused *store.ReusableEvaluationResult, setPhase func(string)) (result contracts.EvaluationResult) {
 	start := time.Now()
+	strategy := resolveEvaluationStrategy(item)
 	row := contracts.EvaluationResult{
 		Model:                    item.Model,
 		SubjectID:                item.SubjectID,
@@ -346,6 +347,9 @@ func (s *Service) evaluateOne(ctx context.Context, spec contracts.RunSpec, item 
 		Language:                 item.Language,
 		SampleID:                 item.SampleID,
 		SampleUID:                item.SampleUID,
+		DatasetMode:              string(strategy.DatasetMode),
+		GenerationStrategy:       string(strategy.GenerationStrategy),
+		EvaluationStrategy:       string(strategy.EvaluationStrategy),
 		GeneratedTestPath:        item.GeneratedTestPath,
 		SourcePath:               item.SamplePath,
 		PromptTokens:             item.PromptTokens,

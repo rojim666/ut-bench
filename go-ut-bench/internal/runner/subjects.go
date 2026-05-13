@@ -129,7 +129,7 @@ func (s *Service) generateWithSubject(
 		if !filepath.IsAbs(workspaceRoot) {
 			workspaceRoot = filepath.Join(filepath.Dir(sample.Path), workspaceRoot)
 		}
-		s.logger.Info("repo_level generation context",
+		s.logger.Debug("repo_level generation context",
 			"subject", target.subject.Spec.ID,
 			"language", sample.Language,
 			"sample_id", sample.ID,
@@ -185,11 +185,6 @@ func (s *Service) generateWithSubject(
 		"total_tokens", result.TotalTokens,
 		"latency_ms", result.LatencyMS,
 		"truncated", result.Truncated,
-		"interaction_count", result.Trace.InteractionCount,
-		"tool_call_count", len(result.Trace.ToolCalls),
-		"files_read", len(result.Trace.FilesRead),
-		"files_written", len(result.Trace.FilesWritten),
-		"commands_executed", len(result.Trace.CommandsExecuted),
 		"success", result.Error == nil,
 	)
 
@@ -204,30 +199,9 @@ func (s *Service) generateWithSubject(
 		CostSource:         result.CostSource,
 	}
 
-	summary := agentTraceSummary{
-		InteractionCount: result.Trace.InteractionCount,
-		ToolCallCount:    len(result.Trace.ToolCalls),
-		FilesRead:        len(result.Trace.FilesRead),
-		FilesWritten:     len(result.Trace.FilesWritten),
-		CommandsExecuted: len(result.Trace.CommandsExecuted),
-	}
-	if target.subject.Spec.Kind == agentconfig.KindCLIAgent && result.Trace.TracePath != "" {
-		s.logger.Info("agent trace captured",
-			"subject", target.subject.Spec.ID,
-			"language", sample.Language,
-			"sample_id", sample.ID,
-			"trace_path", result.Trace.TracePath,
-			"tool_calls", len(result.Trace.ToolCalls),
-			"files_read", len(result.Trace.FilesRead),
-			"files_written", len(result.Trace.FilesWritten),
-			"commands", len(result.Trace.CommandsExecuted),
-			"session_id", result.Trace.SessionID,
-		)
-	}
-
 	return result.Code, result.RawResponse, trace, result.LatencyMS,
 		result.PromptTokens, result.CompletionTokens, result.TotalTokens,
-		result.Truncated, result.Error, summary
+		result.Truncated, result.Error, agentTraceSummary{}
 }
 
 // generateWithModelAPI 已迁移到 adapter_model.go 中的 modelAPIAdapter。
@@ -441,16 +415,24 @@ func appendSkillInstruction(prompt string, skill contracts.SkillSpec) string {
 	return b.String()
 }
 
-func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, outputFile, skillDir string, framework string, skillName string) string {
+func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, outputFile, skillDir string, framework string, skillName string, strategy generationStrategySpec) string {
 	var b strings.Builder
 	b.WriteString(prompt)
 	b.WriteString("\n\nAgent execution contract:\n")
 	b.WriteString("- Work only inside the provided workspace.\n")
 	b.WriteString("- Do not modify the original source behavior.\n")
-	b.WriteString("- Generate one complete unit test file.\n")
-	b.WriteString("- Write the final test file to: ")
-	b.WriteString(outputFile)
-	b.WriteString("\n")
+	if strategy.RequireGeneratedTestFile {
+		b.WriteString("- Generate one complete unit test file.\n")
+		b.WriteString("- Write the final test file to: ")
+		b.WriteString(outputFile)
+		b.WriteString("\n")
+	} else {
+		b.WriteString("- Add or update tests in the project workspace using the project's natural test directory/package.\n")
+		b.WriteString("- You may write multiple test files when the project structure requires it.\n")
+		b.WriteString("- Keep production source behavior unchanged; recordable output path: ")
+		b.WriteString(outputFile)
+		b.WriteString("\n")
+	}
 	b.WriteString("- Target language: ")
 	b.WriteString(sample.Language)
 	b.WriteString("\n- Source file in workspace: ")

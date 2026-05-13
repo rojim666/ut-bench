@@ -21,6 +21,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	framework := req.Subject.Framework
 	skill := req.Subject.Skill
 	sample := req.Sample
+	strategy := resolveGenerationStrategy(sample)
 
 	// 1. 准备独立 workspace
 	workRoot := filepath.Join(req.OutputRoot, "runs", req.RunID, "agent_workspaces", subjectID, sample.Language, sample.ID)
@@ -74,7 +75,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	}
 
 	// 5. 写入 Agent 任务说明
-	agentPrompt := buildAgentPrompt(req.Prompt, sample, sourceHint, outputHint, skillHint, req.Subject.Spec.Framework, skill.Name)
+	agentPrompt := buildAgentPrompt(req.Prompt, sample, sourceHint, outputHint, skillHint, req.Subject.Spec.Framework, skill.Name, strategy)
 	promptFile := filepath.Join(workRoot, "utbench_agent_prompt.md")
 	if err := os.WriteFile(promptFile, []byte(agentPrompt), 0o644); err != nil {
 		return agentError("workspace_error", err)
@@ -82,14 +83,6 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 
 	// 6. 执行前快照
 	before, _ := snapshotWorkspace(workRoot)
-
-	// 7. 准备 trace 输出目录
-	traceDir := filepath.Join(req.MetaRoot, "agent_traces", subjectID, sample.Language)
-	tracePath := filepath.Join(traceDir, sample.ID+".trace.jsonl")
-	diffPath := filepath.Join(traceDir, sample.ID+".diff.json")
-	if err := os.MkdirAll(traceDir, 0o755); err != nil {
-		return agentError("trace_error", err)
-	}
 
 	// 8. 渲染命令和环境变量
 	templateData := commandTemplateData{
@@ -152,10 +145,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 			SandboxProvider:    sandboxReq.Provider,
 			SandboxImage:       sandboxReq.DockerImage,
 			SandboxFingerprint: sandboxFingerprintForRequest(sandboxReq),
-			TracePath:          tracePath,
-			WorkspaceDiffPath:  diffPath,
 		}
-		_ = writeAgentTrace(tracePath, trace)
 		return AgentGenerateResult{
 			RawResponse: map[string]any{
 				"adapter":             "cli_agent",
@@ -198,10 +188,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 			SandboxProvider:    sandboxReq.Provider,
 			SandboxImage:       sandboxReq.DockerImage,
 			SandboxFingerprint: sandboxFingerprintForRequest(sandboxReq),
-			TracePath:          tracePath,
-			WorkspaceDiffPath:  diffPath,
 		}
-		_ = writeAgentTrace(tracePath, trace)
 		return AgentGenerateResult{
 			RawResponse: map[string]any{
 				"adapter":             "cli_agent",
@@ -258,22 +245,11 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		SandboxProvider:    sandboxReq.Provider,
 		SandboxImage:       sandboxReq.DockerImage,
 		SandboxFingerprint: sandboxFingerprintForRequest(sandboxReq),
-		TracePath:          tracePath,
-		WorkspaceDiffPath:  diffPath,
 	}
 
-	// 从 Agent 输出中解析结构化信息
+	// 从 Agent 输出中提取必要的 token、错误和策略校验信息，不再持久化完整 trace。
 	parseAgentOutput(&trace, runOutput.Stdout, runOutput.Stderr)
-	collectOpenCodeSessionExport(ctx, sandboxRunner, sandboxReq, workRoot, traceDir, sample.ID, &trace)
 	finalizeAgentAccounting(&trace, req.Prompt, "", req.Model)
-
-	// 14. 写入 trace 文件（完整结构化数据）
-	_ = writeAgentTrace(tracePath, trace)
-	_ = contracts.WriteJSON(diffPath, map[string]any{
-		"workspace":  workRoot,
-		"subject_id": subjectID,
-		"changes":    changes,
-	})
 
 	// 15. 构建原始响应
 	rawResponse := map[string]any{
@@ -285,15 +261,8 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		"command":             cmdText,
 		"exit_code":           runOutput.ExitCode,
 		"latency_ms":          latency,
-		"trace_path":          tracePath,
-		"workspace_diff_path": diffPath,
 		"stdout":              trimText(runOutput.Stdout, 4000),
 		"stderr":              trimText(runOutput.Stderr, 4000),
-		"interaction_count":   trace.InteractionCount,
-		"tool_call_count":     len(trace.ToolCalls),
-		"files_read":          trace.FilesRead,
-		"files_written":       trace.FilesWritten,
-		"commands_executed":   trace.CommandsExecuted,
 		"environment_setup":   environmentSetup,
 		"preflight_checks":    preflightChecks,
 		"sandbox_provider":    sandboxReq.Provider,
@@ -304,7 +273,6 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		"cost_source":         trace.CostSource,
 		"usage_source_detail": trace.UsageSourceDetail,
 		"session_id":          trace.SessionID,
-		"session_export_path": trace.SessionExportPath,
 	}
 	if trace.SessionExportError != "" {
 		rawResponse["session_export_error"] = trace.SessionExportError
@@ -352,7 +320,6 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 				rawResponse["estimated_cost_usd"] = trace.EstimatedCost
 				rawResponse["cost_source"] = trace.CostSource
 				rawResponse["usage_source_detail"] = trace.UsageSourceDetail
-				_ = writeAgentTrace(tracePath, trace)
 				return AgentGenerateResult{
 					Code:             fallback.Code,
 					RawResponse:      rawResponse,
@@ -417,11 +384,9 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	rawResponse["cost_source"] = trace.CostSource
 	rawResponse["usage_source_detail"] = trace.UsageSourceDetail
 	rawResponse["session_id"] = trace.SessionID
-	rawResponse["session_export_path"] = trace.SessionExportPath
 	if trace.SessionExportError != "" {
 		rawResponse["session_export_error"] = trace.SessionExportError
 	}
-	_ = writeAgentTrace(tracePath, trace)
 	if err := validateGeneratedTest(code, sample.Language); err != nil {
 		return AgentGenerateResult{
 			Code:             code,

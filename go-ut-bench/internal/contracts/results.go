@@ -24,6 +24,9 @@ type GeneratedCase struct {
 	SamplePath               string     `json:"sample_path"`                          // 原始源代码文件的路径
 	PromptVersionID          string     `json:"prompt_version_id,omitempty"`          // 本次生成使用的提示词版本ID
 	PromptMode               string     `json:"prompt_mode,omitempty"`                // 提示词模式，如 full_file / repo_level
+	DatasetMode              string     `json:"dataset_mode,omitempty"`               // single_file / project_level
+	GenerationStrategy       string     `json:"generation_strategy,omitempty"`        // single_file / project_level
+	EvaluationStrategy       string     `json:"evaluation_strategy,omitempty"`        // single_file / project_level
 	PromptPath               string     `json:"prompt_path,omitempty"`                // 渲染后的提示词快照路径
 	GeneratedTestPath        string     `json:"generated_test_path"`                  // 生成的测试文件保存路径
 	ResponsePath             string     `json:"response_path"`                        // 模型API响应的JSON文件路径（用于调试）
@@ -95,6 +98,9 @@ type EvaluationResult struct {
 	Language                 string   `json:"language"`                             // 编程语言
 	SampleID                 string   `json:"sample_id"`                            // 数据集样本ID
 	SampleUID                string   `json:"sample_uid,omitempty"`                 // 数据集样本稳定身份
+	DatasetMode              string   `json:"dataset_mode,omitempty"`               // single_file / project_level
+	GenerationStrategy       string   `json:"generation_strategy,omitempty"`        // single_file / project_level
+	EvaluationStrategy       string   `json:"evaluation_strategy,omitempty"`        // single_file / project_level
 	GeneratedTestPath        string   `json:"generated_test_path"`                  // 生成的测试文件路径
 	SourcePath               string   `json:"source_path"`                          // 源代码文件路径
 	CompilePass              bool     `json:"compile_pass"`                         // 编译是否通过
@@ -368,26 +374,26 @@ type ReportPayload struct {
 // ComparisonView 控制变量对比视图
 // 按"对比视角"组织：固定两个维度、变化一个维度
 type ComparisonView struct {
-	Dimension string          `json:"dimension"` // 变化的维度：platform / model / skill
-	Label     string          `json:"label"`     // 视图中文标签
-	Groups    []ComparisonGroup `json:"groups"`   // 每组是一个控制变量组合
+	Dimension string            `json:"dimension"` // 变化的维度：platform / model / skill
+	Label     string            `json:"label"`     // 视图中文标签
+	Groups    []ComparisonGroup `json:"groups"`    // 每组是一个控制变量组合
 }
 
 // ComparisonGroup 一组控制变量下的对比
 // 例如：固定 model=deepseek-v4-flash, skill=no_skill，比较不同 platform
 type ComparisonGroup struct {
-	FixedModel   string              `json:"fixed_model,omitempty"`   // 固定的模型
-	FixedSkill   string              `json:"fixed_skill,omitempty"`   // 固定的Skill
-	FixedPlatform string             `json:"fixed_platform,omitempty"` // 固定的平台
-	Entries      []ComparisonEntry   `json:"entries"`                 // 按综合得分降序
+	FixedModel    string            `json:"fixed_model,omitempty"`    // 固定的模型
+	FixedSkill    string            `json:"fixed_skill,omitempty"`    // 固定的Skill
+	FixedPlatform string            `json:"fixed_platform,omitempty"` // 固定的平台
+	Entries       []ComparisonEntry `json:"entries"`                  // 按综合得分降序
 }
 
 // ComparisonEntry 对比项（一行）
 type ComparisonEntry struct {
 	Rank             int     `json:"rank"`
-	Platform         string  `json:"platform"`                       // 平台/框架
-	Model            string  `json:"model"`                          // 模型
-	Skill            string  `json:"skill"`                          // Skill
+	Platform         string  `json:"platform"` // 平台/框架
+	Model            string  `json:"model"`    // 模型
+	Skill            string  `json:"skill"`    // Skill
 	SubjectID        string  `json:"subject_id,omitempty"`
 	SampleCount      int     `json:"sample_count"`
 	CompilePassRate  float64 `json:"compile_pass_rate"`

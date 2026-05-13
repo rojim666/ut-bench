@@ -75,12 +75,11 @@ func main() {
 	if !strings.Contains(result.Code, "def test_generated") {
 		t.Fatalf("unexpected generated code: %s", result.Code)
 	}
-	if result.Trace.TracePath == "" || result.Trace.WorkspaceDiffPath == "" || result.Trace.SandboxFingerprint == "" {
-		t.Fatalf("expected trace artifacts, got %+v", result.Trace)
+	if result.Trace.TracePath != "" || result.Trace.WorkspaceDiffPath != "" {
+		t.Fatalf("trace artifacts should not be persisted, got %+v", result.Trace)
 	}
-	// 验证新增的 trace 字段
-	if result.Trace.InteractionCount < 1 {
-		t.Fatalf("expected interaction_count >= 1, got %d", result.Trace.InteractionCount)
+	if result.Trace.SandboxFingerprint == "" {
+		t.Fatalf("expected sandbox fingerprint, got %+v", result.Trace)
 	}
 	if result.Trace.StartedAt.IsZero() || result.Trace.FinishedAt.IsZero() {
 		t.Fatalf("expected started_at and finished_at to be set")

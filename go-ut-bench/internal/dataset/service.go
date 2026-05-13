@@ -845,7 +845,10 @@ func parseGoPackageName(path string) (string, bool) {
 
 func shouldSkipRepoLevelDir(name string) bool {
 	switch strings.ToLower(name) {
-	case ".git", ".cache", "artifacts", "build", "dist", "generated", "node_modules", "storage", "vendor", "workspace":
+	case ".git", ".github", ".cache", ".gradle", ".idea", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".vscode",
+		"__pycache__", "artifacts", "benchmark", "benchmarks", "build", "coverage", "dist", "docs",
+		"examples", "_examples", "generated", "htmlcov", "node_modules", "out", "storage", "target",
+		"testdata", "vendor", "workspace":
 		return true
 	default:
 		return false
