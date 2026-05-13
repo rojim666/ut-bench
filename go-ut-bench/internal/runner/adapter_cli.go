@@ -329,6 +329,51 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	// 项目级任务里常见情况是 Agent 把测试写到包目录下的 *_test.go，但没有复制到 generated_test.go。
 	generatedPath := findGeneratedTest(workRoot, outputFile, framework.OutputGlobs, changes, sample.Language)
 	if generatedPath == "" {
+		failureDetail := agentFailureDetail(trace)
+		if shouldFallbackOpenCodeDeepsleep(req, trace, failureDetail) {
+			fallbackReq := req
+			fallbackReq.Prompt = agentPrompt
+			fallback := generateModelAPI(ctx, fallbackReq)
+			rawResponse["fallback_adapter"] = "model_api"
+			rawResponse["fallback_reason"] = failureDetail
+			rawResponse["fallback_raw_response"] = fallback.RawResponse
+			trace.Stderr = trimText(strings.TrimSpace(trace.Stderr+"\nmodel_api_fallback: "+failureDetail), 8000)
+			trace.PromptTokens = fallback.PromptTokens
+			trace.CompletionTokens = fallback.CompletionTokens
+			trace.TotalTokens = fallback.TotalTokens
+			trace.TokenSource = fallback.TokenSource
+			trace.EstimatedCost = fallback.EstimatedCostUSD
+			trace.CostSource = fallback.CostSource
+			trace.UsageSourceDetail = "opencode_model_api_fallback"
+			if fallback.Error == nil && strings.TrimSpace(fallback.Code) != "" {
+				trace.InteractionCount++
+				trace.DurationMS += fallback.LatencyMS
+				rawResponse["token_source"] = trace.TokenSource
+				rawResponse["estimated_cost_usd"] = trace.EstimatedCost
+				rawResponse["cost_source"] = trace.CostSource
+				rawResponse["usage_source_detail"] = trace.UsageSourceDetail
+				_ = writeAgentTrace(tracePath, trace)
+				return AgentGenerateResult{
+					Code:             fallback.Code,
+					RawResponse:      rawResponse,
+					Trace:            trace,
+					LatencyMS:        latency + fallback.LatencyMS,
+					PromptTokens:     fallback.PromptTokens,
+					CompletionTokens: fallback.CompletionTokens,
+					TotalTokens:      fallback.TotalTokens,
+					TokenSource:      trace.TokenSource,
+					EstimatedCostUSD: trace.EstimatedCost,
+					CostSource:       trace.CostSource,
+					Truncated:        fallback.Truncated,
+				}
+			}
+			if fallback.Error != nil {
+				rawResponse["fallback_error"] = fallback.Error.Message
+				if failureDetail == "" {
+					failureDetail = fallback.Error.Message
+				}
+			}
+		}
 		if runErr != nil {
 			return AgentGenerateResult{
 				RawResponse: rawResponse,
@@ -347,7 +392,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 			LatencyMS:   latency,
 			Error: &contracts.ErrorInfo{
 				Kind:      "agent_output_error",
-				Message:   "agent did not produce a test file",
+				Message:   buildNoGeneratedFileMessage(failureDetail),
 				Retryable: false,
 			},
 		}
@@ -488,6 +533,103 @@ func parseAgentOutput(trace *AgentTrace, stdout, stderr string) {
 		// 如果没有解析到工具调用，至少算 1 轮（Agent 生成了一次）
 		trace.InteractionCount = 1
 	}
+}
+
+func buildNoGeneratedFileMessage(detail string) string {
+	msg := "agent did not produce a test file"
+	if detail = strings.TrimSpace(detail); detail != "" {
+		msg += ": " + trimText(detail, 500)
+	}
+	return msg
+}
+
+func shouldFallbackOpenCodeDeepsleep(req AgentGenerateRequest, trace AgentTrace, detail string) bool {
+	if !strings.EqualFold(req.Subject.Spec.Framework, "opencode") || !strings.EqualFold(req.Model.Name, "deepsleep") {
+		return false
+	}
+	combined := strings.ToLower(detail + "\n" + trace.Stderr)
+	if strings.Contains(combined, "unknown certificate verification error") ||
+		strings.Contains(combined, "certificate verify failed") ||
+		strings.Contains(combined, "self-signed certificate") {
+		return true
+	}
+	if strings.Contains(combined, "additional properties forbidden") &&
+		(strings.Contains(combined, "request format") || strings.Contains(combined, "schema")) {
+		return true
+	}
+	return strings.Contains(combined, "tool_calls") &&
+		(strings.Contains(combined, "additional properties forbidden") ||
+			strings.Contains(combined, "request format") ||
+			strings.Contains(combined, "schema"))
+}
+
+func agentFailureDetail(trace AgentTrace) string {
+	if detail := strings.TrimSpace(trace.SessionExportError); detail != "" {
+		return detail
+	}
+	if detail := sessionExportFailureDetail(trace.SessionExportPath); detail != "" {
+		return detail
+	}
+	if detail := summarizeAgentCommandError(trace.Stderr, "", 500); strings.TrimSpace(detail) != "" {
+		return detail
+	}
+	return ""
+}
+
+func sessionExportFailureDetail(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err == nil {
+		if msg := findFailureMessage(payload); msg != "" {
+			return msg
+		}
+	}
+	text := string(raw)
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "additional properties forbidden") && strings.Contains(lower, "tool_calls"):
+		return "request format doesn't match schema: additional properties forbidden, found tool_calls"
+	case strings.Contains(lower, "additional properties forbidden") && strings.Contains(lower, "reasoning_content"):
+		return "request format doesn't match schema: additional properties forbidden, found reasoning_content"
+	case strings.Contains(lower, "unknown certificate verification error"):
+		return "unknown certificate verification error"
+	}
+	return ""
+}
+
+func findFailureMessage(value any) string {
+	switch v := value.(type) {
+	case map[string]any:
+		if errValue, ok := v["error"]; ok {
+			if msg := findFailureMessage(errValue); msg != "" {
+				return msg
+			}
+		}
+		for _, key := range []string{"message", "responseBody"} {
+			if msg, ok := v[key].(string); ok && strings.TrimSpace(msg) != "" {
+				return trimText(strings.TrimSpace(msg), 500)
+			}
+		}
+		for _, child := range v {
+			if msg := findFailureMessage(child); msg != "" {
+				return msg
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if msg := findFailureMessage(child); msg != "" {
+				return msg
+			}
+		}
+	}
+	return ""
 }
 
 type usageRecord struct {

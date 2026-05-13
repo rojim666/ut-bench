@@ -26,6 +26,21 @@ func TestBuildDockerRunArgsUsesMountedSource(t *testing.T) {
 	mustContain(t, joined, "--models deepseek")
 }
 
+func TestBuildDockerRunArgsUsesSpecDatasetRootMount(t *testing.T) {
+	spec := contracts.RunSpec{
+		RunID:       "run-1",
+		Models:      []string{"deepseek"},
+		Languages:   []string{"go"},
+		DatasetRoot: "../datasets",
+	}
+	cfg := DockerConfig{EvalImageName: "utbench:latest", ProjectRoot: "/repo/go-ut-bench"}
+
+	args := buildDockerRunArgs(spec, orchestrator.Options{}, cfg)
+	joined := strings.Join(args, " ")
+
+	mustContain(t, joined, "-v /repo/datasets:/app/datasets")
+}
+
 func TestBuildDockerEvaluateArgsUsesSourceRunManifest(t *testing.T) {
 	spec := contracts.RunSpec{
 		RunID:           "run-1",

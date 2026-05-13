@@ -3187,10 +3187,10 @@ func normalizeRepoLevelDatasetPackagePath(parts []string) (string, bool) {
 		return "", false
 	}
 	lang := parts[0]
-	if !isSupportedDatasetLanguage(lang) || parts[1] != lang+"_code_files_repo_level" || !isSupportedDatasetScenario(parts[2]) {
+	if !isSupportedDatasetLanguage(lang) || parts[1] != lang+"_code_files_repo_level" || !validDatasetToken(parts[2]) {
 		return "", false
 	}
-	if parts[3] != "workspace" {
+	if parts[3] != "workspace" && !validDatasetToken(parts[3]) {
 		return "", false
 	}
 	for _, part := range parts[4:] {

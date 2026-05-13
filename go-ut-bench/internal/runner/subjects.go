@@ -519,6 +519,14 @@ func buildAgentEnv(fw agentconfig.FrameworkSpec, model modelConfig, data command
 			}
 		}
 	}
+	if strings.EqualFold(fw.Kind, "cli_agent") &&
+		strings.EqualFold(fw.Name, "opencode") &&
+		strings.EqualFold(model.Name, "deepsleep") &&
+		strings.TrimSpace(out["NODE_TLS_REJECT_UNAUTHORIZED"]) == "" {
+		// deepsleep 常部署在校内/企业 HTTPS 网关后。这里做代码级兜底，避免 YAML 模板未生效时
+		// OpenCode 的 Node 运行时仍因为证书链不完整而中断。
+		out["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+	}
 	return out, uniqueSortedStrings(envFromHost), nil
 }
 

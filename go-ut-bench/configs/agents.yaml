@@ -50,6 +50,9 @@ frameworks:
             XDG_DATA_HOME: "{{.ContainerWorkdir}}/.utbench/xdg-data"
             OPENCODE_DISABLE_CLAUDE_CODE: "true"
             OPENCODE_DISABLE_DEFAULT_PLUGINS: "true"
+            # deepsleep 走学校/内网 HTTPS 网关时，Node 版 OpenCode 可能无法验证网关证书。
+            # 如果宿主机提供了 NODE_EXTRA_CA_CERTS 会优先使用；没有 CA 时仅对 deepsleep 放宽校验。
+            NODE_TLS_REJECT_UNAUTHORIZED: "{{if eq .Model \"deepsleep\"}}0{{end}}"
             OPENCODE_CONFIG_CONTENT: |
                 {
                   "$schema": "https://opencode.ai/config.json",
@@ -71,12 +74,21 @@ frameworks:
                 }
         env_from_host:
             - DEEPSEEK_API_KEY
+            - DEEPSLEEP_API_KEY
             - DASHSCOPE_API_KEY
             - MINIMAX_API_KEY
             - MINIMAX2.5_API_KEY
             - VOLCENGINE_API_KEY
             - ARK_API_KEY
             - BIGMODEL_API_KEY
+            - HTTPS_PROXY
+            - HTTP_PROXY
+            - ALL_PROXY
+            - NO_PROXY
+            - NODE_EXTRA_CA_CERTS
+            - SSL_CERT_FILE
+            - REQUESTS_CA_BUNDLE
+            - CURL_CA_BUNDLE
         command: >
             mkdir -p "$XDG_CONFIG_HOME/opencode" "$XDG_DATA_HOME" "{{.ContainerWorkdir}}/.utbench/opencode" && printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$XDG_CONFIG_HOME/opencode/config.json" && PROMPT="$(cat {{.ContainerPrompt}})" && opencode run --print-logs --dangerously-skip-permissions --model utbench/{{.ModelID}} "$PROMPT"
 

@@ -120,8 +120,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 	// artifacts, configs, storage. Paths on the container side are fixed and
 	// mirror those used in STARTUP_GUIDE.md.
 	root := strings.TrimRight(cfg.ProjectRoot, `/\`)
+	datasetRoot := resolveDockerHostPath(root, spec.DatasetRoot, "datasets")
 	a = append(a,
-		"-v", root+`/datasets:/app/datasets`,
+		"-v", datasetRoot+`:/app/datasets`,
 		"-v", root+`/artifacts:/app/artifacts`,
 		"-v", root+`/configs:/app/configs`,
 		"-v", root+`/storage:/app/storage`,
@@ -301,6 +302,18 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 	}
 
 	return wrapDockerSourceCommand(a, cfg)
+}
+
+func resolveDockerHostPath(projectRoot, requested, fallbackName string) string {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return strings.TrimRight(projectRoot, `/\`) + `/` + fallbackName
+	}
+	requested = filepath.Clean(requested)
+	if filepath.IsAbs(requested) {
+		return filepath.ToSlash(requested)
+	}
+	return filepath.ToSlash(filepath.Clean(filepath.Join(projectRoot, requested)))
 }
 
 // runEvaluateInDocker runs only the evaluation step inside the utbench container.

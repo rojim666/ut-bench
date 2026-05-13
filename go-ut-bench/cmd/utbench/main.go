@@ -425,7 +425,7 @@ func runWeb(args []string) error {
 
 	addr := fs.String("addr", ":8080", "HTTP listen address")
 	configPath := fs.String("config", "./configs/models.yaml", "Model config path")
-	datasetRoot := fs.String("dataset-root", "./datasets", "Dataset root directory")
+	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
 	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
 	agentsConfigPath := fs.String("agents-config", "", "Agent/skill config path (auto-detected from --config dir if omitted)")
@@ -567,7 +567,7 @@ func runRun(args []string) error {
 	config := fs.String("config", "../benchmark/config/models.yaml", "Model config path")
 	agentsConfig := fs.String("agents-config", "", "Agent/skill config path")
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
-	datasetRoot := fs.String("dataset-root", "./datasets", "Dataset root directory")
+	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	datasetManifest := fs.String("dataset-manifest", "", "Dataset manifest path")
 	datasetLevel := fs.String("level", "", "Dataset level")
 	datasetClass := fs.String("class", "self_contained", "Dataset class(es), comma-separated (self_contained, module_level)")
@@ -679,7 +679,7 @@ func runGenerate(args []string) error {
 	config := fs.String("config", "../benchmark/config/models.yaml", "Model config path")
 	agentsConfig := fs.String("agents-config", "", "Agent/skill config path")
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
-	datasetRoot := fs.String("dataset-root", "./datasets", "Dataset root directory")
+	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	datasetManifest := fs.String("dataset-manifest", "", "Dataset manifest path")
 	datasetLevel := fs.String("level", "", "Dataset level")
 	datasetClass := fs.String("class", "self_contained", "Dataset class")
@@ -1281,7 +1281,7 @@ func runDatasetSubcommand(svc *dataset.Service, subCmd string, remaining []strin
 
 func datasetStats(svc *dataset.Service, args []string) error {
 	fs := flag.NewFlagSet("utbench dataset stats", flag.ContinueOnError)
-	datasetRoot := fs.String("dataset-root", "./datasets", "Dataset root directory")
+	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	fs.Parse(args)
 
 	langs := []string{"python", "java", "go", "cpp"}
@@ -1307,7 +1307,7 @@ func datasetStats(svc *dataset.Service, args []string) error {
 
 func datasetIndex(svc *dataset.Service, args []string) error {
 	fs := flag.NewFlagSet("utbench dataset index", flag.ContinueOnError)
-	datasetRoot := fs.String("dataset-root", "./datasets", "Dataset root directory")
+	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	output := fs.String("output", "./configs/dataset_index.json", "Index output path")
 	fs.Parse(args)
 
@@ -1359,7 +1359,7 @@ func datasetManifest(svc *dataset.Service, args []string) error {
 
 func datasetValidate(svc *dataset.Service, args []string) error {
 	fs := flag.NewFlagSet("utbench dataset validate", flag.ContinueOnError)
-	datasetRoot := fs.String("dataset-root", "./datasets", "Dataset root directory")
+	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	langs := fs.String("langs", "", "Comma-separated languages to include")
 	classFilter := fs.String("class", "", "Dataset class filter")
 	scenarioFilter := fs.String("scenario", "", "Dataset scenario filter")
