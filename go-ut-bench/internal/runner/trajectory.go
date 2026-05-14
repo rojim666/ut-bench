@@ -38,9 +38,9 @@ func writeRawAgentOutputs(rawTracePath, rawStdoutPath, rawStderrPath, stdout, st
 		for scanner.Scan() {
 			lineNo++
 			_ = enc.Encode(map[string]any{
-				"stream": stream,
+				"stream":  stream,
 				"line_no": lineNo,
-				"line":   scanner.Text(),
+				"line":    scanner.Text(),
 			})
 		}
 	}
@@ -94,6 +94,18 @@ func buildAgentTrajectory(trace AgentTrace, generatedTestPath, errorText, stdout
 			})
 		}
 	}
+	if !hasTrajectoryKind(steps, "tool_call") {
+		for _, call := range trace.ToolCalls {
+			steps = append(steps, TrajectoryStep{
+				Kind:    "tool_call",
+				Tool:    call.Tool,
+				Input:   trimText(call.Input, 4000),
+				Output:  trimText(call.Output, 4000),
+				Success: boolPtr(call.Success),
+				Source:  "parsed_log",
+			})
+		}
+	}
 	for _, cmd := range trace.CommandsExecuted {
 		steps = append(steps, TrajectoryStep{Kind: "command", Tool: "bash", Input: map[string]any{"command": cmd}, Source: "parsed_log"})
 	}
@@ -117,13 +129,23 @@ func buildAgentTrajectory(trace AgentTrace, generatedTestPath, errorText, stdout
 		SessionExportPath: trace.SessionExportPath,
 		Steps:             steps,
 		Outcome: TrajectoryOutcome{
-			ExitCode:          trace.ExitCode,
-			DurationMS:        trace.DurationMS,
-			GeneratedTestPath: generatedTestPath,
-			WorkspaceDiff:     trace.WorkspaceDiff,
-			Error:             errorText,
+			ExitCode:           trace.ExitCode,
+			DurationMS:         trace.DurationMS,
+			GeneratedTestPath:  generatedTestPath,
+			WorkspaceDiff:      compactStringList(trace.WorkspaceDiff, 200, 1000),
+			WorkspaceDiffCount: len(trace.WorkspaceDiff),
+			Error:              errorText,
 		},
 	}
+}
+
+func hasTrajectoryKind(steps []TrajectoryStep, kind string) bool {
+	for _, step := range steps {
+		if step.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func parseStreamJSONTrajectory(output, source string) []TrajectoryStep {
@@ -157,11 +179,172 @@ func parseOpenCodeSessionTrajectory(path string) []TrajectoryStep {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil
 	}
+	if steps := openCodeSessionSteps(payload); len(steps) > 0 {
+		return steps
+	}
 	var steps []TrajectoryStep
 	for _, msg := range findMessageObjects(payload) {
 		steps = append(steps, trajectoryStepsFromEvent(msg, "session_export")...)
 	}
 	return steps
+}
+
+func openCodeSessionSteps(payload any) []TrajectoryStep {
+	var steps []TrajectoryStep
+	for _, msg := range openCodeMessages(payload) {
+		msgSteps := openCodeMessageSteps(msg)
+		if len(msgSteps) == 0 {
+			msgSteps = trajectoryStepsFromEvent(msg, "session_export")
+		}
+		steps = append(steps, msgSteps...)
+	}
+	return steps
+}
+
+func openCodeMessages(payload any) []map[string]any {
+	var out []map[string]any
+	switch v := payload.(type) {
+	case map[string]any:
+		if messages, ok := v["messages"].([]any); ok {
+			for _, item := range messages {
+				if msg, ok := item.(map[string]any); ok {
+					out = append(out, msg)
+				}
+			}
+			return out
+		}
+		if _, ok := v["parts"].([]any); ok {
+			out = append(out, v)
+			return out
+		}
+	case []any:
+		for _, item := range v {
+			if msg, ok := item.(map[string]any); ok {
+				out = append(out, msg)
+			}
+		}
+	}
+	return out
+}
+
+func openCodeMessageSteps(msg map[string]any) []TrajectoryStep {
+	parts, ok := msg["parts"].([]any)
+	if !ok || len(parts) == 0 {
+		return nil
+	}
+	info, _ := msg["info"].(map[string]any)
+	role := firstString(msg, "role")
+	if role == "" && info != nil {
+		role = firstString(info, "role")
+	}
+
+	var steps []TrajectoryStep
+	for _, rawPart := range parts {
+		part, ok := rawPart.(map[string]any)
+		if !ok {
+			continue
+		}
+		partType := firstString(part, "type")
+		switch partType {
+		case "reasoning":
+			if text := firstString(part, "text"); text != "" {
+				steps = append(steps, TrajectoryStep{
+					Kind:     "thinking",
+					Role:     role,
+					Text:     trimText(text, 4000),
+					Source:   "session_export",
+					RawType:  partType,
+					RawEvent: compactRawEvent(part),
+				})
+			}
+		case "text":
+			if text := firstString(part, "text"); text != "" {
+				steps = append(steps, TrajectoryStep{
+					Kind:     "message",
+					Role:     role,
+					Text:     trimText(text, 4000),
+					Source:   "session_export",
+					RawType:  partType,
+					RawEvent: compactRawEvent(part),
+				})
+			}
+		case "tool":
+			steps = append(steps, openCodeToolSteps(part, role)...)
+		}
+	}
+	return steps
+}
+
+func openCodeToolSteps(part map[string]any, role string) []TrajectoryStep {
+	state, _ := part["state"].(map[string]any)
+	tool := firstString(part, "tool", "name")
+	callID := firstString(part, "callID", "call_id", "id")
+	if state != nil {
+		if tool == "" {
+			tool = firstString(state, "tool", "name")
+		}
+		if callID == "" {
+			callID = firstString(state, "callID", "call_id", "id")
+		}
+	}
+
+	call := TrajectoryStep{
+		Kind:       "tool_call",
+		Role:       role,
+		Tool:       tool,
+		ToolCallID: callID,
+		Source:     "session_export",
+		RawType:    "tool",
+		RawEvent:   compactRawEvent(part),
+	}
+	if state != nil {
+		call.Input = compactAny(firstAny(state, "input", "args", "arguments"), 3, 4000)
+		call.DurationMS = durationMSFromOpenCodeState(state)
+	} else {
+		call.Input = compactAny(firstAny(part, "input", "args", "arguments"), 3, 4000)
+	}
+	steps := []TrajectoryStep{call}
+
+	if state == nil {
+		return steps
+	}
+	status := firstString(state, "status")
+	if status == "" || strings.EqualFold(status, "pending") || strings.EqualFold(status, "running") {
+		return steps
+	}
+	success := boolPtr(strings.EqualFold(status, "completed"))
+	output := compactAny(firstAny(state, "output", "error", "metadata"), 3, 4000)
+	exitCode := exitCodeFromValue(output)
+	if exitCode != nil && *exitCode != 0 {
+		success = boolPtr(false)
+	}
+	steps = append(steps, TrajectoryStep{
+		Kind:       "tool_result",
+		Role:       role,
+		Tool:       tool,
+		ToolCallID: callID,
+		Output:     output,
+		Success:    success,
+		ExitCode:   exitCode,
+		DurationMS: durationMSFromOpenCodeState(state),
+		Source:     "session_export",
+		RawType:    "tool",
+		RawEvent:   compactRawEvent(state),
+	})
+	return steps
+}
+
+func durationMSFromOpenCodeState(state map[string]any) int {
+	timeBlock, _ := state["time"].(map[string]any)
+	if timeBlock == nil {
+		return 0
+	}
+	start, okStart := numberAsInt64(timeBlock["start"])
+	end, okEnd := numberAsInt64(timeBlock["end"])
+	if !okStart || !okEnd || end < start {
+		return 0
+	}
+	return int(end - start)
 }
 
 func parseTextLogTrajectory(output, source string) []TrajectoryStep {
@@ -389,6 +572,25 @@ func compactAny(value any, depth int, maxString int) any {
 	}
 }
 
+func compactStringList(values []string, maxItems int, maxString int) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	if maxItems <= 0 || len(values) <= maxItems {
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			out = append(out, trimText(value, maxString))
+		}
+		return out
+	}
+	out := make([]string, 0, maxItems+1)
+	for i := 0; i < maxItems; i++ {
+		out = append(out, trimText(values[i], maxString))
+	}
+	out = append(out, "... truncated "+strconv.Itoa(len(values)-maxItems)+" more paths")
+	return out
+}
+
 func exitCodeFromValue(value any) *int {
 	text := strings.TrimSpace(textFromAny(value, 0))
 	if text == "" {
@@ -428,6 +630,22 @@ func textFromAny(value any, depth int) string {
 		}
 	}
 	return ""
+}
+
+func numberAsInt64(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case float64:
+		return int64(v), true
+	case json.Number:
+		n, err := v.Int64()
+		return n, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func boolPtr(value bool) *bool {

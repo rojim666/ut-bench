@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"go-ut-bench/internal/agentconfig"
+	"go-ut-bench/internal/analyzer"
 	"go-ut-bench/internal/contracts"
 	"go-ut-bench/internal/dataset"
 	"go-ut-bench/internal/obs"
@@ -2200,6 +2201,10 @@ func (s *Server) handleRunSub(w http.ResponseWriter, r *http.Request) {
 		s.handleRunEvents(w, r, runID)
 	case "report":
 		s.handleRunReport(w, r, runID)
+	case "analysis":
+		s.handleRunAnalysis(w, r, runID)
+	case "optimization-plan":
+		s.handleRunOptimizationPlan(w, r, runID)
 	case "report-html":
 		s.handleRunReportHTML(w, r, runID)
 	case "rerun":
@@ -2759,6 +2764,86 @@ func (s *Server) handleRunReport(w http.ResponseWriter, r *http.Request, runID s
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
+}
+
+type runAnalysisRequest struct {
+	LLMEnabled bool   `json:"llm_enabled"`
+	LLMModel   string `json:"llm_model"`
+	Force      bool   `json:"force"`
+}
+
+func (s *Server) handleRunAnalysis(w http.ResponseWriter, r *http.Request, runID string) {
+	switch r.Method {
+	case http.MethodGet:
+		analysisPath := filepath.Join(s.outputRoot, "runs", runID, "analysis", "analysis_report.json")
+		data, err := os.ReadFile(analysisPath)
+		if err != nil {
+			errJSON(w, http.StatusNotFound, "analysis not available yet")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(data)
+	case http.MethodPost:
+		var req runAnalysisRequest
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		report, err := analyzer.NewService().Analyze(r.Context(), analyzer.Options{
+			RunID:      runID,
+			OutputRoot: s.outputRoot,
+			ConfigPath: s.configPath,
+			LLMEnabled: req.LLMEnabled,
+			LLMModel:   req.LLMModel,
+			Force:      req.Force,
+		})
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	default:
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleRunOptimizationPlan(w http.ResponseWriter, r *http.Request, runID string) {
+	switch r.Method {
+	case http.MethodGet:
+		planPath := filepath.Join(s.outputRoot, "runs", runID, "analysis", "optimization_plan.json")
+		data, err := os.ReadFile(planPath)
+		if err != nil {
+			errJSON(w, http.StatusNotFound, "optimization plan not available yet")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(data)
+	case http.MethodPost:
+		var req runAnalysisRequest
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		plan, err := analyzer.NewService().OptimizePlan(r.Context(), analyzer.OptimizeOptions{
+			RunID:      runID,
+			OutputRoot: s.outputRoot,
+			ConfigPath: s.configPath,
+			LLMEnabled: req.LLMEnabled,
+			LLMModel:   req.LLMModel,
+			Force:      req.Force,
+		})
+		if err != nil {
+			status := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "analysis_report.json not available") {
+				status = http.StatusNotFound
+			}
+			errJSON(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+	default:
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (s *Server) handleRunReportHTML(w http.ResponseWriter, r *http.Request, runID string) {

@@ -40,9 +40,10 @@ type TrajectoryStep struct {
 }
 
 type TrajectoryOutcome struct {
-	ExitCode          int      `json:"exit_code"`
-	DurationMS        int      `json:"duration_ms"`
-	GeneratedTestPath string   `json:"generated_test_path,omitempty"`
-	WorkspaceDiff     []string `json:"workspace_diff,omitempty"`
-	Error             string   `json:"error,omitempty"`
+	ExitCode           int      `json:"exit_code"`
+	DurationMS         int      `json:"duration_ms"`
+	GeneratedTestPath  string   `json:"generated_test_path,omitempty"`
+	WorkspaceDiff      []string `json:"workspace_diff,omitempty"`
+	WorkspaceDiffCount int      `json:"workspace_diff_count,omitempty"`
+	Error              string   `json:"error,omitempty"`
 }

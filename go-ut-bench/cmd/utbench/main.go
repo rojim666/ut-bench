@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"go-ut-bench/internal/analyzer"
 	"go-ut-bench/internal/contracts"
 	"go-ut-bench/internal/dataset"
 	"go-ut-bench/internal/evaluator"
@@ -49,6 +50,10 @@ func main() {
 		err = runEvaluate(args)
 	case "report":
 		err = runReport(args)
+	case "analyze":
+		err = runAnalyze(args)
+	case "optimize-plan":
+		err = runOptimizePlan(args)
 	case "db":
 		err = runDB(args)
 	case "assets":
@@ -83,6 +88,8 @@ Usage:
   .\utbench generate     Generate unit tests only
   .\utbench evaluate     Evaluate existing generated tests
   .\utbench report       Generate reports from evaluation results
+  .\utbench analyze      Analyze report + trace + evaluation artifacts
+  .\utbench optimize-plan Generate executable optimization plan from AI analysis
   .\utbench db           Manage SQLite benchmark database
   .\utbench assets       Query reusable subject/sample assets
   .\utbench dataset      Dataset management (index, manifest, stats)
@@ -508,6 +515,92 @@ func runWeb(args []string) error {
 
 	// 优雅关闭：监听 SIGINT/SIGTERM，收到信号后先清理再退出
 	return server.StartGraceful(*addr)
+}
+
+func runAnalyze(args []string) error {
+	fs := flag.NewFlagSet("utbench analyze", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Println("Usage: utbench analyze --run-id <run-id> [--llm|--no-llm] [flags]")
+		fmt.Println("Flags:")
+		fs.PrintDefaults()
+	}
+	runID := fs.String("run-id", "", "Run ID to analyze")
+	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
+	configPath := fs.String("config", "./configs/models.yaml", "Model config path")
+	llm := fs.Bool("llm", false, "Enable LLM diagnosis")
+	noLLM := fs.Bool("no-llm", false, "Disable LLM diagnosis")
+	llmModel := fs.String("llm-model", "", "Model name from models.yaml for LLM diagnosis")
+	force := fs.Bool("force", true, "Regenerate analysis even when analysis_report.json exists")
+	jsonOut := fs.Bool("json", false, "Print full analysis JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*runID) == "" {
+		return fmt.Errorf("--run-id is required")
+	}
+	llmEnabled := *llm && !*noLLM
+	report, err := analyzer.NewService().Analyze(context.Background(), analyzer.Options{
+		RunID:      *runID,
+		OutputRoot: *outputRoot,
+		ConfigPath: *configPath,
+		LLMEnabled: llmEnabled,
+		LLMModel:   *llmModel,
+		Force:      *force,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return printJSON(report)
+	}
+	fmt.Printf("Analysis generated for %s\n", report.RunID)
+	fmt.Printf("Summary: %s\n", report.Summary.Headline)
+	fmt.Printf("Findings: %d | Recommendations: %d | LLM: %s\n", len(report.Findings), len(report.Recommendations), report.LLMStatus.Status)
+	fmt.Printf("Result: %s\n", filepath.Join(*outputRoot, "runs", *runID, "analysis", "analysis_report.json"))
+	return nil
+}
+
+func runOptimizePlan(args []string) error {
+	fs := flag.NewFlagSet("utbench optimize-plan", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Println("Usage: utbench optimize-plan --run-id <run-id> [--llm|--no-llm] [flags]")
+		fmt.Println("Flags:")
+		fs.PrintDefaults()
+	}
+	runID := fs.String("run-id", "", "Run ID to optimize")
+	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
+	configPath := fs.String("config", "./configs/models.yaml", "Model config path")
+	llm := fs.Bool("llm", false, "Enable LLM optimization planning")
+	noLLM := fs.Bool("no-llm", false, "Disable LLM optimization planning")
+	llmModel := fs.String("llm-model", "", "Model name from models.yaml for optimization planning")
+	force := fs.Bool("force", true, "Regenerate optimization plan even when optimization_plan.json exists")
+	jsonOut := fs.Bool("json", false, "Print full optimization plan JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*runID) == "" {
+		return fmt.Errorf("--run-id is required")
+	}
+	llmEnabled := *llm && !*noLLM
+	plan, err := analyzer.NewService().OptimizePlan(context.Background(), analyzer.OptimizeOptions{
+		RunID:      *runID,
+		OutputRoot: *outputRoot,
+		ConfigPath: *configPath,
+		LLMEnabled: llmEnabled,
+		LLMModel:   *llmModel,
+		Force:      *force,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return printJSON(plan)
+	}
+	fmt.Printf("Optimization plan generated for %s\n", plan.RunID)
+	fmt.Printf("Summary: %s\n", plan.Summary.Headline)
+	fmt.Printf("Items: %d | LLM: %s\n", len(plan.Items), plan.LLMStatus.Status)
+	fmt.Printf("Result: %s\n", filepath.Join(*outputRoot, "runs", *runID, "analysis", "optimization_plan.json"))
+	return nil
 }
 
 // checkModelAPIKeys 读取 models.yaml 并检查各模型的 API Key 环境变量是否已设置。

@@ -1,4 +1,4 @@
-      <!-- RUN DETAIL -->
+﻿      <!-- RUN DETAIL -->
       <div x-show="page === 'run-detail'" class="max-w-6xl space-y-4 animate-fadeUp">
         <template x-if="currentRun">
           <div>
@@ -66,6 +66,7 @@
             <div class="flex gap-0 border-b mb-4" style="border-color:var(--border)">
               <button @click="detailTab = 'logs'" :class="detailTab === 'logs' ? 'active' : ''" class="tab-btn">日志</button>
               <button @click="detailTab = 'report'; loadReport()" :class="detailTab === 'report' ? 'active' : ''" class="tab-btn">报告</button>
+              <button @click="detailTab = 'analysis'; loadAnalysis(false)" :class="detailTab === 'analysis' ? 'active' : ''" class="tab-btn">AI 分析</button>
             </div>
 
             <!-- Logs -->
@@ -269,6 +270,329 @@
                 </div>
               </template>
             </div>
+
+            <!-- AI Analysis -->
+            <div x-show="detailTab === 'analysis'" class="space-y-4">
+              <div class="form-section">
+                <div class="flex flex-wrap items-end gap-3">
+                  <label class="inline-flex items-center gap-2 text-[12px]" style="color:var(--fg-muted)">
+                    <input type="checkbox" x-model="analysisOptions.llm_enabled">
+                    <span>启用 LLM 诊断</span>
+                  </label>
+                  <label class="text-[12px]" style="color:var(--fg-muted)">
+                    <div class="mb-1">诊断模型</div>
+                    <select x-model="analysisOptions.llm_model" class="input-field min-w-[220px]">
+                      <option value="">自动选择</option>
+                      <template x-for="m in analysisModels()" :key="m">
+                        <option :value="m" x-text="m"></option>
+                      </template>
+                    </select>
+                  </label>
+                  <button @click="generateAnalysis(true)" :disabled="analysisGenerating" class="btn-primary">
+                    <span x-text="analysisGenerating ? '分析中...' : (currentAnalysis ? '重新分析' : '生成分析')"></span>
+                  </button>
+                  <button @click="loadAnalysis(true)" :disabled="analysisLoading" class="btn-ghost">刷新</button>
+                  <span class="text-[12px]" style="color:var(--fg-muted)" x-show="currentAnalysis">
+                    LLM: <span x-text="currentAnalysis?.llm_status?.status || 'unknown'"></span>
+                  </span>
+                </div>
+              </div>
+
+              <div x-show="analysisLoading && !currentAnalysis" class="form-section py-10 text-center text-[13px]" style="color:var(--fg-muted)">正在读取分析结果...</div>
+              <div x-show="!analysisLoading && !currentAnalysis" class="form-section py-10 text-center">
+                <div class="text-[13px] mb-3" style="color:var(--fg-muted)">当前 run 还没有 AI 分析结果。</div>
+                <button @click="generateAnalysis(true)" :disabled="analysisGenerating" class="btn-primary" x-text="analysisGenerating ? '分析中...' : '立即生成分析'"></button>
+              </div>
+
+              <template x-if="currentAnalysis">
+                <div class="space-y-4">
+                  <div class="grid grid-cols-5 gap-3">
+                    <div class="kpi-card text-center">
+                      <div class="kpi-value kpi-total" x-text="currentAnalysis.summary?.result_count ?? 0"></div>
+                      <div class="kpi-label">结果数</div>
+                    </div>
+                    <div class="kpi-card text-center">
+                      <div class="kpi-value pct-bad" x-text="currentAnalysis.summary?.critical_count ?? 0"></div>
+                      <div class="kpi-label">P0</div>
+                    </div>
+                    <div class="kpi-card text-center">
+                      <div class="kpi-value pct-warn" x-text="currentAnalysis.summary?.warning_count ?? 0"></div>
+                      <div class="kpi-label">P1/P2</div>
+                    </div>
+                    <div class="kpi-card text-center">
+                      <div class="kpi-value pct-good" x-text="(currentAnalysis.trace_quality?.subjects_with_trajectory ?? 0) + '/' + (currentAnalysis.trace_quality?.total_subjects ?? 0)"></div>
+                      <div class="kpi-label">Trajectory</div>
+                    </div>
+                    <div class="kpi-card text-center">
+                      <div class="kpi-value" style="color:var(--accent)" x-text="currentAnalysis.summary?.recommendation_count ?? 0"></div>
+                      <div class="kpi-label">建议</div>
+                    </div>
+                  </div>
+
+                  <div class="form-section">
+                    <div class="section-title">LLM 状态</div>
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-[12px]" style="color:var(--fg-muted)">
+                      <div><div class="mb-1">状态</div><span class="tag-pill" x-text="currentAnalysis.llm_status?.status || 'disabled'"></span></div>
+                      <div><div class="mb-1">模型</div><span class="font-mono" x-text="currentAnalysis.llm_status?.model || '自动/未启用'"></span></div>
+                      <div><div class="mb-1">证据条数</div><span class="font-mono" x-text="currentAnalysis.llm_status?.evidence_count ?? 0"></span></div>
+                      <div><div class="mb-1">证据样本</div><span class="font-mono" x-text="currentAnalysis.llm_status?.evidence_subject_count ?? 0"></span></div>
+                      <div><div class="mb-1">降级原因</div><span x-text="currentAnalysis.llm_status?.message || '无'"></span></div>
+                    </div>
+                  </div>
+
+                  <div class="form-section">
+                    <div class="section-title">总体结论</div>
+                    <div class="text-[13px]" style="color:var(--fg)" x-text="currentAnalysis.summary?.headline"></div>
+                    <div x-show="currentAnalysis.llm?.summary" class="mt-2 text-[12px]" style="color:var(--fg-muted)" x-text="currentAnalysis.llm?.summary"></div>
+                    <div class="mt-3 flex flex-wrap gap-2">
+                      <template x-for="(p, idx) in currentAnalysis.summary?.key_points || []" :key="idx">
+                        <span class="tag-pill" x-text="p"></span>
+                      </template>
+                    </div>
+                  </div>
+
+                  <div class="form-section p-0 overflow-hidden">
+                    <div class="px-4 py-3 border-b flex flex-wrap items-center gap-3" style="border-color:var(--border)">
+                      <span class="text-[13px] font-medium">问题诊断</span>
+                      <select x-model="analysisFilters.source" class="input-field text-[12px] w-[120px]"><option value="">全部来源</option><template x-for="v in analysisFilterValues('source')" :key="v"><option :value="v" x-text="v"></option></template></select>
+                      <select x-model="analysisFilters.severity" class="input-field text-[12px] w-[120px]"><option value="">全部级别</option><template x-for="v in analysisFilterValues('severity')" :key="v"><option :value="v" x-text="v"></option></template></select>
+                      <select x-model="analysisFilters.category" class="input-field text-[12px] w-[140px]"><option value="">全部分类</option><template x-for="v in analysisFilterValues('category')" :key="v"><option :value="v" x-text="v"></option></template></select>
+                      <select x-model="analysisFilters.subject" class="input-field text-[12px] min-w-[220px]"><option value="">全部 subject</option><template x-for="v in analysisFilterValues('subject')" :key="v"><option :value="v" x-text="v"></option></template></select>
+                    </div>
+                    <div x-show="!analysisFindings().length" class="p-4 text-[12px]" style="color:var(--fg-muted)">暂无匹配的诊断问题。</div>
+                    <div class="divide-y" style="border-color:var(--border)">
+                      <template x-for="f in analysisFindings()" :key="f.id">
+                        <details class="p-4">
+                          <summary class="cursor-pointer flex items-center gap-2">
+                            <span class="tag-pill border" :style="findingBadgeStyle(f.severity)" x-text="f.severity"></span>
+                            <span class="tag-pill border" :style="analysisSourceBadgeStyle(f.source)" x-text="analysisSourceLabel(f.source)"></span>
+                            <span class="tag-pill" x-text="f.category"></span>
+                            <span class="font-medium text-[13px]" x-text="f.title"></span>
+                            <span class="ml-auto font-mono text-[11px]" style="color:var(--fg-muted)" x-text="f.subject_id || 'global'"></span>
+                          </summary>
+                          <div class="mt-3 text-[12px] space-y-2" style="color:var(--fg-muted)">
+                            <div x-text="f.detail"></div>
+                            <div x-show="f.recommendation"><span style="color:var(--fg)">建议：</span><span x-text="f.recommendation"></span></div>
+                            <div x-show="f.confidence" class="font-mono text-[11px]">confidence=<span x-text="f.confidence"></span></div>
+                            <template x-for="(e, idx) in f.evidence || []" :key="analysisEvidenceKey(e, idx)">
+                              <details class="rounded p-2" style="background:var(--bg-muted);color:var(--fg-subtle)">
+                                <summary class="cursor-pointer font-mono text-[11px]" x-text="analysisEvidenceLabel(e)"></summary>
+                                <div class="mt-2 font-mono text-[11px] whitespace-pre-wrap break-words" x-text="e.excerpt || e.path || ''"></div>
+                              </details>
+                            </template>
+                          </div>
+                        </details>
+                      </template>
+                    </div>
+                  </div>
+
+                  <div class="form-section p-0 overflow-hidden">
+                    <div class="px-4 py-3 border-b text-[13px] font-medium" style="border-color:var(--border)">Agent 对比</div>
+                    <table class="data-table">
+                      <thead><tr><th>Subject</th><th>样本</th><th>Trace</th><th>读源码</th><th>写测试</th><th>运行测试</th><th>策略命令</th><th>噪声</th></tr></thead>
+                      <tbody>
+                        <template x-for="s in currentAnalysis.subjects || []" :key="s.subject_id + s.sample_id">
+                          <tr>
+                            <td class="font-mono text-[12px]" x-text="s.subject_id"></td>
+                            <td class="font-mono text-[12px]" x-text="s.sample_id"></td>
+                            <td class="text-[12px]" x-text="s.trace_step_count"></td>
+                            <td class="text-[12px]" x-text="s.has_source_read ? '是' : '否'"></td>
+                            <td class="text-[12px]" x-text="s.has_test_write ? '是' : '否'"></td>
+                            <td class="text-[12px]" x-text="s.has_test_execution ? '是' : '否'"></td>
+                            <td class="text-[12px]" x-text="s.policy_command_count"></td>
+                            <td class="text-[12px]" x-text="s.runtime_noise_count"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div class="form-section">
+                    <div class="section-title">Step-by-step Trajectory</div>
+                    <template x-for="s in currentAnalysis.subjects || []" :key="s.subject_id + '-trajectory-' + s.sample_id">
+                      <details class="mb-3 rounded border" style="border-color:var(--border)">
+                        <summary class="cursor-pointer px-3 py-2 text-[13px] font-medium" x-text="s.subject_id + ' / ' + s.sample_id + ' · ' + s.trace_step_count + ' steps'"></summary>
+                        <div class="max-h-[520px] overflow-y-auto divide-y" style="border-color:var(--border)">
+                          <template x-for="step in s.trajectory || []" :key="step.index">
+                            <div class="p-3 text-[12px] grid grid-cols-[70px_120px_1fr] gap-3">
+                              <div class="font-mono" style="color:var(--fg-muted)">#<span x-text="step.index"></span></div>
+                              <div>
+                                <div class="font-medium" x-text="step.kind"></div>
+                                <div class="font-mono text-[11px]" style="color:var(--fg-subtle)" x-text="step.tool || step.role || ''"></div>
+                              </div>
+                              <div class="space-y-1 min-w-0">
+                                <div x-show="step.text_excerpt" x-text="step.text_excerpt"></div>
+                                <div x-show="step.input_excerpt" class="font-mono text-[11px] whitespace-pre-wrap break-words" style="color:var(--fg-muted)" x-text="step.input_excerpt"></div>
+                                <div x-show="step.output_excerpt" class="font-mono text-[11px] whitespace-pre-wrap break-words" style="color:var(--fg-subtle)" x-text="step.output_excerpt"></div>
+                              </div>
+                            </div>
+                          </template>
+                        </div>
+                      </details>
+                    </template>
+                  </div>
+
+                  <div class="form-section">
+                    <div class="section-title">优化建议</div>
+                    <div class="space-y-2">
+                      <template x-for="r in analysisRecommendations()" :key="r.id">
+                        <details class="rounded border p-3" style="border-color:var(--border)">
+                          <summary class="cursor-pointer flex items-center gap-2">
+                            <span class="tag-pill" x-text="r.priority"></span>
+                            <span class="tag-pill border" :style="analysisSourceBadgeStyle(r.source)" x-text="analysisSourceLabel(r.source)"></span>
+                            <span class="tag-pill" x-text="r.target || r.category"></span>
+                            <span class="font-medium text-[13px]" x-text="r.title"></span>
+                          </summary>
+                          <div class="mt-2 text-[12px] space-y-2" style="color:var(--fg-muted)">
+                            <div x-text="r.detail"></div>
+                            <div x-show="r.expected_impact"><span style="color:var(--fg)">预期影响：</span><span x-text="r.expected_impact"></span></div>
+                            <div x-show="r.risk"><span style="color:var(--fg)">风险：</span><span x-text="r.risk"></span></div>
+                            <template x-for="(e, idx) in r.evidence || []" :key="analysisEvidenceKey(e, idx)">
+                              <details class="rounded p-2" style="background:var(--bg-muted);color:var(--fg-subtle)">
+                                <summary class="cursor-pointer font-mono text-[11px]" x-text="analysisEvidenceLabel(e)"></summary>
+                                <div class="mt-2 font-mono text-[11px] whitespace-pre-wrap break-words" x-text="e.excerpt || e.path || ''"></div>
+                              </details>
+                            </template>
+                          </div>
+                        </details>
+                      </template>
+                    </div>
+                  </div>
+
+                  <div class="form-section">
+                    <div class="flex flex-wrap items-center gap-3 mb-4">
+                      <div class="section-title mb-0">可执行优化方案</div>
+                      <button @click="generateOptimizationPlan(true)" :disabled="optimizationGenerating || !currentAnalysis" class="btn-primary">
+                        <span x-text="optimizationGenerating ? '生成中...' : (currentOptimizationPlan ? '重新生成方案' : '生成优化方案')"></span>
+                      </button>
+                      <button @click="loadOptimizationPlan(true)" :disabled="optimizationLoading" class="btn-ghost">刷新方案</button>
+                      <span class="text-[12px]" style="color:var(--fg-muted)" x-show="currentOptimizationPlan">
+                        LLM: <span x-text="currentOptimizationPlan?.llm_status?.status || 'unknown'"></span>
+                        <span x-show="currentOptimizationPlan?.llm_status?.model"> · </span>
+                        <span x-show="currentOptimizationPlan?.llm_status?.model" x-text="currentOptimizationPlan?.llm_status?.model"></span>
+                      </span>
+                    </div>
+
+                    <div x-show="optimizationLoading && !currentOptimizationPlan" class="py-6 text-center text-[13px]" style="color:var(--fg-muted)">正在读取优化方案...</div>
+                    <div x-show="!optimizationLoading && !currentOptimizationPlan" class="rounded border p-4 text-[13px]" style="border-color:var(--border);color:var(--fg-muted)">
+                      当前 run 还没有优化方案。先确认 AI 分析已生成，再点击“生成优化方案”。
+                    </div>
+
+                    <template x-if="currentOptimizationPlan">
+                      <div class="space-y-4">
+                        <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+                          <div class="kpi-card text-center">
+                            <div class="kpi-value kpi-total" x-text="currentOptimizationPlan.summary?.item_count ?? 0"></div>
+                            <div class="kpi-label">方案项</div>
+                          </div>
+                          <div class="kpi-card text-center">
+                            <div class="kpi-value pct-bad" x-text="currentOptimizationPlan.summary?.high_priority_count ?? 0"></div>
+                            <div class="kpi-label">高优先级</div>
+                          </div>
+                          <div class="kpi-card text-center">
+                            <div class="kpi-value" style="color:var(--accent)" x-text="currentOptimizationPlan.summary?.llm_item_count ?? 0"></div>
+                            <div class="kpi-label">LLM 项</div>
+                          </div>
+                          <div class="kpi-card text-center">
+                            <div class="kpi-value pct-warn" x-text="currentOptimizationPlan.summary?.rule_item_count ?? 0"></div>
+                            <div class="kpi-label">规则项</div>
+                          </div>
+                          <div class="kpi-card text-center">
+                            <div class="kpi-value pct-good" x-text="optimizationTargets().length"></div>
+                            <div class="kpi-label">目标类型</div>
+                          </div>
+                        </div>
+
+                        <div class="rounded border p-3 text-[12px]" style="border-color:var(--border);color:var(--fg-muted)">
+                          <div class="text-[13px] mb-2" style="color:var(--fg)" x-text="currentOptimizationPlan.summary?.headline"></div>
+                          <div class="flex flex-wrap gap-2">
+                            <template x-for="(p, idx) in currentOptimizationPlan.summary?.key_points || []" :key="'opt-point-' + idx">
+                              <span class="tag-pill" x-text="p"></span>
+                            </template>
+                          </div>
+                          <div x-show="currentOptimizationPlan.llm_status?.message" class="mt-2">
+                            降级原因：<span x-text="currentOptimizationPlan.llm_status?.message"></span>
+                          </div>
+                        </div>
+
+                        <template x-for="target in optimizationTargets()" :key="'opt-target-' + target">
+                          <div class="rounded border overflow-hidden" style="border-color:var(--border)">
+                            <div class="px-4 py-3 border-b flex items-center gap-2" style="border-color:var(--border);background:var(--bg-elevated)">
+                              <span class="text-[13px] font-medium" x-text="optimizationTargetLabel(target)"></span>
+                              <span class="tag-pill" x-text="optimizationItems(target).length + ' 项'"></span>
+                            </div>
+                            <div class="divide-y" style="border-color:var(--border)">
+                              <template x-for="item in optimizationItems(target)" :key="item.id">
+                                <details class="p-4">
+                                  <summary class="cursor-pointer flex flex-wrap items-center gap-2">
+                                    <span class="tag-pill border" :style="findingBadgeStyle(item.priority)" x-text="item.priority"></span>
+                                    <span class="tag-pill border" :style="analysisSourceBadgeStyle(item.source)" x-text="analysisSourceLabel(item.source)"></span>
+                                    <span class="tag-pill" x-text="item.category"></span>
+                                    <span class="font-medium text-[13px]" x-text="item.title"></span>
+                                    <span class="ml-auto text-[11px] font-mono" style="color:var(--fg-muted)" x-text="(item.applies_to || []).join(', ')"></span>
+                                  </summary>
+                                  <div class="mt-3 text-[12px] space-y-3" style="color:var(--fg-muted)">
+                                    <div x-text="item.detail"></div>
+                                    <div x-show="(item.expected_metrics || []).length">
+                                      <span style="color:var(--fg)">预期改善指标：</span>
+                                      <template x-for="m in item.expected_metrics || []" :key="item.id + '-metric-' + m">
+                                        <span class="tag-pill mr-1" x-text="m"></span>
+                                      </template>
+                                    </div>
+                                    <div>
+                                      <div class="font-medium mb-1" style="color:var(--fg)">修改清单</div>
+                                      <div class="space-y-2">
+                                        <template x-for="(a, idx) in item.actions || []" :key="item.id + '-action-' + idx">
+                                          <div class="rounded p-2" style="background:var(--bg-muted)">
+                                            <div class="font-medium" style="color:var(--fg)" x-text="a.title"></div>
+                                            <div x-text="a.detail"></div>
+                                            <div x-show="a.file_hint" class="font-mono text-[11px] mt-1" x-text="a.file_hint"></div>
+                                          </div>
+                                        </template>
+                                      </div>
+                                    </div>
+                                    <div x-show="(item.verification || []).length">
+                                      <div class="font-medium mb-1" style="color:var(--fg)">验收方式</div>
+                                      <template x-for="(v, idx) in item.verification || []" :key="item.id + '-verify-' + idx">
+                                        <div class="rounded p-2 mb-2" style="background:var(--bg-muted)">
+                                          <div x-show="v.manual_step" x-text="v.manual_step"></div>
+                                          <div x-show="v.command" class="font-mono text-[11px] whitespace-pre-wrap break-words" x-text="v.command"></div>
+                                          <div>期望：<span x-text="v.expected"></span></div>
+                                        </div>
+                                      </template>
+                                    </div>
+                                    <div x-show="(item.risks || []).length">
+                                      <div class="font-medium mb-1" style="color:var(--fg)">风险与回退</div>
+                                      <template x-for="(risk, idx) in item.risks || []" :key="item.id + '-risk-' + idx">
+                                        <div class="rounded p-2 mb-2" style="background:var(--warn-bg);color:var(--fg-muted)">
+                                          <div x-text="risk.description"></div>
+                                          <div x-show="risk.mitigation">缓解：<span x-text="risk.mitigation"></span></div>
+                                          <div x-show="risk.rollback">回退：<span x-text="risk.rollback"></span></div>
+                                        </div>
+                                      </template>
+                                    </div>
+                                    <div x-show="(item.evidence || []).length">
+                                      <div class="font-medium mb-1" style="color:var(--fg)">Evidence</div>
+                                      <template x-for="(e, idx) in item.evidence || []" :key="optimizationEvidenceKey(e, idx)">
+                                        <details class="rounded p-2 mb-2" style="background:var(--bg-muted);color:var(--fg-subtle)">
+                                          <summary class="cursor-pointer font-mono text-[11px]" x-text="optimizationEvidenceLabel(e)"></summary>
+                                          <div class="mt-2 font-mono text-[11px] whitespace-pre-wrap break-words" x-text="e.excerpt || e.path || ''"></div>
+                                        </details>
+                                      </template>
+                                    </div>
+                                  </div>
+                                </details>
+                              </template>
+                            </div>
+                          </div>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
           </div>
         </template>
       </div>
+

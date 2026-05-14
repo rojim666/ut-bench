@@ -21,6 +21,7 @@ ENV no_proxy=""
 ENV NO_PROXY=""
 
 ARG UBUNTU_MIRROR=
+ARG LLVM_APT_BASE_URL=https://apt.llvm.org
 
 # Optionally override Ubuntu archive/security hosts for build environments
 # that need a regional mirror. Leave UBUNTU_MIRROR empty to keep upstream
@@ -78,60 +79,75 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
 
 # Add LLVM official repository for LLVM 19 only after base dependencies are
 # installed. This keeps temporary apt.llvm.org failures from breaking the large
-# Ubuntu package layer above.
-RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc && \
-    add-apt-repository "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main"
+# Ubuntu package layer above, and also lets callers override the repo host when
+# they need to route through a different mirror.
+RUN mkdir -p /etc/apt/keyrings && \
+    wget -qO /etc/apt/keyrings/apt.llvm.org.asc https://apt.llvm.org/llvm-snapshot.gpg.key && \
+    echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] ${LLVM_APT_BASE_URL}/noble/ llvm-toolchain-noble-19 main" > /etc/apt/sources.list.d/llvm.list
 
 # LLVM/Clang 19 is installed separately so failures from apt.llvm.org are
-# easier to diagnose than a single very long apt-get install command.
-RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
-    apt-get install -y --fix-missing --no-install-recommends \
-    clang-19 \
-    llvm-19 \
-    llvm-19-dev \
-    libclang-19-dev \
-    lld-19 \
-    && rm -rf /var/lib/apt/lists/*
+# easier to diagnose than a single very long apt-get install command. Keep a
+# small retry loop here because apt.llvm.org occasionally returns transient 5xx.
+RUN set -eux; \
+    for attempt in 1 2 3; do \
+      if apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && \
+         apt-get install -y --fix-missing --no-install-recommends \
+           clang-19 \
+           llvm-19 \
+           llvm-19-dev \
+           libclang-19-dev \
+           lld-19; then \
+        rm -rf /var/lib/apt/lists/*; \
+        exit 0; \
+      fi; \
+      echo "LLVM apt install failed on attempt ${attempt}, retrying..."; \
+      rm -rf /var/lib/apt/lists/*; \
+      sleep $((attempt * 10)); \
+    done; \
+    echo "LLVM apt install failed after 3 attempts"; \
+    exit 1
 
 # Configure Maven to use Aliyun mirror for faster downloads in China
-RUN mkdir -p /root/.m2 && cat > /root/.m2/settings.xml << 'SETTINGSEOF'
-<settings>
-  <mirrors>
-    <mirror>
-      <id>aliyun</id>
-      <mirrorOf>central</mirrorOf>
-      <name>Aliyun Maven Mirror</name>
-      <url>https://maven.aliyun.com/repository/central</url>
-    </mirror>
-  </mirrors>
-</settings>
-SETTINGSEOF
+RUN mkdir -p /root/.m2 && \
+    printf '%s\n' \
+      '<settings>' \
+      '  <mirrors>' \
+      '    <mirror>' \
+      '      <id>aliyun</id>' \
+      '      <mirrorOf>central</mirrorOf>' \
+      '      <name>Aliyun Maven Mirror</name>' \
+      '      <url>https://maven.aliyun.com/repository/central</url>' \
+      '    </mirror>' \
+      '  </mirrors>' \
+      '</settings>' \
+      > /root/.m2/settings.xml
 
 # Pre-download Maven dependencies used by Java evaluation (JUnit 5, JaCoCo, Surefire, PITest).
 # This avoids downloading them on every container run, which is slow and unreliable
 # with concurrent workers.
-RUN mkdir -p /tmp/maven-warmup && cat > /tmp/maven-warmup/pom.xml << 'POMEOF'
-<project>
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>warmup</groupId><artifactId>warmup</artifactId><version>1.0</version>
-  <properties>
-    <maven.compiler.source>17</maven.compiler.source>
-    <maven.compiler.target>17</maven.compiler.target>
-  </properties>
-  <dependencies>
-    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.10.2</version><scope>test</scope></dependency>
-    <dependency><groupId>org.junit.vintage</groupId><artifactId>junit-vintage-engine</artifactId><version>5.10.2</version><scope>test</scope></dependency>
-  </dependencies>
-  <build><plugins>
-    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.11.0</version></plugin>
-    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.1.2</version></plugin>
-    <plugin><groupId>org.jacoco</groupId><artifactId>jacoco-maven-plugin</artifactId><version>0.8.11</version></plugin>
-    <plugin><groupId>org.pitest</groupId><artifactId>pitest-maven</artifactId><version>1.19.6</version>
-      <dependencies><dependency><groupId>org.pitest</groupId><artifactId>pitest-junit5-plugin</artifactId><version>1.2.1</version></dependency></dependencies>
-    </plugin>
-  </plugins></build>
-</project>
-POMEOF
+RUN mkdir -p /tmp/maven-warmup && \
+    printf '%s\n' \
+      '<project>' \
+      '  <modelVersion>4.0.0</modelVersion>' \
+      '  <groupId>warmup</groupId><artifactId>warmup</artifactId><version>1.0</version>' \
+      '  <properties>' \
+      '    <maven.compiler.source>17</maven.compiler.source>' \
+      '    <maven.compiler.target>17</maven.compiler.target>' \
+      '  </properties>' \
+      '  <dependencies>' \
+      '    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.10.2</version><scope>test</scope></dependency>' \
+      '    <dependency><groupId>org.junit.vintage</groupId><artifactId>junit-vintage-engine</artifactId><version>5.10.2</version><scope>test</scope></dependency>' \
+      '  </dependencies>' \
+      '  <build><plugins>' \
+      '    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.11.0</version></plugin>' \
+      '    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.1.2</version></plugin>' \
+      '    <plugin><groupId>org.jacoco</groupId><artifactId>jacoco-maven-plugin</artifactId><version>0.8.11</version></plugin>' \
+      '    <plugin><groupId>org.pitest</groupId><artifactId>pitest-maven</artifactId><version>1.19.6</version>' \
+      '      <dependencies><dependency><groupId>org.pitest</groupId><artifactId>pitest-junit5-plugin</artifactId><version>1.2.1</version></dependency></dependencies>' \
+      '    </plugin>' \
+      '  </plugins></build>' \
+      '</project>' \
+      > /tmp/maven-warmup/pom.xml
 RUN cd /tmp/maven-warmup && mvn dependency:resolve test-compile -q && rm -rf /tmp/maven-warmup
 
 # Copy docker CLI binary from official image (lighter than docker.io package)

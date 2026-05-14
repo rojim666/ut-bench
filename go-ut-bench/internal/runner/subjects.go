@@ -694,15 +694,25 @@ func snapshotWorkspace(root string) (map[string]string, error) {
 			return err
 		}
 		if d.IsDir() {
+			if path != root {
+				rel, relErr := filepath.Rel(root, path)
+				if relErr == nil && shouldSkipWorkspaceSnapshotDir(rel) {
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
+		if isAgentRuntimeWorkspacePath(rel) {
+			return nil
+		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return nil
 		}
 		sum := sha256.Sum256(raw)
-		out[filepath.ToSlash(rel)] = hex.EncodeToString(sum[:])
+		out[rel] = hex.EncodeToString(sum[:])
 		return nil
 	})
 	return out, err
@@ -711,12 +721,57 @@ func snapshotWorkspace(root string) (map[string]string, error) {
 func diffSnapshots(before, after map[string]string) []string {
 	var out []string
 	for path, hash := range after {
+		if isAgentRuntimeWorkspacePath(path) {
+			continue
+		}
 		if before[path] != hash {
 			out = append(out, path)
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+func shouldSkipWorkspaceSnapshotDir(path string) bool {
+	path = strings.Trim(strings.TrimPrefix(filepath.ToSlash(path), "./"), "/")
+	if path == "" {
+		return false
+	}
+	if isAgentRuntimeWorkspacePath(path + "/") {
+		return true
+	}
+	base := filepath.Base(path)
+	switch base {
+	case ".git", "node_modules", "__pycache__", "venv", ".venv", "target", "build":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAgentRuntimeWorkspacePath(path string) bool {
+	path = strings.Trim(strings.TrimPrefix(filepath.ToSlash(path), "./"), "/")
+	if path == "" {
+		return false
+	}
+	prefixes := []string{
+		".claude/",
+		".codebuddy/",
+		".opencode/",
+		".pytest_cache/",
+		".utbench/",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	switch path {
+	case "go.mod", "go.sum", "test_runner":
+		return true
+	default:
+		return false
+	}
 }
 
 func findGeneratedTest(workRoot, preferred string, globs, changes []string, language string) string {

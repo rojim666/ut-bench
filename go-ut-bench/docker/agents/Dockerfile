@@ -75,6 +75,8 @@ RUN set -eux; \
         unzip \
         python3 \
         python3-pip \
+        python3-pytest \
+        python-is-python3 \
       || echo "warning: optional agent helper tools failed to install; CLI runtime remains usable"; \
     else \
       echo "warning: apt update failed; skipping optional agent helper tools"; \

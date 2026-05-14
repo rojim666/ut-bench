@@ -183,6 +183,14 @@
     currentRun: null,
     currentLogs: [],
     currentReport: null,
+    currentAnalysis: null,
+    currentOptimizationPlan: null,
+    analysisLoading: false,
+    analysisGenerating: false,
+    optimizationLoading: false,
+    optimizationGenerating: false,
+    analysisOptions: { llm_enabled: true, llm_model: '', force: true },
+    analysisFilters: { source: '', severity: '', category: '', subject: '' },
     detailTab: 'logs',
     sseSource: null,
     runActionBusy: '',
@@ -3151,6 +3159,8 @@
       payload.run_id = optimisticRunId
       this.stopSSE()
       this.currentReport = null
+      this.currentAnalysis = null
+      this.currentOptimizationPlan = null
       this.currentLogs = []
       this._logCount = 0
       this.detailTab = 'logs'
@@ -3197,7 +3207,7 @@
     },
 
     async openRun(runId) {
-      this.stopSSE(); this.currentReport = null; this.currentLogs = []; this._logCount = 0; this.detailTab = 'logs'
+      this.stopSSE(); this.currentReport = null; this.currentAnalysis = null; this.currentOptimizationPlan = null; this.currentLogs = []; this._logCount = 0; this.detailTab = 'logs'
       this._resetLogPre()
       this.page = 'run-detail'
       this.syncPageVisibility()
@@ -3328,6 +3338,99 @@
       }
     },
 
+    async loadAnalysis(showMissing = false) {
+      if (!this.currentRun) return
+      this.analysisLoading = true
+      try {
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis`, { cache: 'no-store' })
+        if (r.ok) {
+          this.currentAnalysis = await r.json()
+          await this.loadOptimizationPlan(false)
+          return
+        }
+        if (showMissing && r.status !== 404) {
+          const data = await r.json().catch(() => ({}))
+          this.showToast('加载分析失败：' + (data.error || 'HTTP ' + r.status), 'err')
+        }
+      } finally {
+        this.analysisLoading = false
+      }
+    },
+
+    async generateAnalysis(force = true) {
+      if (!this.currentRun) return
+      this.analysisGenerating = true
+      try {
+        const body = {
+          llm_enabled: !!this.analysisOptions.llm_enabled,
+          llm_model: this.analysisOptions.llm_model || '',
+          force,
+        }
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.currentAnalysis = data
+        this.currentOptimizationPlan = null
+        this.showToast('AI 分析已生成', data.llm_status?.status === 'degraded' ? 'warn' : 'ok')
+      } catch(e) {
+        this.showToast('生成分析失败：' + (e.message || String(e)), 'err', 6000)
+      } finally {
+        this.analysisGenerating = false
+      }
+    },
+
+    async loadOptimizationPlan(showMissing = false) {
+      if (!this.currentRun) return
+      this.optimizationLoading = true
+      try {
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/optimization-plan`, { cache: 'no-store' })
+        if (r.ok) {
+          this.currentOptimizationPlan = await r.json()
+          return
+        }
+        this.currentOptimizationPlan = null
+        if (showMissing && r.status !== 404) {
+          const data = await r.json().catch(() => ({}))
+          this.showToast('加载优化方案失败：' + (data.error || 'HTTP ' + r.status), 'err')
+        }
+      } finally {
+        this.optimizationLoading = false
+      }
+    },
+
+    async generateOptimizationPlan(force = true) {
+      if (!this.currentRun) return
+      if (!this.currentAnalysis) {
+        this.showToast('请先生成 AI 分析，再生成优化方案', 'warn', 5000)
+        return
+      }
+      this.optimizationGenerating = true
+      try {
+        const body = {
+          llm_enabled: !!this.analysisOptions.llm_enabled,
+          llm_model: this.analysisOptions.llm_model || '',
+          force,
+        }
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/optimization-plan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.currentOptimizationPlan = data
+        this.showToast('优化方案已生成', data.llm_status?.status === 'degraded' ? 'warn' : 'ok')
+      } catch(e) {
+        this.showToast('生成优化方案失败：' + (e.message || String(e)), 'err', 6000)
+      } finally {
+        this.optimizationGenerating = false
+      }
+    },
+
     openHtmlReport() {
       if (!this.currentRun) return
       window.open(`/api/runs/${this.currentRun.run_id}/report-html`, '_blank')
@@ -3397,6 +3500,105 @@
     metricPct(v) {
       if (v == null) return '—'
       return (v > 1 ? v : v * 100).toFixed(1) + '%'
+    },
+    analysisModels() {
+      return (this.config?.models || this.models || []).filter(m => m.enabled !== false).map(m => m.name)
+    },
+    analysisFindings(source = '') {
+      let items = this.currentAnalysis?.findings || []
+      if (source) items = items.filter(f => (f.source || 'rule') === source)
+      const filters = this.analysisFilters || {}
+      if (filters.source) items = items.filter(f => (f.source || 'rule') === filters.source)
+      if (filters.severity) items = items.filter(f => f.severity === filters.severity)
+      if (filters.category) items = items.filter(f => f.category === filters.category)
+      if (filters.subject) items = items.filter(f => (f.subject_id || 'global') === filters.subject)
+      return [...items].sort((a, b) => {
+        const srcRank = v => (v || 'rule') === 'llm' ? 0 : ((v || 'rule') === 'rule' ? 1 : 2)
+        const sevRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+        return srcRank(a.source) - srcRank(b.source) || sevRank(a.severity) - sevRank(b.severity) || String(a.subject_id || '').localeCompare(String(b.subject_id || ''))
+      })
+    },
+    analysisRecommendations(source = '') {
+      const items = this.currentAnalysis?.recommendations || []
+      const filtered = source ? items.filter(r => (r.source || 'rule') === source) : items
+      return [...filtered].sort((a, b) => {
+        const srcRank = v => (v || 'rule') === 'llm' ? 0 : ((v || 'rule') === 'rule' ? 1 : 2)
+        const priRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+        return srcRank(a.source) - srcRank(b.source) || priRank(a.priority) - priRank(b.priority)
+      })
+    },
+    optimizationItems(target = '') {
+      let items = this.currentOptimizationPlan?.items || []
+      if (target) items = items.filter(i => i.target === target)
+      return [...items].sort((a, b) => {
+        const srcRank = v => (v || 'rule') === 'llm' ? 0 : ((v || 'rule') === 'rule' ? 1 : 2)
+        const priRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+        return srcRank(a.source) - srcRank(b.source) || priRank(a.priority) - priRank(b.priority) || String(a.target || '').localeCompare(String(b.target || ''))
+      })
+    },
+    optimizationTargets() {
+      const targets = this.currentOptimizationPlan?.summary?.targets || []
+      if (targets.length) return targets
+      return Array.from(new Set((this.currentOptimizationPlan?.items || []).map(i => i.target).filter(Boolean))).sort()
+    },
+    optimizationTargetLabel(target) {
+      return ({
+        skill: 'Skill',
+        prompt: 'Prompt',
+        agent_config: 'Agent 配置',
+        environment: '环境',
+        evaluator: '评测器',
+      })[target] || target || '未分类'
+    },
+    optimizationEvidenceLabel(e) {
+      if (!e) return 'evidence'
+      const parts = []
+      if (e.evidence_id) parts.push(e.evidence_id)
+      if (e.kind) parts.push(e.kind)
+      if (e.subject_id) parts.push(e.subject_id)
+      if (e.step_index) parts.push('#' + e.step_index)
+      return parts.join(' · ') || 'evidence'
+    },
+    optimizationEvidenceKey(e, idx) {
+      return (e?.evidence_id || e?.kind || 'evidence') + '-' + idx
+    },
+    analysisFilterValues(field) {
+      const items = this.currentAnalysis?.findings || []
+      const values = new Set()
+      items.forEach(f => {
+        if (field === 'source') values.add(f.source || 'rule')
+        if (field === 'severity' && f.severity) values.add(f.severity)
+        if (field === 'category' && f.category) values.add(f.category)
+        if (field === 'subject') values.add(f.subject_id || 'global')
+      })
+      return Array.from(values).sort()
+    },
+    analysisEvidenceLabel(e) {
+      if (!e) return 'evidence'
+      const parts = []
+      if (e.evidence_id) parts.push(e.evidence_id)
+      if (e.kind) parts.push(e.kind)
+      if (e.subject_id) parts.push(e.subject_id)
+      if (e.step_index) parts.push('#' + e.step_index)
+      return parts.join(' · ') || 'evidence'
+    },
+    analysisEvidenceKey(e, idx) {
+      return (e?.evidence_id || e?.kind || 'evidence') + '-' + idx
+    },
+    analysisSourceLabel(source) {
+      if ((source || 'rule') === 'llm') return 'LLM 诊断'
+      if ((source || 'rule') === 'rule') return '规则诊断'
+      return source || '未知来源'
+    },
+    analysisSourceBadgeStyle(source) {
+      if ((source || 'rule') === 'llm') return 'background:rgba(14,165,233,.10);color:var(--accent);border-color:rgba(14,165,233,.30)'
+      return 'background:var(--bg-muted);color:var(--fg-muted);border-color:var(--border)'
+    },
+    findingBadgeStyle(sev) {
+      if (sev === 'P0') return 'background:var(--error-bg);color:var(--red);border-color:var(--error-border)'
+      if (sev === 'P1') return 'background:var(--warn-bg);color:var(--yellow);border-color:rgba(245,158,11,.35)'
+      if (sev === 'P2') return 'background:rgba(14,165,233,.10);color:var(--accent);border-color:rgba(14,165,233,.30)'
+      return 'background:var(--bg-muted);color:var(--fg-muted);border-color:var(--border)'
     },
     fmtInt(v) { return (v==null || v===0) ? '—' : Math.round(v).toLocaleString('zh-CN') },
     fmtMs(v) {

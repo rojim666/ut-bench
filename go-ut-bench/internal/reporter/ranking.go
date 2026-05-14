@@ -210,36 +210,28 @@ func skillUpliftRows(aggs map[string]*comparisonAgg) []contracts.SkillUpliftRow 
 
 // subjectMetrics 按 subject (framework × model × skill) 聚合的指标快照
 type subjectMetrics struct {
-	framework      string
-	model          string
-	skill          string
-	subjectID      string
-	count          int
-	compileSum     float64
-	testSum        float64
-	lineSum        float64
-	lineCnt        int
-	mutSum         float64
-	mutCnt         int
-	assertionSum   float64
-	assertionCnt   int
+	framework    string
+	model        string
+	skill        string
+	subjectID    string
+	count        int
+	compileSum   float64
+	testSum      float64
+	lineSum      float64
+	lineCnt      int
+	mutSum       float64
+	mutCnt       int
+	assertionSum float64
+	assertionCnt int
 }
 
-func (s *subjectMetrics) compileRate() float64  { return rate(int(s.compileSum), s.count) }
-func (s *subjectMetrics) testRate() float64     { return rate(int(s.testSum), s.count) }
-func (s *subjectMetrics) lineCov() float64      { return avg(s.lineSum, s.lineCnt) }
-func (s *subjectMetrics) mutScore() float64     { return avg(s.mutSum, s.mutCnt) }
+func (s *subjectMetrics) compileRate() float64   { return rate(int(s.compileSum), s.count) }
+func (s *subjectMetrics) testRate() float64      { return rate(int(s.testSum), s.count) }
+func (s *subjectMetrics) lineCov() float64       { return avg(s.lineSum, s.lineCnt) }
+func (s *subjectMetrics) mutScore() float64      { return avg(s.mutSum, s.mutCnt) }
 func (s *subjectMetrics) assertDensity() float64 { return avg(s.assertionSum, s.assertionCnt) }
 func (s *subjectMetrics) composite() float64 {
-	c := s.compileRate()
-	p := s.testRate()
-	v := s.lineCov()
-	m := s.mutScore()
-	aNorm := s.assertDensity() / contracts.DefaultWeights.AssertSat
-	if aNorm > 1.0 {
-		aNorm = 1.0
-	}
-	return round(c*p*(v*contracts.DefaultWeights.Coverage+aNorm*contracts.DefaultWeights.Assertion+m*contracts.DefaultWeights.Mutation)*100, 6)
+	return calculateCompositeScore(s.compileRate(), s.testRate(), s.lineCov(), s.assertDensity(), s.mutScore())
 }
 
 func buildSubjectMetrics(rows []contracts.EvaluationResult) map[string]*subjectMetrics {
@@ -377,17 +369,13 @@ func buildComparisonViews(rows []contracts.EvaluationResult) []contracts.Compari
 func buildTopModels(models []contracts.ModelDim) []contracts.ModelRank {
 	var sorted []contracts.ModelDim
 	for _, m := range models {
-		// 场景C公式：Score = C × P × (0.20·V + 0.20·A_norm + 0.60·M) × 100
-		// A_norm = min(1, A / A_sat)，A_sat = 3
-		aNorm := m.AvgAssertionDensity / contracts.DefaultWeights.AssertSat
-		if aNorm > 1.0 {
-			aNorm = 1.0
-		}
-		composite := m.CompilePassRate * m.AvgTestPassRate *
-			(m.AvgLineCoverage*contracts.DefaultWeights.Coverage +
-				aNorm*contracts.DefaultWeights.Assertion +
-				m.AvgMutationScore*contracts.DefaultWeights.Mutation) * 100
-		m.CompositeScore = round(composite, 6)
+		m.CompositeScore = calculateCompositeScore(
+			m.CompilePassRate,
+			m.AvgTestPassRate,
+			m.AvgLineCoverage,
+			m.AvgAssertionDensity,
+			m.AvgMutationScore,
+		)
 		sorted = append(sorted, m)
 	}
 	// 按综合得分降序排序
@@ -436,6 +424,21 @@ func buildTopModels(models []contracts.ModelDim) []contracts.ModelRank {
 		})
 	}
 	return out
+}
+
+func calculateCompositeScore(compilePassRate, testPassRate, lineCoverage, assertionDensity, mutationScore float64) float64 {
+	aNorm := assertionDensity / contracts.DefaultWeights.AssertSat
+	if aNorm > 1.0 {
+		aNorm = 1.0
+	}
+	if aNorm < 0 {
+		aNorm = 0
+	}
+	composite := compilePassRate * testPassRate *
+		(lineCoverage*contracts.DefaultWeights.Coverage +
+			aNorm*contracts.DefaultWeights.Assertion +
+			mutationScore*contracts.DefaultWeights.Mutation) * 100
+	return round(composite, 6)
 }
 
 func buildFailureRows(rows []contracts.EvaluationResult) []contracts.FailureRow {
