@@ -16,13 +16,14 @@
                 </div>
                 <div class="flex flex-wrap gap-x-6 gap-y-1 text-[12px]" style="color:var(--fg-muted)">
                   <span>被测对象: <span style="color:var(--fg)" x-text="runSubjectSummary(currentRun)"></span></span>
-                  <span>模型: <span style="color:var(--fg)" x-text="(currentRun.spec?.models ?? []).join(', ') || '—'"></span></span>
-                  <span>语言: <span style="color:var(--fg)" x-text="(currentRun.spec?.languages ?? []).join(', ')"></span></span>
+                  <span>模型: <span style="color:var(--fg)" x-text="runModelSummary(currentRun)"></span></span>
+                  <span>语言: <span style="color:var(--fg)" x-text="(currentRun.spec?.languages ?? []).join(', ') || '—'"></span></span>
                   <span>类型: <span style="color:var(--fg)" x-text="(currentRun.spec?.dataset_classes ?? []).join(', ') || '—'"></span></span>
                   <span>场景: <span style="color:var(--fg)" x-text="currentRun.spec?.dataset_scenario || '—'"></span></span>
+                  <span x-show="currentRun.spec?.dataset_project">项目: <span style="color:var(--fg)" x-text="currentRun.spec?.dataset_project"></span></span>
                   <span>样本: <span style="color:var(--fg)" x-text="currentRun.spec?.max_samples ?? '—'"></span></span>
                   <span>并发: <span style="color:var(--fg)" x-text="currentRun.spec?.workers ?? 0"></span></span>
-                  <span>复用生成: <span style="color:var(--fg)" x-text="currentRun.spec?.reuse_generated ? '开启' : '关闭'"></span></span>
+                  <span>复用生成: <span style="color:var(--fg)" x-text="currentRun.spec?.reuse_generated !== false ? '开启' : '关闭'"></span></span>
                   <span>复用评测: <span style="color:var(--fg)" x-text="currentRun.spec?.reuse_evaluation ? '开启' : '关闭'"></span></span>
                   <span>后端: <span style="color:var(--fg)" x-text="currentRun.use_docker ? 'Docker' : '本地进程'"></span></span>
                   <span x-show="currentReport?.runtime_summary?.sandbox_providers?.length">沙箱: <span style="color:var(--fg)" x-text="(currentReport?.runtime_summary?.sandbox_providers ?? []).join(', ')"></span></span>

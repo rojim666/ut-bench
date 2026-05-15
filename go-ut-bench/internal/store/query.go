@@ -546,6 +546,106 @@ func (s *SQLiteStore) FindReusableGeneratedAsset(ctx context.Context, generation
 	return out, true, nil
 }
 
+func (s *SQLiteStore) FindReusableGeneratedAssetByIdentity(
+	ctx context.Context,
+	subjectID string,
+	language string,
+	sampleUID string,
+	promptVersionID string,
+	promptMode string,
+	frameworkConfigSHA256 string,
+	skillSHA256 string,
+	agentCommandSHA256 string,
+	dependencyFingerprint string,
+	generationEnvFingerprint string,
+) (ReusableGeneratedCase, bool, error) {
+	subjectID = strings.TrimSpace(subjectID)
+	language = strings.TrimSpace(language)
+	sampleUID = strings.TrimSpace(sampleUID)
+	promptVersionID = strings.TrimSpace(promptVersionID)
+	if subjectID == "" || language == "" || sampleUID == "" || promptVersionID == "" {
+		return ReusableGeneratedCase{}, false, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT gc.generated_case_id, gc.run_id, gc.model, gc.language, gc.sample_id,
+		       COALESCE(test_art.path, ''), COALESCE(test_art.sha256, ''),
+		       COALESCE(resp_art.path, ''), COALESCE(meta_art.path, ''),
+		       COALESCE(trace_art.path, ''), COALESCE(diff_art.path, ''),
+		       COALESCE(gc.sandbox_fingerprint, ''), COALESCE(gc.latency_ms, 0),
+		       gc.prompt_tokens, gc.completion_tokens, gc.total_tokens,
+		       COALESCE(gc.token_source, ''), gc.estimated_cost_usd, COALESCE(gc.cost_source, ''),
+		       COALESCE(gc.generated_at_utc, ''), COALESCE(gc.generated_test_artifact_id, '')
+		FROM generated_cases gc
+		LEFT JOIN prompt_renderings pr ON pr.prompt_rendering_id = gc.prompt_rendering_id
+		LEFT JOIN artifacts test_art ON test_art.artifact_id = gc.generated_test_artifact_id
+		LEFT JOIN artifacts resp_art ON resp_art.artifact_id = gc.response_artifact_id
+		LEFT JOIN artifacts meta_art ON meta_art.artifact_id = gc.metadata_artifact_id
+		LEFT JOIN artifacts trace_art ON trace_art.artifact_id = gc.trace_artifact_id
+		LEFT JOIN artifacts diff_art ON diff_art.artifact_id = gc.workspace_diff_artifact_id
+		WHERE gc.success = 1
+		  AND COALESCE(gc.subject_id, gc.model) = ?
+		  AND gc.language = ?
+		  AND gc.sample_uid = ?
+		  AND COALESCE(pr.prompt_version_id, '') = ?
+		  AND COALESCE(pr.prompt_mode, '') = ?
+		  AND COALESCE(gc.framework_config_sha256, '') = ?
+		  AND COALESCE(gc.skill_sha256, '') = ?
+		  AND COALESCE(gc.agent_command_sha256, '') = ?
+		  AND COALESCE(gc.dependency_fingerprint, '') = ?
+		  AND COALESCE(gc.generation_env_fingerprint, '') = ?
+		  AND COALESCE(test_art.deleted_at_utc, '') = ''
+		ORDER BY gc.generated_at_utc DESC
+		LIMIT 1`,
+		subjectID,
+		language,
+		sampleUID,
+		promptVersionID,
+		strings.TrimSpace(promptMode),
+		strings.TrimSpace(frameworkConfigSHA256),
+		strings.TrimSpace(skillSHA256),
+		strings.TrimSpace(agentCommandSHA256),
+		strings.TrimSpace(dependencyFingerprint),
+		strings.TrimSpace(generationEnvFingerprint),
+	)
+	var out ReusableGeneratedCase
+	var promptTokens, completionTokens, totalTokens sql.NullInt64
+	var estimatedCost sql.NullFloat64
+	if err := row.Scan(
+		&out.GeneratedCaseID, &out.RunID, &out.Model, &out.Language, &out.SampleID,
+		&out.GeneratedTestPath, &out.GeneratedTestSHA256,
+		&out.ResponsePath, &out.MetadataPath,
+		&out.TracePath, &out.WorkspaceDiffPath,
+		&out.SandboxFingerprint, &out.LatencyMS,
+		&promptTokens, &completionTokens, &totalTokens,
+		&out.TokenSource, &estimatedCost, &out.CostSource,
+		&out.GeneratedAtUTC, &out.GeneratedTestArtifact,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return ReusableGeneratedCase{}, false, nil
+		}
+		return ReusableGeneratedCase{}, false, err
+	}
+	out.GeneratedTestPath = resolveStoredPath(out.GeneratedTestPath)
+	out.ResponsePath = resolveStoredPath(out.ResponsePath)
+	out.MetadataPath = resolveStoredPath(out.MetadataPath)
+	out.TracePath = resolveStoredPath(out.TracePath)
+	out.WorkspaceDiffPath = resolveStoredPath(out.WorkspaceDiffPath)
+	out.PromptTokens = nullableSQLInt(promptTokens)
+	out.CompletionTokens = nullableSQLInt(completionTokens)
+	out.TotalTokens = nullableSQLInt(totalTokens)
+	out.EstimatedCostUSD = nullableSQLFloat(estimatedCost)
+	if !fileExists(out.GeneratedTestPath) {
+		return ReusableGeneratedCase{}, false, nil
+	}
+	if out.GeneratedTestSHA256 != "" {
+		sha, _, err := fileSHA256(out.GeneratedTestPath)
+		if err != nil || sha != out.GeneratedTestSHA256 {
+			return ReusableGeneratedCase{}, false, nil
+		}
+	}
+	return out, true, nil
+}
+
 func (s *SQLiteStore) FindReusableEvaluationAsset(ctx context.Context, evaluationKey string) (ReusableEvaluationResult, bool, error) {
 	evaluationKey = strings.TrimSpace(evaluationKey)
 	if evaluationKey == "" {

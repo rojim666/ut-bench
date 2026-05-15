@@ -572,6 +572,7 @@ func runRun(args []string) error {
 	datasetLevel := fs.String("level", "", "Dataset level")
 	datasetClass := fs.String("class", "self_contained", "Dataset class(es), comma-separated (self_contained, module_level)")
 	datasetScenario := fs.String("scenario", "", "Dataset scenario (boundary, simple_function, complex_dependency, interface_mock)")
+	datasetProject := fs.String("project", "", "Repo-level dataset project filter")
 	maxSamples := fs.Int("max-samples", 0, "Max samples")
 	mode := fs.String("mode", "full", "Run mode (full, incremental)")
 	resetCheckpoint := fs.Bool("reset-checkpoint", false, "Reset checkpoint")
@@ -607,6 +608,7 @@ func runRun(args []string) error {
 		DatasetLevel:     *datasetLevel,
 		DatasetClasses:   parseCommaList(*datasetClass),
 		DatasetScenario:  *datasetScenario,
+		DatasetProject:   *datasetProject,
 		MaxSamples:       *maxSamples,
 		Workers:          *workers,
 		Mode:             contracts.RunMode(*mode),
@@ -684,6 +686,7 @@ func runGenerate(args []string) error {
 	datasetLevel := fs.String("level", "", "Dataset level")
 	datasetClass := fs.String("class", "self_contained", "Dataset class")
 	datasetScenario := fs.String("scenario", "", "Dataset scenario")
+	datasetProject := fs.String("project", "", "Repo-level dataset project filter")
 	maxSamples := fs.Int("max-samples", 0, "Max samples")
 	mode := fs.String("mode", "full", "Run mode")
 	resetCheckpoint := fs.Bool("reset-checkpoint", false, "Reset checkpoint")
@@ -708,6 +711,7 @@ func runGenerate(args []string) error {
 		DatasetLevel:     *datasetLevel,
 		DatasetClasses:   parseCommaList(*datasetClass),
 		DatasetScenario:  *datasetScenario,
+		DatasetProject:   *datasetProject,
 		MaxSamples:       *maxSamples,
 		Mode:             contracts.RunMode(*mode),
 		ResetCheckpoint:  *resetCheckpoint,

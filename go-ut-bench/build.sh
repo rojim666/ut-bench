@@ -34,7 +34,7 @@ BUILD_ARGS_EVAL=""
 BUILD_ARGS_AGENT=""
 
 if $USE_CN_MIRROR; then
-    BUILD_ARGS_EVAL="--build-arg UBUNTU_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/ubuntu --build-arg GO_DOWNLOAD_URLS=https://mirrors.aliyun.com/golang/go1.24.2.linux-amd64.tar.gz"
+    BUILD_ARGS_EVAL="--build-arg UBUNTU_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/ubuntu --build-arg GO_DOWNLOAD_URLS=https://mirrors.aliyun.com/golang/go1.25.5.linux-amd64.tar.gz"
     BUILD_ARGS_AGENT="--build-arg NPM_REGISTRY=https://registry.npmmirror.com --build-arg DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple --build-arg GO_DOWNLOAD_URLS=https://mirrors.aliyun.com/golang/go1.22.12.linux-amd64.tar.gz"
 fi
 

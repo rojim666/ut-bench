@@ -16,6 +16,7 @@ type generationTaskPlan struct {
 	Identity       generationIdentity
 	ReadError      error
 	Reused         *contracts.ReusableGeneratedCase
+	ReuseReason    string
 }
 
 type generationReusePlan struct {
@@ -65,7 +66,26 @@ func prepareGenerationReusePlan(
 			if reuseStore != nil {
 				if reused, ok, err := reuseStore.FindReusableGeneratedAsset(ctx, plan.Identity.GenerationKey); err == nil && ok {
 					plan.Reused = &reused
+					plan.ReuseReason = "generation_key_match"
 					out.ReusableHits++
+				} else if logicalStore, ok := reuseStore.(GenerationLogicalReuseStore); ok {
+					if reused, ok, err := logicalStore.FindReusableGeneratedAssetByIdentity(
+						ctx,
+						target.subject.Spec.ID,
+						sample.Language,
+						plan.Identity.SampleUID,
+						promptVersionID,
+						promptMode,
+						plan.Identity.VersionDetails.FrameworkConfigSHA256,
+						plan.Identity.VersionDetails.SkillSHA256,
+						plan.Identity.VersionDetails.AgentCommandSHA256,
+						plan.Identity.DependencyFingerprint,
+						plan.Identity.GenerationEnvFingerprint,
+					); err == nil && ok {
+						plan.Reused = &reused
+						plan.ReuseReason = "logical_generation_match"
+						out.ReusableHits++
+					}
 				}
 			}
 			out.ByTaskKey[taskID] = plan

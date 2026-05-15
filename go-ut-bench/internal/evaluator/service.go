@@ -336,6 +336,12 @@ func (s *Service) Evaluate(ctx context.Context, spec contracts.RunSpec, manifest
 func (s *Service) evaluateOne(ctx context.Context, spec contracts.RunSpec, item contracts.GeneratedCase, evaluationEnvFingerprint string, reused *store.ReusableEvaluationResult, setPhase func(string)) (result contracts.EvaluationResult) {
 	start := time.Now()
 	strategy := resolveEvaluationStrategy(item)
+	fileModule := dataset.ResolveFileModule(contracts.SampleRef{
+		ID:       item.SampleID,
+		Language: item.Language,
+		Category: datasetClassForEvaluation(strategy.DatasetMode),
+		Path:     item.SamplePath,
+	}, item.GeneratedTestPath)
 	row := contracts.EvaluationResult{
 		Model:                    item.Model,
 		SubjectID:                item.SubjectID,
@@ -350,6 +356,7 @@ func (s *Service) evaluateOne(ctx context.Context, spec contracts.RunSpec, item 
 		DatasetMode:              string(strategy.DatasetMode),
 		GenerationStrategy:       string(strategy.GenerationStrategy),
 		EvaluationStrategy:       string(strategy.EvaluationStrategy),
+		FileModule:               fileModule,
 		GeneratedTestPath:        item.GeneratedTestPath,
 		SourcePath:               item.SamplePath,
 		PromptTokens:             item.PromptTokens,
@@ -448,6 +455,13 @@ func evaluationStatus(row contracts.EvaluationResult) string {
 	return "PASS"
 }
 
+func datasetClassForEvaluation(mode contracts.DatasetMode) contracts.DatasetClass {
+	if mode == contracts.DatasetModeProjectLevel {
+		return contracts.DatasetClassRepoLevel
+	}
+	return contracts.DatasetClassSelfContained
+}
+
 // countSuccessfulResults 统计成功的结果数量
 // 编译通过且测试通过的视为成功
 //
@@ -479,6 +493,10 @@ func applyReusableEvaluation(row *contracts.EvaluationResult, reused store.Reusa
 	reusedRow.Language = current.Language
 	reusedRow.SampleID = current.SampleID
 	reusedRow.SampleUID = current.SampleUID
+	reusedRow.DatasetMode = current.DatasetMode
+	reusedRow.GenerationStrategy = current.GenerationStrategy
+	reusedRow.EvaluationStrategy = current.EvaluationStrategy
+	reusedRow.FileModule = current.FileModule
 	reusedRow.GeneratedTestPath = current.GeneratedTestPath
 	reusedRow.SourcePath = current.SourcePath
 	reusedRow.PromptTokens = current.PromptTokens
@@ -622,9 +640,6 @@ func classifyFailureOrigin(row contracts.EvaluationResult) (string, string) {
 			return "dataset", shortFailureReason(msg)
 		}
 	}
-	if generatedTestDidNotPass(row) {
-		return "model", ""
-	}
 	for _, msg := range []string{row.CompileError, row.TestError, row.CoverageError, row.MutationError} {
 		if msg == "" {
 			continue
@@ -632,11 +647,28 @@ func classifyFailureOrigin(row contracts.EvaluationResult) (string, string) {
 		if isEnvironmentFailureMessage(msg) {
 			return "environment", shortFailureReason(msg)
 		}
+		if isRepoLevelNotImplementedMessage(msg) {
+			return "tool", shortFailureReason(msg)
+		}
+	}
+	if generatedTestDidNotPass(row) {
+		return "model", ""
+	}
+	for _, msg := range []string{row.CompileError, row.TestError, row.CoverageError, row.MutationError} {
+		if msg == "" {
+			continue
+		}
 		if isToolFailureMessage(msg) {
 			return "tool", shortFailureReason(msg)
 		}
 	}
 	return "model", ""
+}
+
+func isRepoLevelNotImplementedMessage(msg string) bool {
+	msg = strings.ToLower(msg)
+	return strings.Contains(msg, "repo_level project evaluation is not implemented yet") ||
+		strings.Contains(msg, "repo_level mutation is not implemented yet")
 }
 
 // generatedTestDidNotPass 检查生成的测试是否未通过
@@ -732,7 +764,9 @@ func isToolFailureMessage(msg string) bool {
 		strings.Contains(msg, "pitest could not run any tests") ||
 		strings.Contains(msg, "pitest no killed/survived results") ||
 		strings.Contains(msg, "pitest requires junit 5 plugin") ||
-		strings.Contains(msg, "pitest junit 5 plugin is not installed")
+		strings.Contains(msg, "pitest junit 5 plugin is not installed") ||
+		strings.Contains(msg, "repo_level project evaluation is not implemented yet") ||
+		strings.Contains(msg, "repo_level mutation is not implemented yet")
 }
 
 func shortFailureReason(msg string) string {
@@ -887,7 +921,8 @@ func isRepoLevelSample(samplePath string) bool {
 			}
 		}
 	}
-	return false
+	_, ok := dataset.SynthesizeRepoLevelMeta(samplePath)
+	return ok
 }
 
 func loadRepoLevelMeta(samplePath string) *contracts.RepoLevelMeta {

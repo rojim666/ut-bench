@@ -16,6 +16,9 @@ func init() {
 type CppEvaluator struct{}
 
 func (e *CppEvaluator) PrepareWorkspace(item contracts.GeneratedCase) (*WorkspaceContext, error) {
+	if isRepoLevelSample(item.SamplePath) {
+		return nil, errors.New("cpp repo_level project evaluation is not implemented yet; run dataset preprocessing only or use self_contained cpp samples")
+	}
 	workdir, testFileName, sourceBase, sourceStem, prepErr := prepareCppWorkspace(item.GeneratedTestPath, item.SamplePath)
 	if workdir == "" {
 		return nil, errors.New(prepErr)

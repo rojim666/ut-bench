@@ -21,6 +21,7 @@ import (
 	"go-ut-bench/internal/agentconfig"
 	"go-ut-bench/internal/contracts"
 	"go-ut-bench/internal/ctrl"
+	"go-ut-bench/internal/dataset"
 	"go-ut-bench/internal/obs"
 )
 
@@ -388,6 +389,7 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 	promptPathCandidate := filepath.Join(promptRoot, "rendered", model, sample.Language, fmt.Sprintf("%s.prompt.txt", sample.ID))
 	strategy := resolveGenerationStrategy(sample)
 	promptMode := string(strategy.PromptMode)
+	fileModule := dataset.ResolveFileModule(sample, testPath)
 
 	if spec.Mode == contracts.RunModeIncremental {
 		if _, err := os.Stat(testPath); err == nil {
@@ -411,6 +413,7 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 				DatasetMode:        string(strategy.DatasetMode),
 				GenerationStrategy: string(strategy.GenerationStrategy),
 				EvaluationStrategy: string(strategy.EvaluationStrategy),
+				FileModule:         fileModule,
 				GeneratedTestPath:  testPath,
 				ResponsePath:       respPath,
 				MetadataPath:       "",
@@ -438,6 +441,7 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 			DatasetMode:        string(strategy.DatasetMode),
 			GenerationStrategy: string(strategy.GenerationStrategy),
 			EvaluationStrategy: string(strategy.EvaluationStrategy),
+			FileModule:         fileModule,
 			GeneratedTestPath:  testPath,
 			ResponsePath:       "",
 			GeneratedAtUTC:     time.Now().UTC(),
@@ -499,6 +503,7 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 				DatasetMode:        string(strategy.DatasetMode),
 				GenerationStrategy: string(strategy.GenerationStrategy),
 				EvaluationStrategy: string(strategy.EvaluationStrategy),
+				FileModule:         fileModule,
 				GeneratedTestPath:  testPath,
 				GeneratedAtUTC:     time.Now().UTC(),
 				Success:            false,
@@ -548,6 +553,10 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 			if plan != nil && plan.Reused != nil {
 				reused := *plan.Reused
 				if copyErr := copyFile(reused.GeneratedTestPath, testPath); copyErr == nil {
+					reuseReason := plan.ReuseReason
+					if reuseReason == "" {
+						reuseReason = "generation_key_match"
+					}
 					metadataPath := filepath.Join(metaRoot, fmt.Sprintf("%s_%s_%s.metadata.json", model, sample.Language, sample.ID))
 					metadata := map[string]any{
 						"model":                        model,
@@ -567,6 +576,111 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						"dataset_mode":                 string(strategy.DatasetMode),
 						"generation_strategy":          string(strategy.GenerationStrategy),
 						"evaluation_strategy":          string(strategy.EvaluationStrategy),
+						"file_module":                  fileModule,
+						"prompt_path":                  promptPath,
+						"scenario":                     sample.Scenario,
+						"generated_test_path":          testPath,
+						"dataset_class":                sample.Category,
+						"source_md5":                   sample.SourceMD5,
+						"source_sha256":                sourceSHA,
+						"subject_version_id":           identity.SubjectVersionID,
+						"framework_config_sha256":      identity.VersionDetails.FrameworkConfigSHA256,
+						"skill_sha256":                 identity.VersionDetails.SkillSHA256,
+						"agent_command_sha256":         identity.VersionDetails.AgentCommandSHA256,
+						"docker_image":                 identity.VersionDetails.DockerImage,
+						"docker_image_digest":          identity.VersionDetails.DockerImageDigest,
+						"sandbox_provider":             frameworkSandboxProvider(target.subject.Framework),
+						"env_contract_sha256":          identity.VersionDetails.EnvContractSHA256,
+						"generation_key":               identity.GenerationKey,
+						"dependency_fingerprint":       identity.DependencyFingerprint,
+						"generation_env_fingerprint":   identity.GenerationEnvFingerprint,
+						"reused":                       true,
+						"reuse_stage":                  "generation",
+						"reuse_key":                    identity.GenerationKey,
+						"reuse_reason":                 reuseReason,
+						"reused_from_run_id":           reused.RunID,
+						"reused_from_case_id":          reused.GeneratedCaseID,
+						"reused_generated_test_sha256": reused.GeneratedTestSHA256,
+						"created_at_utc":               time.Now().UTC(),
+						"success":                      true,
+					}
+					_ = contracts.WriteJSON(metadataPath, metadata)
+					s.logger.Info("reuse generated test", "subject", model, "language", sample.Language, "sample_id", sample.ID, "from_run", reused.RunID)
+					return contracts.GeneratedCase{
+						Model:                    model,
+						SubjectID:                subject.ID,
+						SubjectKind:              subject.Kind,
+						AgentFramework:           subject.Framework,
+						AgentModel:               subject.Model,
+						SkillName:                subject.Skill,
+						SkillVersion:             skillVersion,
+						Language:                 sample.Language,
+						SampleID:                 sample.ID,
+						SampleUID:                identity.SampleUID,
+						SamplePath:               sample.Path,
+						PromptVersionID:          promptVersionID,
+						PromptMode:               promptMode,
+						DatasetMode:              string(strategy.DatasetMode),
+						GenerationStrategy:       string(strategy.GenerationStrategy),
+						EvaluationStrategy:       string(strategy.EvaluationStrategy),
+						FileModule:               fileModule,
+						PromptPath:               promptPath,
+						GeneratedTestPath:        testPath,
+						ResponsePath:             reused.ResponsePath,
+						MetadataPath:             metadataPath,
+						TracePath:                reused.TracePath,
+						WorkspaceDiffPath:        reused.WorkspaceDiffPath,
+						SandboxProvider:          frameworkSandboxProvider(target.subject.Framework),
+						SandboxFingerprint:       reused.SandboxFingerprint,
+						SubjectVersionID:         identity.SubjectVersionID,
+						FrameworkConfigSHA256:    identity.VersionDetails.FrameworkConfigSHA256,
+						SkillSHA256:              identity.VersionDetails.SkillSHA256,
+						AgentCommandSHA256:       identity.VersionDetails.AgentCommandSHA256,
+						DockerImage:              identity.VersionDetails.DockerImage,
+						DockerImageDigest:        identity.VersionDetails.DockerImageDigest,
+						EnvContractSHA256:        identity.VersionDetails.EnvContractSHA256,
+						GenerationKey:            identity.GenerationKey,
+						DependencyFingerprint:    identity.DependencyFingerprint,
+						GenerationEnvFingerprint: identity.GenerationEnvFingerprint,
+						Reused:                   true,
+						ReuseStage:               "generation",
+						ReuseKey:                 identity.GenerationKey,
+						ReuseReason:              reuseReason,
+						ReusedFromRunID:          reused.RunID,
+						ReusedFromCaseID:         reused.GeneratedCaseID,
+						LatencyMS:                int(time.Since(started).Milliseconds()),
+						PromptTokens:             reused.PromptTokens,
+						CompletionTokens:         reused.CompletionTokens,
+						TotalTokens:              reused.TotalTokens,
+						TokenSource:              reused.TokenSource,
+						EstimatedCostUSD:         reused.EstimatedCostUSD,
+						CostSource:               reused.CostSource,
+						GeneratedAtUTC:           time.Now().UTC(),
+						Success:                  true,
+					}
+				}
+			} else if reused, ok, reuseErr := reuseStore.FindReusableGeneratedAsset(ctx, identity.GenerationKey); reuseErr == nil && ok {
+				if copyErr := copyFile(reused.GeneratedTestPath, testPath); copyErr == nil {
+					metadataPath := filepath.Join(metaRoot, fmt.Sprintf("%s_%s_%s.metadata.json", model, sample.Language, sample.ID))
+					metadata := map[string]any{
+						"model":                        model,
+						"subject_id":                   subject.ID,
+						"subject_kind":                 subject.Kind,
+						"agent_framework":              subject.Framework,
+						"agent_model":                  subject.Model,
+						"skill_name":                   subject.Skill,
+						"skill_version":                skillVersion,
+						"language":                     sample.Language,
+						"sample_id":                    sample.ID,
+						"sample_uid":                   identity.SampleUID,
+						"sample_path":                  sample.Path,
+						"prompt_strategy":              PromptStrategy(),
+						"prompt_version_id":            promptVersionID,
+						"prompt_mode":                  promptMode,
+						"dataset_mode":                 string(strategy.DatasetMode),
+						"generation_strategy":          string(strategy.GenerationStrategy),
+						"evaluation_strategy":          string(strategy.EvaluationStrategy),
+						"file_module":                  fileModule,
 						"prompt_path":                  promptPath,
 						"scenario":                     sample.Scenario,
 						"generated_test_path":          testPath,
@@ -613,102 +727,7 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						DatasetMode:              string(strategy.DatasetMode),
 						GenerationStrategy:       string(strategy.GenerationStrategy),
 						EvaluationStrategy:       string(strategy.EvaluationStrategy),
-						PromptPath:               promptPath,
-						GeneratedTestPath:        testPath,
-						ResponsePath:             reused.ResponsePath,
-						MetadataPath:             metadataPath,
-						TracePath:                reused.TracePath,
-						WorkspaceDiffPath:        reused.WorkspaceDiffPath,
-						SandboxProvider:          frameworkSandboxProvider(target.subject.Framework),
-						SandboxFingerprint:       reused.SandboxFingerprint,
-						SubjectVersionID:         identity.SubjectVersionID,
-						FrameworkConfigSHA256:    identity.VersionDetails.FrameworkConfigSHA256,
-						SkillSHA256:              identity.VersionDetails.SkillSHA256,
-						AgentCommandSHA256:       identity.VersionDetails.AgentCommandSHA256,
-						DockerImage:              identity.VersionDetails.DockerImage,
-						DockerImageDigest:        identity.VersionDetails.DockerImageDigest,
-						EnvContractSHA256:        identity.VersionDetails.EnvContractSHA256,
-						GenerationKey:            identity.GenerationKey,
-						DependencyFingerprint:    identity.DependencyFingerprint,
-						GenerationEnvFingerprint: identity.GenerationEnvFingerprint,
-						Reused:                   true,
-						ReuseStage:               "generation",
-						ReuseKey:                 identity.GenerationKey,
-						ReuseReason:              "generation_key_match",
-						ReusedFromRunID:          reused.RunID,
-						ReusedFromCaseID:         reused.GeneratedCaseID,
-						LatencyMS:                int(time.Since(started).Milliseconds()),
-						PromptTokens:             reused.PromptTokens,
-						CompletionTokens:         reused.CompletionTokens,
-						TotalTokens:              reused.TotalTokens,
-						TokenSource:              reused.TokenSource,
-						EstimatedCostUSD:         reused.EstimatedCostUSD,
-						CostSource:               reused.CostSource,
-						GeneratedAtUTC:           time.Now().UTC(),
-						Success:                  true,
-					}
-				}
-			} else if reused, ok, reuseErr := reuseStore.FindReusableGeneratedAsset(ctx, identity.GenerationKey); reuseErr == nil && ok {
-				if copyErr := copyFile(reused.GeneratedTestPath, testPath); copyErr == nil {
-					metadataPath := filepath.Join(metaRoot, fmt.Sprintf("%s_%s_%s.metadata.json", model, sample.Language, sample.ID))
-					metadata := map[string]any{
-						"model":                        model,
-						"subject_id":                   subject.ID,
-						"subject_kind":                 subject.Kind,
-						"agent_framework":              subject.Framework,
-						"agent_model":                  subject.Model,
-						"skill_name":                   subject.Skill,
-						"skill_version":                skillVersion,
-						"language":                     sample.Language,
-						"sample_id":                    sample.ID,
-						"sample_uid":                   identity.SampleUID,
-						"sample_path":                  sample.Path,
-						"prompt_strategy":              PromptStrategy(),
-						"prompt_version_id":            promptVersionID,
-						"prompt_mode":                  promptMode,
-						"prompt_path":                  promptPath,
-						"scenario":                     sample.Scenario,
-						"generated_test_path":          testPath,
-						"dataset_class":                sample.Category,
-						"source_md5":                   sample.SourceMD5,
-						"source_sha256":                sourceSHA,
-						"subject_version_id":           identity.SubjectVersionID,
-						"framework_config_sha256":      identity.VersionDetails.FrameworkConfigSHA256,
-						"skill_sha256":                 identity.VersionDetails.SkillSHA256,
-						"agent_command_sha256":         identity.VersionDetails.AgentCommandSHA256,
-						"docker_image":                 identity.VersionDetails.DockerImage,
-						"docker_image_digest":          identity.VersionDetails.DockerImageDigest,
-						"sandbox_provider":             frameworkSandboxProvider(target.subject.Framework),
-						"env_contract_sha256":          identity.VersionDetails.EnvContractSHA256,
-						"generation_key":               identity.GenerationKey,
-						"dependency_fingerprint":       identity.DependencyFingerprint,
-						"generation_env_fingerprint":   identity.GenerationEnvFingerprint,
-						"reused":                       true,
-						"reuse_stage":                  "generation",
-						"reuse_key":                    identity.GenerationKey,
-						"reuse_reason":                 "generation_key_match",
-						"reused_from_run_id":           reused.RunID,
-						"reused_from_case_id":          reused.GeneratedCaseID,
-						"reused_generated_test_sha256": reused.GeneratedTestSHA256,
-						"created_at_utc":               time.Now().UTC(),
-						"success":                      true,
-					}
-					_ = contracts.WriteJSON(metadataPath, metadata)
-					s.logger.Info("reuse generated test", "subject", model, "language", sample.Language, "sample_id", sample.ID, "from_run", reused.RunID)
-					return contracts.GeneratedCase{
-						Model:                    model,
-						SubjectID:                subject.ID,
-						SubjectKind:              subject.Kind,
-						AgentFramework:           subject.Framework,
-						AgentModel:               subject.Model,
-						SkillName:                subject.Skill,
-						SkillVersion:             skillVersion,
-						Language:                 sample.Language,
-						SampleID:                 sample.ID,
-						SampleUID:                identity.SampleUID,
-						SamplePath:               sample.Path,
-						PromptVersionID:          promptVersionID,
-						PromptMode:               promptMode,
+						FileModule:               fileModule,
 						PromptPath:               promptPath,
 						GeneratedTestPath:        testPath,
 						ResponsePath:             reused.ResponsePath,
@@ -754,7 +773,13 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		agentSummary = agentSmry
 		truncated = isTruncated
 		if genErr != nil {
-			_ = contracts.WriteJSON(respPath, map[string]any{"error": genErr, "truncated": truncated})
+			errorResponse := map[string]any{"error": genErr, "truncated": truncated}
+			for k, v := range response {
+				if _, reserved := errorResponse[k]; !reserved {
+					errorResponse[k] = v
+				}
+			}
+			_ = contracts.WriteJSON(respPath, errorResponse)
 			return contracts.GeneratedCase{
 				Model:                    model,
 				SubjectID:                subject.ID,
@@ -769,6 +794,10 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 				SamplePath:               sample.Path,
 				PromptVersionID:          promptVersionID,
 				PromptMode:               promptMode,
+				DatasetMode:              string(strategy.DatasetMode),
+				GenerationStrategy:       string(strategy.GenerationStrategy),
+				EvaluationStrategy:       string(strategy.EvaluationStrategy),
+				FileModule:               fileModule,
 				PromptPath:               promptPath,
 				GeneratedTestPath:        testPath,
 				ResponsePath:             respPath,
@@ -819,6 +848,10 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 			Language:           sample.Language,
 			SampleID:           sample.ID,
 			SamplePath:         sample.Path,
+			DatasetMode:        string(strategy.DatasetMode),
+			GenerationStrategy: string(strategy.GenerationStrategy),
+			EvaluationStrategy: string(strategy.EvaluationStrategy),
+			FileModule:         fileModule,
 			GeneratedTestPath:  testPath,
 			TracePath:          trace.TracePath,
 			WorkspaceDiffPath:  trace.WorkspaceDiffPath,
@@ -858,6 +891,7 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		"dataset_mode":               string(strategy.DatasetMode),
 		"generation_strategy":        string(strategy.GenerationStrategy),
 		"evaluation_strategy":        string(strategy.EvaluationStrategy),
+		"file_module":                fileModule,
 		"prompt_path":                promptPath,
 		"scenario":                   sample.Scenario,
 		"generated_test_path":        testPath,
@@ -913,6 +947,7 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		DatasetMode:              string(strategy.DatasetMode),
 		GenerationStrategy:       string(strategy.GenerationStrategy),
 		EvaluationStrategy:       string(strategy.EvaluationStrategy),
+		FileModule:               fileModule,
 		PromptPath:               promptPath,
 		GeneratedTestPath:        testPath,
 		ResponsePath:             respPath,
@@ -1110,10 +1145,12 @@ func buildCheckpointPath(spec contracts.RunSpec, subjects []subjectTarget) strin
 	sort.Strings(langs)
 
 	scope := fmt.Sprintf(
-		"subjects=%s;langs=%s;class=%s;level=%s;manifest=%s;max=%d;dataset=%s;agents=%s",
+		"subjects=%s;langs=%s;class=%s;scenario=%s;project=%s;level=%s;manifest=%s;max=%d;dataset=%s;agents=%s",
 		strings.Join(subjectIDs, ","),
 		strings.Join(langs, ","),
 		strings.Join(spec.DatasetClasses, ","),
+		spec.DatasetScenario,
+		spec.DatasetProject,
 		spec.DatasetLevel,
 		spec.DatasetManifest,
 		spec.MaxSamples,

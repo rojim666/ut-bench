@@ -302,6 +302,19 @@ func repoLevelCommandPreview(lang, phase string, ws *WorkspaceContext) string {
 		if ws.TestPath != "" {
 			return "python -m pytest " + ws.TestPath
 		}
+	case "java":
+		module := ws.Extra["moduleDir"]
+		scope := ""
+		if module != "" && module != "." {
+			scope = " -pl " + module + " -am"
+		}
+		if phase == "compile" {
+			return "mvn -q" + scope + " -DskipTests test-compile"
+		}
+		if testClass := ws.Extra["testClassName"]; testClass != "" {
+			return "mvn -q" + scope + " -Dtest=" + testClass + " test"
+		}
+		return "mvn -q" + scope + " test"
 	}
 	return lang + "." + phase
 }

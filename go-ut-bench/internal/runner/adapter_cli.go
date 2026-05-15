@@ -298,11 +298,12 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	generatedPath := findGeneratedTest(workRoot, outputFile, framework.OutputGlobs, changes, sample.Language)
 	if generatedPath == "" {
 		failureDetail := agentFailureDetail(trace)
-		if shouldFallbackOpenCodeDeepsleep(req, trace, failureDetail) {
+		if shouldFallbackCLIAgentToModelAPI(req, trace, failureDetail, runErr) {
 			fallbackReq := req
 			fallbackReq.Prompt = agentPrompt
 			fallback := generateModelAPI(ctx, fallbackReq)
 			rawResponse["fallback_adapter"] = "model_api"
+			rawResponse["fallback_policy"] = "cli_agent_no_test_file_to_model_api"
 			rawResponse["fallback_reason"] = failureDetail
 			rawResponse["fallback_raw_response"] = fallback.RawResponse
 			trace.Stderr = trimText(strings.TrimSpace(trace.Stderr+"\nmodel_api_fallback: "+failureDetail), 8000)
@@ -312,7 +313,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 			trace.TokenSource = fallback.TokenSource
 			trace.EstimatedCost = fallback.EstimatedCostUSD
 			trace.CostSource = fallback.CostSource
-			trace.UsageSourceDetail = "opencode_model_api_fallback"
+			trace.UsageSourceDetail = "cli_agent_model_api_fallback"
 			if fallback.Error == nil && strings.TrimSpace(fallback.Code) != "" {
 				trace.InteractionCount++
 				trace.DurationMS += fallback.LatencyMS
@@ -508,8 +509,8 @@ func buildNoGeneratedFileMessage(detail string) string {
 	return msg
 }
 
-func shouldFallbackOpenCodeDeepsleep(req AgentGenerateRequest, trace AgentTrace, detail string) bool {
-	if !strings.EqualFold(req.Subject.Spec.Framework, "opencode") || !strings.EqualFold(req.Model.Name, "deepsleep") {
+func shouldFallbackCLIAgentToModelAPI(req AgentGenerateRequest, trace AgentTrace, detail string, runErr error) bool {
+	if !strings.EqualFold(req.Subject.Spec.Kind, "cli_agent") {
 		return false
 	}
 	combined := strings.ToLower(detail + "\n" + trace.Stderr)
@@ -522,10 +523,16 @@ func shouldFallbackOpenCodeDeepsleep(req AgentGenerateRequest, trace AgentTrace,
 		(strings.Contains(combined, "request format") || strings.Contains(combined, "schema")) {
 		return true
 	}
-	return strings.Contains(combined, "tool_calls") &&
+	if strings.Contains(combined, "tool_calls") &&
 		(strings.Contains(combined, "additional properties forbidden") ||
 			strings.Contains(combined, "request format") ||
-			strings.Contains(combined, "schema"))
+			strings.Contains(combined, "schema")) {
+		return true
+	}
+	if runErr != nil {
+		return false
+	}
+	return true
 }
 
 func agentFailureDetail(trace AgentTrace) string {

@@ -144,9 +144,9 @@ RUN cd /tmp/maven-warmup && mvn dependency:resolve test-compile -q && rm -rf /tm
 # Copy docker CLI binary from official image (lighter than docker.io package)
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
-# Install Go 1.24. Keep multiple download endpoints because TLS to go.dev can
+# Install Go. Keep multiple download endpoints because TLS to go.dev can
 # be flaky in some build networks.
-ARG GO_VERSION=1.24.2
+ARG GO_VERSION=1.25.5
 ARG GO_DOWNLOAD_URLS=
 RUN set -eux; \
     tarball="go${GO_VERSION}.linux-amd64.tar.gz"; \
@@ -163,7 +163,8 @@ RUN set -eux; \
     tar -C /usr/local -xzf /tmp/go.tar.gz; \
     rm /tmp/go.tar.gz
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
-ENV GOPROXY=https://goproxy.cn,direct
+ARG GO_MODULE_PROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GO_MODULE_PROXY}
 
 # LLVM/Clang 19 paths
 ENV LLVM_DIR=/usr/lib/llvm-19
@@ -206,7 +207,17 @@ RUN python3 -m venv /opt/venv && \
     ln -sf /opt/venv/bin/coverage /usr/local/bin/coverage
 
 # Install Go mutation testing tool
-RUN go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
+ARG GO_MUTESTING_VERSION=48d0401f00fb
+RUN set -eux; \
+    for proxy in "${GO_MODULE_PROXY}" "https://goproxy.cn,direct" "https://proxy.golang.org,direct" "direct"; do \
+      echo "Installing go-mutesting via GOPROXY=${proxy}"; \
+      if GOPROXY="${proxy}" go install "github.com/avito-tech/go-mutesting/cmd/go-mutesting@${GO_MUTESTING_VERSION}"; then \
+        test -x /root/go/bin/go-mutesting; \
+        exit 0; \
+      fi; \
+    done; \
+    echo "ERROR: failed to install go-mutesting ${GO_MUTESTING_VERSION}"; \
+    exit 1
 
 WORKDIR /app
 

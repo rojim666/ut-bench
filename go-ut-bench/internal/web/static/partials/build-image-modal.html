@@ -36,7 +36,7 @@
           </div>
           <div class="flex items-center gap-3 mb-3">
             <button @click="startBuild()" :disabled="buildStatus === 'running' || buildStatus === 'pending'" class="btn-primary text-[12px]">
-              <span x-show="buildStatus !== 'running' && buildStatus !== 'pending'">开始构建</span>
+              <span x-show="buildStatus !== 'running' && buildStatus !== 'pending'" x-text="buildFastMode ? '开始快速重建' : '开始构建'">开始构建</span>
               <span x-show="buildStatus === 'running' || buildStatus === 'pending'">构建中...</span>
             </button>
             <span class="text-[12px]" style="color:var(--fg-muted)">

@@ -2,10 +2,14 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go-ut-bench/internal/agentconfig"
+	"go-ut-bench/internal/contracts"
 )
 
 type fakeSandboxRunner struct {
@@ -176,6 +180,27 @@ func TestParseFileWritesFiltersOpenCodeWorkspaceNoise(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("files_written[%d] = %q, want %q (all=%v)", i, got[i], want[i], got)
 		}
+	}
+}
+
+func TestShouldFallbackCLIAgentToModelAPIForMissingTestFile(t *testing.T) {
+	req := AgentGenerateRequest{
+		Subject: agentconfig.ResolvedSubject{
+			Spec: contracts.SubjectSpec{Kind: "cli_agent", Framework: "opencode"},
+		},
+		Model: modelConfig{Name: "deepseek"},
+	}
+	trace := AgentTrace{Framework: "opencode"}
+
+	if !shouldFallbackCLIAgentToModelAPI(req, trace, "agent did not produce a test file", nil) {
+		t.Fatalf("expected cli agent output miss to fall back to model API")
+	}
+	if shouldFallbackCLIAgentToModelAPI(req, trace, "agent command failed", errors.New("exit status 1")) {
+		t.Fatalf("did not expect generic execution failures to fall back")
+	}
+	req.Subject.Spec.Kind = "model_api"
+	if shouldFallbackCLIAgentToModelAPI(req, trace, "agent did not produce a test file", nil) {
+		t.Fatalf("model_api subject should not use cli-agent fallback")
 	}
 }
 

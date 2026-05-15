@@ -45,6 +45,9 @@ type BuildJob struct {
 }
 
 func (b *BuildJob) appendLog(line string) {
+	if shouldSuppressRuntimeLogLine(line) {
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.logs = append(b.logs, line)
@@ -295,14 +298,19 @@ func copyStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func defaultBuildProfile(target string, cfg DockerConfig) (BuildProfile, error) {
+func defaultBuildProfile(target string, cfg DockerConfig, fast bool) (BuildProfile, error) {
 	switch strings.ToLower(strings.TrimSpace(target)) {
 	case "", "eval", "evaluation":
-		return BuildProfile{
+		profile := BuildProfile{
 			Target:     "eval",
 			ImageName:  cfg.EffectiveEvalImage(),
 			Dockerfile: "Dockerfile",
-		}, nil
+		}
+		if fast {
+			profile.Dockerfile = "Dockerfile.app"
+			profile.BuildArgs = map[string]string{"BASE_IMAGE": cfg.EffectiveEvalImage()}
+		}
+		return profile, nil
 	case "agent", "agents", "sandbox":
 		return BuildProfile{
 			Target:     "agent",

@@ -60,8 +60,8 @@
             <span class="tag-pill" :style="envImageStatusStyle(env.eval_image_present)" :title="env.eval_image_name || ''">
               <span x-text="'评测镜像 ' + envImageStatusText(env.eval_image_present)"></span>
             </span>
-            <button x-show="env.docker_available && !env.eval_image_present" @click="openBuildImage('eval')" class="btn-primary text-[11px] py-1 px-2.5">构建镜像</button>
-            <button x-show="env.eval_image_present" @click="openBuildImage('eval')" class="btn-ghost text-[11px] py-1 px-2.5" title="重新构建">重建</button>
+            <button x-show="env.docker_available && !env.eval_image_present" @click="openBuildImage('eval', false)" class="btn-primary text-[11px] py-1 px-2.5">构建镜像</button>
+            <button x-show="env.eval_image_present" @click="openBuildImage('eval', true)" class="btn-ghost text-[11px] py-1 px-2.5" title="快速重建">重建</button>
             <button @click="recheckEnv()" :disabled="envChecking" class="btn-ghost text-[11px] py-1 px-2.5 flex items-center gap-1" title="重新检测 Docker / 镜像 / 原生工具链">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="envChecking ? 'animate-spin' : ''"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M21 3v6h-6"/></svg>
               <span x-text="envChecking ? '检测中...' : '检查环境'"></span>

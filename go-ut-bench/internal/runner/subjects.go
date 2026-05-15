@@ -254,7 +254,7 @@ func buildSampleEnvironmentSetupCommands(sample contracts.SampleRef, workRoot st
 		}
 	case "java":
 		if fileExists(filepath.Join(workRoot, "pom.xml")) {
-			commands = append(commands, "mvn -q -DskipTests dependency:go-offline")
+			commands = append(commands, "mvn -q -DskipTests dependency:go-offline || echo 'mvn dependency:go-offline failed; continuing without full Maven cache'")
 		}
 	}
 	return uniqueSortedStrings(commands)
@@ -421,6 +421,8 @@ func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, out
 	b.WriteString("\n\nAgent execution contract:\n")
 	b.WriteString("- Work only inside the provided workspace.\n")
 	b.WriteString("- Do not modify the original source behavior.\n")
+	b.WriteString("- Do not install packages or mutate the environment with apt, apk, yum, dnf, pip, npm, yarn, pnpm, go install, or cargo install.\n")
+	b.WriteString("- Use only dependencies already available in the workspace or sandbox image; if a dependency is unavailable, write tests against the accessible project API instead of installing it.\n")
 	if strategy.RequireGeneratedTestFile {
 		b.WriteString("- Generate one complete unit test file.\n")
 		b.WriteString("- Write the final test file to: ")

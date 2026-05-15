@@ -417,7 +417,7 @@ func TestBuildSampleEnvironmentSetupCommandsWorkspaceFiles(t *testing.T) {
 		t.Fatalf("unexpected go commands: %+v", goCommands)
 	}
 	javaCommands := buildSampleEnvironmentSetupCommands(contracts.SampleRef{Language: "java"}, tmp)
-	if len(javaCommands) != 1 || javaCommands[0] != "mvn -q -DskipTests dependency:go-offline" {
+	if len(javaCommands) != 1 || !strings.Contains(javaCommands[0], "mvn -q -DskipTests dependency:go-offline") || !strings.Contains(javaCommands[0], "continuing without full Maven cache") {
 		t.Fatalf("unexpected java commands: %+v", javaCommands)
 	}
 }

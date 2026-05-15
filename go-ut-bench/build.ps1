@@ -26,7 +26,7 @@ $AgentArgs = @()
 if ($Cn) {
     $EvalArgs = @(
         "--build-arg", "UBUNTU_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/ubuntu",
-        "--build-arg", "GO_DOWNLOAD_URLS=https://mirrors.aliyun.com/golang/go1.24.2.linux-amd64.tar.gz"
+        "--build-arg", "GO_DOWNLOAD_URLS=https://mirrors.aliyun.com/golang/go1.25.5.linux-amd64.tar.gz"
     )
     $AgentArgs = @(
         "--build-arg", "NPM_REGISTRY=https://registry.npmmirror.com",

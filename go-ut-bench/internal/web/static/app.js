@@ -136,7 +136,7 @@
     dbReportFilter: { run_id:'' },
     dbRunArtifactFilter: { run_id:'' },
     form: {
-      run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill'}], languages:[], class:'self_contained', scenario:'', level:'',
+      run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill'}], languages:[], class:'self_contained', scenario:'', project:'', level:'',
       max_samples:10, workers:4, mode:'full', phase:'full', source_run_id:'', manifest_path:'', evaluation_path:'',
       dry_run:false, reuse_generated:true, reuse_evaluation:false, mutation_enabled:true,
       mutation_timeout:360, mutation_policy:'warn', ingest:true, use_docker:true,
@@ -160,10 +160,12 @@
     },
     get activeBuildDockerfile() {
       if (this.buildTarget === 'agent') return 'docker/agents/Dockerfile'
+      if (this.buildFastMode) return 'Dockerfile.app'
       return 'Dockerfile'
     },
     buildModalOpen: false,
     buildTarget: 'eval',
+    buildFastMode: false,
     buildId: '',
     buildStatus: '',
     buildLogs: [],
@@ -446,7 +448,7 @@
       this._toastTimer = setTimeout(() => { this.toast = '' }, ms)
     },
 
-    openBuildImage(target = 'eval') {
+    openBuildImage(target = 'eval', fast = false) {
       const nextTarget = target || 'eval'
       if (this.buildTarget !== nextTarget) {
         this.buildId = ''
@@ -455,6 +457,7 @@
         this.buildError = ''
       }
       this.buildTarget = nextTarget
+      this.buildFastMode = nextTarget === 'eval' && !!fast
       this.buildModalOpen = true
       this.reattachBuild(this.buildTarget)
     },
@@ -517,6 +520,7 @@
           if (preferredTarget && data.target && data.target !== preferredTarget && !active) return
           this.buildId = data.build_id
           this.buildTarget = data.target || this.buildTarget || 'eval'
+          this.buildFastMode = this.buildTarget === 'eval' && data.dockerfile === 'Dockerfile.app'
           this.buildStatus = data.status
           this.buildError = data.error || ''
           const detail = await fetch('/api/env/build-image/' + this.buildId)
@@ -529,7 +533,9 @@
     async startBuild() {
       this.buildLogs = []; this.buildError = ''; this.buildStatus = 'pending'
       try {
-        const r = await fetch('/api/env/build-image?target=' + encodeURIComponent(this.buildTarget || 'eval'), { method: 'POST' })
+        const params = new URLSearchParams({ target: this.buildTarget || 'eval' })
+        if (this.buildFastMode) params.set('fast', '1')
+        const r = await fetch('/api/env/build-image?' + params.toString(), { method: 'POST' })
         const data = await r.json()
         if (!r.ok) { this.buildError = data.error || '启动失败'; this.buildStatus = 'failed'; return }
         this.buildId = data.build_id; this.buildStatus = data.status; this.buildTarget = data.target || this.buildTarget || 'eval'; this.startBuildSSE(this.buildId)
@@ -570,10 +576,11 @@
       this.runsLoading = true
       try {
         const r = await fetch('/api/runs')
-        this.runs = await r.json()
+        const rows = await r.json()
+        this.runs = Array.isArray(rows) ? rows.map(run => this.normalizeRunForUI(run)) : []
         if (this.currentRun) {
           const updated = this.runs.find(r => r.run_id === this.currentRun.run_id)
-          if (updated) { this.currentRun.status = updated.status; this.currentRun.ended_at = updated.ended_at; this.currentRun.error = updated.error }
+          if (updated) this.currentRun = this.normalizeRunForUI({ ...this.currentRun, ...updated })
         }
         this.autoSelectPinnedReport()
       } catch(e) { console.error('runs', e) }
@@ -748,6 +755,12 @@
       if (this.form.phase !== 'full' && this.form.phase !== 'generate') return 0
       if (this.form.scenario) return 1
       return this.datasetScenariosForClass(this.form.class).length || 4
+    },
+
+    get selectedProjectCount() {
+      if (this.form.class !== 'repo_level') return 0
+      if (this.form.project) return 1
+      return this.datasetProjectsForSelection().length || 0
     },
 
     get selectedLanguageCount() {
@@ -1000,6 +1013,7 @@
         languages: this.form.languages?.length ? [...this.form.languages] : ['python'],
         class: this.form.class || 'self_contained',
         scenario: this.form.scenario || '',
+        project: this.form.project || '',
         level: this.form.level || '',
         max_samples: this.form.max_samples || 10,
         workers: this.form.workers || 4,
@@ -1032,6 +1046,7 @@
         languages: Array.isArray(spec.languages) ? spec.languages : [],
         class: Array.isArray(spec.dataset_classes) ? spec.dataset_classes.join(',') : '',
         scenario: spec.dataset_scenario || '',
+        project: spec.dataset_project || '',
         level: spec.dataset_level || '',
         max_samples: Number(spec.max_samples || 0),
         workers: Number(spec.workers || 0),
@@ -1062,10 +1077,11 @@
         languages: p.languages || [],
         dataset_classes: String(p.class || '').split(',').map(s => s.trim()).filter(Boolean),
         dataset_scenario: p.scenario || '',
+        dataset_project: p.project || '',
         dataset_level: p.level || '',
         mode: p.mode || 'full',
         dry_run: !!p.dry_run,
-        reuse_generated: !!p.reuse_generated,
+        reuse_generated: p.reuse_generated !== false,
         reuse_evaluation: !!p.reuse_evaluation,
         mutation_enabled: !!p.mutation_enabled,
         mutation_timeout_seconds: Number(p.mutation_timeout || 1800),
@@ -1104,9 +1120,47 @@
       return this.config?.scenarios ?? []
     },
 
+    datasetProjectsFor(className, scenario) {
+      const cls = String(className || '').trim()
+      const sc = String(scenario || '').trim()
+      if (cls !== 'repo_level' || !sc) return []
+      const byClass = this.config?.projects_by_dataset || {}
+      const byScenario = byClass[cls] || {}
+      return Array.isArray(byScenario[sc]) ? byScenario[sc] : []
+    },
+
+    datasetProjectsForSelection() {
+      return this.datasetProjectsFor(this.form.class, this.form.scenario)
+    },
+
+    datasetProjectLabel(item) {
+      if (!item) return ''
+      const langs = Array.isArray(item.languages) && item.languages.length ? ` · ${item.languages.join(',')}` : ''
+      const count = Number(item.sample_count || 0)
+      return `${item.name}${count ? ` (${count})` : ''}${langs}`
+    },
+
+    selectedDatasetProjectInfo() {
+      return this.datasetProjectsForSelection().find(p => p.name === this.form.project) || null
+    },
+
+    get selectedDatasetProjectSampleCount() {
+      return Number(this.selectedDatasetProjectInfo()?.sample_count || 0)
+    },
+
     normalizeDatasetScenario() {
       const scenarios = this.datasetScenariosForClass(this.form.class)
       if (this.form.scenario && !scenarios.includes(this.form.scenario)) this.form.scenario = ''
+      this.normalizeDatasetProject()
+    },
+
+    normalizeDatasetProject() {
+      if (this.form.class !== 'repo_level') {
+        this.form.project = ''
+        return
+      }
+      const projects = this.datasetProjectsForSelection().map(p => p.name)
+      if (this.form.project && !projects.includes(this.form.project)) this.form.project = ''
     },
 
     normalizeAutomationDatasetScenario() {
@@ -2150,6 +2204,24 @@
       return models.length ? models.join(', ') : '—'
     },
 
+    runModelSummary(run) {
+      const models = run?.spec?.models ?? []
+      if (models.length) return models.join(', ')
+      const subjects = run?.spec?.subjects ?? []
+      const derived = [...new Set(subjects.map(s => String(s || '').split('__')[1]).filter(Boolean))]
+      return derived.length ? derived.join(', ') : '—'
+    },
+
+    normalizeRunForUI(run) {
+      const spec = { ...(run?.spec || {}) }
+      for (const key of ['models', 'subjects', 'languages', 'dataset_classes']) {
+        if (!Array.isArray(spec[key])) spec[key] = []
+      }
+      if (spec.reuse_generated === undefined) spec.reuse_generated = true
+      if (spec.reuse_evaluation === undefined) spec.reuse_evaluation = false
+      return { ...(run || {}), spec }
+    },
+
     // ─── Agent 接入管理 ─────────────────────────────────────
     get dockerBackedFrameworkCount() {
       return (this.config?.frameworks ?? []).filter(f => f.sandbox_mode === 'docker' || f.sandbox_provider === 'docker').length
@@ -3133,10 +3205,11 @@
           languages: payload.languages || [],
           dataset_classes: payload.class ? String(payload.class).split(',').map(s => s.trim()).filter(Boolean) : [],
           dataset_scenario: payload.scenario || '',
+          dataset_project: payload.project || '',
           dataset_level: payload.level || '',
           max_samples: payload.max_samples,
           workers: payload.workers,
-          reuse_generated: !!payload.reuse_generated,
+          reuse_generated: payload.reuse_generated !== false,
           reuse_evaluation: !!payload.reuse_evaluation,
           mutation_enabled: !!payload.mutation_enabled,
         },
@@ -3179,7 +3252,7 @@
       this._logCount = 0
       this.detailTab = 'logs'
       this._resetLogPre()
-      this.currentRun = this.optimisticRunFromPayload(payload, optimisticRunId)
+      this.currentRun = this.normalizeRunForUI(this.optimisticRunFromPayload(payload, optimisticRunId))
       this.page = 'run-detail'
       this.syncPageVisibility()
       try {
@@ -3226,7 +3299,8 @@
       this.page = 'run-detail'
       this.syncPageVisibility()
       const found = this.runs.find(r => r.run_id === runId)
-      this.currentRun = found ? { ...found } : { run_id: runId, status: 'pending', started_at: new Date().toISOString() }
+      this.currentRun = this.normalizeRunForUI(found ? { ...found } : { run_id: runId, status: 'pending', started_at: new Date().toISOString() })
+      this.refreshDetail()
       this.startSSE(runId)
     },
 
@@ -3338,7 +3412,8 @@
       const r = await fetch(`/api/runs/${this.currentRun.run_id}`)
       if (r.ok) {
         const data = await r.json()
-        this.currentRun.status = data.status; this.currentRun.ended_at = data.ended_at; this.currentRun.error = data.error; this.currentLogs = data.logs ?? []
+        this.currentRun = this.normalizeRunForUI({ ...this.currentRun, ...data })
+        this.currentLogs = data.logs ?? []
         this._setLogPreFromArray(this.currentLogs)
       }
     },

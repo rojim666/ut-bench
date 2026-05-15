@@ -615,19 +615,56 @@ func (s *SQLiteStore) upsertDatasetSnapshot(ctx context.Context, tx *sql.Tx, man
 	for _, info := range infos {
 		fingerprintParts = append(fingerprintParts, info.language+"|"+info.id+"|"+info.path+"|"+info.sha)
 		sampleUIDs[info.key] = info.uid
+		if err := reconcileDatasetSampleIdentity(ctx, tx, info.uid, info.language, info.id, info.path); err != nil {
+			return nil, "", "", err
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO dataset_samples(sample_uid, sample_id, language, class, scenario, path, source_md5, source_sha256,
 				source_artifact_id, risk_flags_json, created_at_utc, updated_at_utc)
 			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(language, sample_id, path) DO UPDATE SET
-				class=excluded.class,
-				scenario=excluded.scenario,
-				source_sha256=excluded.source_sha256,
-				source_artifact_id=excluded.source_artifact_id,
-				updated_at_utc=excluded.updated_at_utc`,
+			ON CONFLICT DO NOTHING`,
 			info.uid, info.id, info.language, nullString(info.class), nullString(info.scenario), info.path, nullString(info.md5), nullString(info.sha),
 			nullString(info.artifact), "[]", now, now); err != nil {
 			return nil, "", "", fmt.Errorf("upsert dataset sample: %w", err)
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE dataset_samples SET
+				sample_id=?,
+				language=?,
+				class=?,
+				scenario=?,
+				path=?,
+				source_md5=?,
+				source_sha256=?,
+				source_artifact_id=?,
+				risk_flags_json=?,
+				updated_at_utc=?
+			WHERE sample_uid=?`,
+			info.id, info.language, nullString(info.class), nullString(info.scenario), info.path, nullString(info.md5), nullString(info.sha),
+			nullString(info.artifact), "[]", now, info.uid)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("upsert dataset sample by uid: %w", err)
+		}
+		updated, err := res.RowsAffected()
+		if err != nil {
+			return nil, "", "", fmt.Errorf("upsert dataset sample rows affected: %w", err)
+		}
+		if updated == 0 {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE dataset_samples SET
+					sample_uid=?,
+					class=?,
+					scenario=?,
+					source_md5=?,
+					source_sha256=?,
+					source_artifact_id=?,
+					risk_flags_json=?,
+					updated_at_utc=?
+				WHERE language=? AND sample_id=? AND path=?`,
+				info.uid, nullString(info.class), nullString(info.scenario), nullString(info.md5), nullString(info.sha),
+				nullString(info.artifact), "[]", now, info.language, info.id, info.path); err != nil {
+				return nil, "", "", fmt.Errorf("upsert dataset sample by identity: %w", err)
+			}
 		}
 	}
 	fingerprint := hashString(strings.Join(fingerprintParts, "\n"))
@@ -647,6 +684,70 @@ func (s *SQLiteStore) upsertDatasetSnapshot(ctx context.Context, tx *sql.Tx, man
 		}
 	}
 	return sampleUIDs, fingerprint, snapshotID, nil
+}
+
+func reconcileDatasetSampleIdentity(ctx context.Context, tx *sql.Tx, sampleUID, language, sampleID, samplePath string) error {
+	identityUID, err := datasetSampleUIDForIdentity(ctx, tx, language, sampleID, samplePath)
+	if err != nil {
+		return fmt.Errorf("lookup dataset sample identity: %w", err)
+	}
+	if identityUID == "" || identityUID == sampleUID {
+		return nil
+	}
+	if err := reassignDatasetSampleUID(ctx, tx, identityUID, sampleUID); err != nil {
+		return err
+	}
+	uidExists, err := datasetSampleUIDExists(ctx, tx, sampleUID)
+	if err != nil {
+		return fmt.Errorf("lookup dataset sample uid: %w", err)
+	}
+	if !uidExists {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM dataset_samples WHERE sample_uid=?`, identityUID); err != nil {
+		return fmt.Errorf("merge dataset sample identity: %w", err)
+	}
+	return nil
+}
+
+func datasetSampleUIDForIdentity(ctx context.Context, tx *sql.Tx, language, sampleID, samplePath string) (string, error) {
+	var uid string
+	err := tx.QueryRowContext(ctx, `
+		SELECT sample_uid FROM dataset_samples
+		WHERE language=? AND sample_id=? AND path=?`,
+		language, sampleID, samplePath).Scan(&uid)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return uid, err
+}
+
+func datasetSampleUIDExists(ctx context.Context, tx *sql.Tx, sampleUID string) (bool, error) {
+	var found int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM dataset_samples WHERE sample_uid=?`, sampleUID).Scan(&found)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func reassignDatasetSampleUID(ctx context.Context, tx *sql.Tx, fromUID, toUID string) error {
+	if fromUID == "" || fromUID == toUID {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE generated_cases SET sample_uid=? WHERE sample_uid=?`, toUID, fromUID); err != nil {
+		return fmt.Errorf("merge generated case sample uid: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE evaluation_results SET sample_uid=? WHERE sample_uid=?`, toUID, fromUID); err != nil {
+		return fmt.Errorf("merge evaluation result sample uid: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE OR IGNORE dataset_snapshot_members SET sample_uid=? WHERE sample_uid=?`, toUID, fromUID); err != nil {
+		return fmt.Errorf("merge dataset snapshot sample uid: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM dataset_snapshot_members WHERE sample_uid=?`, fromUID); err != nil {
+		return fmt.Errorf("delete merged dataset snapshot sample uid: %w", err)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) putSourceArtifact(ctx context.Context, tx *sql.Tx, ictx *ingestContext, path string) (artifactID string, sha string, err error) {

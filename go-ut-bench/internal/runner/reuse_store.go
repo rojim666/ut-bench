@@ -17,3 +17,19 @@ type GenerationReuseStore interface {
 	//   - err: 查询过程中的错误
 	FindReusableGeneratedAsset(ctx context.Context, generationKey string) (contracts.ReusableGeneratedCase, bool, error)
 }
+
+type GenerationLogicalReuseStore interface {
+	FindReusableGeneratedAssetByIdentity(
+		ctx context.Context,
+		subjectID string,
+		language string,
+		sampleUID string,
+		promptVersionID string,
+		promptMode string,
+		frameworkConfigSHA256 string,
+		skillSHA256 string,
+		agentCommandSHA256 string,
+		dependencyFingerprint string,
+		generationEnvFingerprint string,
+	) (contracts.ReusableGeneratedCase, bool, error)
+}

@@ -58,8 +58,14 @@ RUN set -eux; \
         curl \
         wget \
         unzip \
+        build-essential \
+        cmake \
+        pkg-config \
+        libgtest-dev \
         python3 \
         python3-pip \
+        default-jdk \
+        maven \
       || echo "warning: optional agent helper tools failed to install; CLI runtime remains usable"; \
     else \
       echo "warning: apt update failed; skipping optional agent helper tools"; \

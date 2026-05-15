@@ -77,6 +77,9 @@ func (s *Service) ValidateSpec(spec contracts.RunSpec) error {
 			}
 		}
 	}
+	if strings.TrimSpace(spec.DatasetProject) != "" && !validDatasetProjectToken(spec.DatasetProject) {
+		return fmt.Errorf("unsupported dataset project: %s", spec.DatasetProject)
+	}
 	if spec.Mode != "" && spec.Mode != contracts.RunModeFull && spec.Mode != contracts.RunModeIncremental {
 		return fmt.Errorf("unsupported mode: %s", spec.Mode)
 	}
@@ -132,6 +135,7 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 		return s.discoverFromManifest(spec)
 	}
 
+	datasetRoot := absoluteCleanPath(spec.DatasetRoot)
 	langs := spec.Languages
 	if len(langs) == 0 {
 		langs = append([]string{}, contracts.SupportedLanguages...)
@@ -143,7 +147,7 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 		if lang == "" {
 			continue
 		}
-		langDir := filepath.Join(spec.DatasetRoot, lang)
+		langDir := filepath.Join(datasetRoot, lang)
 		if _, err := os.Stat(langDir); err != nil {
 			continue
 		}
@@ -171,6 +175,9 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 				cat := classifySampleClass(id, rel)
 				scenario := classifySampleScenario(id, rel)
 				if !matchDatasetClassFilter(spec.DatasetClasses, cat) {
+					return nil
+				}
+				if !matchDatasetProjectFilter(spec.DatasetProject, cat, rel) {
 					return nil
 				}
 				if cat == contracts.DatasetClassRepoLevel {
@@ -230,6 +237,9 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 					cat := classifySampleClass(id, rel)
 					scenario := classifySampleScenario(id, rel)
 					if !matchDatasetClassFilter(spec.DatasetClasses, cat) {
+						return filepath.SkipDir
+					}
+					if !matchDatasetProjectFilter(spec.DatasetProject, cat, rel) {
 						return filepath.SkipDir
 					}
 					if spec.DatasetScenario != "" {
@@ -292,7 +302,7 @@ func (s *Service) discoverFromManifest(spec contracts.RunSpec) ([]contracts.Samp
 	if manifestPath == "" {
 		manifestPath = filepath.Join("configs", "dataset_"+strings.ToLower(strings.TrimSpace(spec.DatasetLevel))+".json")
 	}
-	mf, err := loadManifest(manifestPath, spec.DatasetRoot)
+	mf, err := loadManifest(absoluteCleanPath(manifestPath), absoluteCleanPath(spec.DatasetRoot))
 	if err != nil {
 		return nil, err
 	}
@@ -363,6 +373,18 @@ func (s *Service) discoverFromManifest(spec contracts.RunSpec) ([]contracts.Samp
 //
 // 返回值:
 //   - error: 验证失败的错误信息，nil表示验证通过
+func absoluteCleanPath(path string) string {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || path == "." {
+		return path
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return filepath.Clean(abs)
+}
+
 func (s *Service) ValidateLayout(datasetRoot string) error {
 	if strings.TrimSpace(datasetRoot) == "" {
 		return errors.New("dataset root is required")
@@ -631,6 +653,34 @@ func matchDatasetClassFilter(filters []string, sample contracts.DatasetClass) bo
 	return false
 }
 
+func matchDatasetProjectFilter(project string, class contracts.DatasetClass, relPath string) bool {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return true
+	}
+	if class != contracts.DatasetClassRepoLevel {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(relPath), "/")
+	if len(parts) < 3 || !strings.Contains(parts[0], "_code_files_repo_level") {
+		return false
+	}
+	return parts[2] == project
+}
+
+func validDatasetProjectToken(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, ".") {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' && r != '.' {
+			return false
+		}
+	}
+	return true
+}
+
 // isSupportedLanguage 检查语言是否为支持的语言
 // 支持的语言：python、go、java、cpp
 func isSupportedLanguage(lang string) bool {
@@ -646,23 +696,36 @@ func isSupportedLanguage(lang string) bool {
 // 根据语言返回对应的标准扩展名进行比较
 func matchLanguageExt(path, lang string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
-	return ext == languageExtByName(lang)
+	for _, allowed := range languageExtsByName(lang) {
+		if ext == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // languageExtByName 根据语言名称返回对应的文件扩展名
 // python -> .py, java -> .java, go -> .go, cpp -> .cpp
 func languageExtByName(lang string) string {
+	exts := languageExtsByName(lang)
+	if len(exts) == 0 {
+		return ""
+	}
+	return exts[0]
+}
+
+func languageExtsByName(lang string) []string {
 	switch lang {
 	case "python":
-		return ".py"
+		return []string{".py"}
 	case "java":
-		return ".java"
+		return []string{".java"}
 	case "go":
-		return ".go"
+		return []string{".go"}
 	case "cpp":
-		return ".cpp"
+		return []string{".cpp", ".cc", ".cxx", ".c++"}
 	default:
-		return ""
+		return nil
 	}
 }
 
@@ -758,9 +821,26 @@ func loadRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {
 func SynthesizeRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {
 	samplePath = filepath.Clean(samplePath)
 	ext := strings.ToLower(filepath.Ext(samplePath))
-	if ext != ".go" || strings.HasSuffix(strings.ToLower(filepath.Base(samplePath)), "_test.go") {
+	base := strings.ToLower(filepath.Base(samplePath))
+	if strings.HasSuffix(base, "_test"+ext) || strings.HasPrefix(base, "test_") {
 		return nil, false
 	}
+	switch ext {
+	case ".go":
+		return synthesizeGoRepoLevelMeta(samplePath)
+	case ".py":
+		return synthesizePythonRepoLevelMeta(samplePath)
+	case ".java":
+		return synthesizeJavaRepoLevelMeta(samplePath)
+	case ".cpp", ".cc", ".cxx", ".c++":
+		return synthesizeCppRepoLevelMeta(samplePath)
+	default:
+		return nil, false
+	}
+}
+
+func synthesizeGoRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {
+	ext := strings.ToLower(filepath.Ext(samplePath))
 	workspaceRoot, modulePath, ok := findGoWorkspaceRoot(samplePath)
 	if !ok {
 		return nil, false
@@ -798,6 +878,111 @@ func SynthesizeRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool)
 	}, true
 }
 
+func synthesizePythonRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {
+	ext := strings.ToLower(filepath.Ext(samplePath))
+	workspaceRoot, ok := findWorkspaceRoot(samplePath, []string{"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"})
+	if !ok {
+		return nil, false
+	}
+	targetRel, err := filepath.Rel(workspaceRoot, samplePath)
+	if err != nil || strings.HasPrefix(targetRel, "..") {
+		return nil, false
+	}
+	targetRel = filepath.ToSlash(targetRel)
+	if shouldSkipSyntheticRepoTarget(targetRel) {
+		return nil, false
+	}
+	moduleImport, packageName := pythonImportForTarget(targetRel)
+	if moduleImport == "" || packageName == "" {
+		return nil, false
+	}
+	workspaceRef, err := filepath.Rel(filepath.Dir(samplePath), workspaceRoot)
+	if err != nil {
+		workspaceRef = workspaceRoot
+	}
+	if workspaceRef == "" {
+		workspaceRef = "."
+	}
+	return &contracts.RepoLevelMeta{
+		SampleID:      sanitizeSyntheticSampleID(strings.TrimSuffix(targetRel, ext)),
+		ModuleImport:  moduleImport,
+		PackageName:   packageName,
+		TargetFile:    targetRel,
+		WorkspaceRoot: filepath.ToSlash(workspaceRef),
+	}, true
+}
+
+func synthesizeJavaRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {
+	ext := strings.ToLower(filepath.Ext(samplePath))
+	workspaceRoot, ok := findJavaWorkspaceRoot(samplePath)
+	if !ok {
+		return nil, false
+	}
+	targetRel, err := filepath.Rel(workspaceRoot, samplePath)
+	if err != nil || strings.HasPrefix(targetRel, "..") {
+		return nil, false
+	}
+	targetRel = filepath.ToSlash(targetRel)
+	lowerTargetRel := strings.ToLower(targetRel)
+	if shouldSkipSyntheticRepoTarget(targetRel) || strings.HasPrefix(lowerTargetRel, "src/test/") || strings.Contains(lowerTargetRel, "/src/test/") {
+		return nil, false
+	}
+	packageName, ok := parseJavaPackageName(samplePath)
+	if !ok {
+		return nil, false
+	}
+	className := strings.TrimSuffix(filepath.Base(targetRel), ext)
+	moduleImport := packageName
+	if className != "" {
+		moduleImport = packageName + "." + className
+	}
+	workspaceRef, err := filepath.Rel(filepath.Dir(samplePath), workspaceRoot)
+	if err != nil {
+		workspaceRef = workspaceRoot
+	}
+	if workspaceRef == "" {
+		workspaceRef = "."
+	}
+	return &contracts.RepoLevelMeta{
+		SampleID:      sanitizeSyntheticSampleID(strings.TrimSuffix(targetRel, ext)),
+		ModuleImport:  moduleImport,
+		PackageName:   packageName,
+		TargetFile:    targetRel,
+		WorkspaceRoot: filepath.ToSlash(workspaceRef),
+	}, true
+}
+
+func synthesizeCppRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {
+	ext := strings.ToLower(filepath.Ext(samplePath))
+	workspaceRoot, ok := findWorkspaceRoot(samplePath, []string{"CMakeLists.txt"})
+	if !ok {
+		return nil, false
+	}
+	targetRel, err := filepath.Rel(workspaceRoot, samplePath)
+	if err != nil || strings.HasPrefix(targetRel, "..") {
+		return nil, false
+	}
+	targetRel = filepath.ToSlash(targetRel)
+	if shouldSkipSyntheticRepoTarget(targetRel) {
+		return nil, false
+	}
+	workspaceRef, err := filepath.Rel(filepath.Dir(samplePath), workspaceRoot)
+	if err != nil {
+		workspaceRef = workspaceRoot
+	}
+	if workspaceRef == "" {
+		workspaceRef = "."
+	}
+	stem := strings.TrimSuffix(filepath.Base(targetRel), ext)
+	return &contracts.RepoLevelMeta{
+		SampleID:      sanitizeSyntheticSampleID(strings.TrimSuffix(targetRel, ext)),
+		ModuleImport:  stem,
+		PackageName:   stem,
+		TargetFile:    targetRel,
+		WorkspaceRoot: filepath.ToSlash(workspaceRef),
+	}, true
+}
+
 func findGoWorkspaceRoot(samplePath string) (string, string, bool) {
 	dir := filepath.Dir(samplePath)
 	for {
@@ -823,6 +1008,65 @@ func findGoWorkspaceRoot(samplePath string) (string, string, bool) {
 	}
 }
 
+func findWorkspaceRoot(samplePath string, markers []string) (string, bool) {
+	dir := filepath.Dir(samplePath)
+	for {
+		for _, marker := range markers {
+			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+				return dir, true
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+func findJavaWorkspaceRoot(samplePath string) (string, bool) {
+	markers := []string{"pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"}
+	nearestRoot, ok := findWorkspaceRoot(samplePath, markers)
+	if !ok {
+		return "", false
+	}
+	if projectRoot, projectOK := repoLevelDatasetProjectRoot(samplePath, "java"); projectOK && pathHasAnyMarker(projectRoot, markers) {
+		if rel, err := filepath.Rel(projectRoot, nearestRoot); err == nil && (rel == "." || !strings.HasPrefix(rel, "..")) {
+			return projectRoot, true
+		}
+	}
+	return nearestRoot, true
+}
+
+func repoLevelDatasetProjectRoot(samplePath, lang string) (string, bool) {
+	marker := lang + "_code_files_repo_level"
+	slashPath := filepath.ToSlash(filepath.Clean(samplePath))
+	parts := strings.Split(slashPath, "/")
+	for i, part := range parts {
+		if part != marker {
+			continue
+		}
+		if i+2 >= len(parts) {
+			return "", false
+		}
+		root := strings.Join(parts[:i+3], "/")
+		if root == "" {
+			return "", false
+		}
+		return filepath.Clean(filepath.FromSlash(root)), true
+	}
+	return "", false
+}
+
+func pathHasAnyMarker(root string, markers []string) bool {
+	for _, marker := range markers {
+		if _, err := os.Stat(filepath.Join(root, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func parseGoPackageName(path string) (string, bool) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -843,12 +1087,60 @@ func parseGoPackageName(path string) (string, bool) {
 	return "", false
 }
 
+func parseJavaPackageName(path string) (string, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "package ") {
+			line = strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(line, "package ")), ";")
+			if line != "" {
+				return line, true
+			}
+		}
+	}
+	return "", false
+}
+
+func pythonImportForTarget(targetRel string) (string, string) {
+	rel := filepath.ToSlash(strings.TrimSuffix(targetRel, filepath.Ext(targetRel)))
+	parts := strings.Split(rel, "/")
+	if len(parts) == 0 {
+		return "", ""
+	}
+	if parts[0] == "src" && len(parts) > 1 {
+		parts = parts[1:]
+	}
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == "__init__" {
+			continue
+		}
+		filtered = append(filtered, sanitizePythonImportPart(part))
+	}
+	if len(filtered) == 0 || filtered[0] == "" {
+		return "", ""
+	}
+	return strings.Join(filtered, "."), filtered[0]
+}
+
+func sanitizePythonImportPart(part string) string {
+	part = strings.TrimSpace(part)
+	part = strings.ReplaceAll(part, "-", "_")
+	return part
+}
+
 func shouldSkipRepoLevelDir(name string) bool {
 	switch strings.ToLower(name) {
 	case ".git", ".github", ".cache", ".gradle", ".idea", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".vscode",
 		"__pycache__", "artifacts", "benchmark", "benchmarks", "build", "coverage", "dist", "docs",
 		"examples", "_examples", "generated", "htmlcov", "node_modules", "out", "storage", "target",
-		"testdata", "vendor", "workspace":
+		"test", "tests", "testdata", "vendor", "workspace":
 		return true
 	default:
 		return false

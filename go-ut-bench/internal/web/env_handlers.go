@@ -62,7 +62,8 @@ func (s *Server) handleBuildImage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		target := strings.TrimSpace(r.URL.Query().Get("target"))
-		profile, err := defaultBuildProfile(target, s.dockerCfg)
+		fast := parseBoolQuery(r.URL.Query().Get("fast"))
+		profile, err := defaultBuildProfile(target, s.dockerCfg, fast)
 		if err != nil {
 			errJSON(w, http.StatusBadRequest, err.Error())
 			return
@@ -83,6 +84,15 @@ func (s *Server) handleBuildImage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, buildJobSnapshot(job))
 	default:
 		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func parseBoolQuery(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
 	}
 }
 

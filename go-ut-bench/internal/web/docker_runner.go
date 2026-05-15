@@ -186,6 +186,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if spec.DatasetScenario != "" {
 			a = append(a, "--scenario", spec.DatasetScenario)
 		}
+		if spec.DatasetProject != "" {
+			a = append(a, "--project", spec.DatasetProject)
+		}
 		if spec.DatasetLevel != "" {
 			a = append(a, "--level", spec.DatasetLevel)
 		}
@@ -242,6 +245,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if spec.DatasetScenario != "" {
 			a = append(a, "--scenario", spec.DatasetScenario)
 		}
+		if spec.DatasetProject != "" {
+			a = append(a, "--project", spec.DatasetProject)
+		}
 		if spec.DatasetLevel != "" {
 			a = append(a, "--level", spec.DatasetLevel)
 		}
@@ -266,10 +272,8 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		manifestPath := opts.ManifestPath
 		if manifestPath == "" {
 			manifestPath = path.Join("/app/artifacts", "runs", sourceRunID, "generated", "generated_manifest.json")
-		}
-		// Convert host path to container path if it's absolute
-		if strings.HasPrefix(manifestPath, root) {
-			manifestPath = strings.Replace(manifestPath, root, "/app", 1)
+		} else {
+			manifestPath = dockerContainerPathForMountedFile(root, manifestPath)
 		}
 		a = append(a, "--manifest", manifestPath)
 		if spec.MutationEnabled {
@@ -293,15 +297,38 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		evaluationPath := opts.EvaluationPath
 		if evaluationPath == "" {
 			evaluationPath = path.Join("/app/artifacts", "runs", sourceRunID, "evaluation", "evaluation_result.json")
-		}
-		// Convert host path to container path if it's absolute
-		if strings.HasPrefix(evaluationPath, root) {
-			evaluationPath = strings.Replace(evaluationPath, root, "/app", 1)
+		} else {
+			evaluationPath = dockerContainerPathForMountedFile(root, evaluationPath)
 		}
 		a = append(a, "--evaluation", evaluationPath)
 	}
 
 	return wrapDockerSourceCommand(a, cfg)
+}
+
+func dockerContainerPathForMountedFile(projectRoot, filePath string) string {
+	raw := strings.TrimSpace(filePath)
+	if raw == "" {
+		return filePath
+	}
+	slashRaw := filepath.ToSlash(raw)
+	if strings.HasPrefix(slashRaw, "/app/") {
+		return path.Clean(slashRaw)
+	}
+
+	root := strings.TrimRight(filepath.ToSlash(filepath.Clean(projectRoot)), "/")
+	clean := filepath.Clean(raw)
+	if !filepath.IsAbs(clean) {
+		clean = filepath.Join(projectRoot, clean)
+	}
+	slash := filepath.ToSlash(filepath.Clean(clean))
+	if slash == root {
+		return "/app"
+	}
+	if strings.HasPrefix(slash, root+"/") {
+		return path.Join("/app", slash[len(root)+1:])
+	}
+	return slashRaw
 }
 
 func resolveDockerHostPath(projectRoot, requested, fallbackName string) string {

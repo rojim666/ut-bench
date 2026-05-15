@@ -688,18 +688,25 @@ type subjectInfo struct {
 }
 
 type configResponse struct {
-	Models            []modelInfo         `json:"models"`
-	Frameworks        []frameworkInfo     `json:"frameworks,omitempty"`
-	Skills            []skillInfo         `json:"skills,omitempty"`
-	Subjects          []subjectInfo       `json:"subjects,omitempty"`
-	Languages         []string            `json:"languages"`
-	Scenarios         []string            `json:"scenarios"`
-	ScenariosByClass  map[string][]string `json:"scenarios_by_class,omitempty"`
-	Classes           []string            `json:"classes"`
-	DatasetRoot       string              `json:"dataset_root"`
-	ConfigPath        string              `json:"config_path"`
-	AgentsConfigPath  string              `json:"agents_config_path,omitempty"`
-	AgentsConfigError string              `json:"agents_config_error,omitempty"`
+	Models            []modelInfo                                `json:"models"`
+	Frameworks        []frameworkInfo                            `json:"frameworks,omitempty"`
+	Skills            []skillInfo                                `json:"skills,omitempty"`
+	Subjects          []subjectInfo                              `json:"subjects,omitempty"`
+	Languages         []string                                   `json:"languages"`
+	Scenarios         []string                                   `json:"scenarios"`
+	ScenariosByClass  map[string][]string                        `json:"scenarios_by_class,omitempty"`
+	ProjectsByDataset map[string]map[string][]datasetProjectInfo `json:"projects_by_dataset,omitempty"`
+	Classes           []string                                   `json:"classes"`
+	DatasetRoot       string                                     `json:"dataset_root"`
+	ConfigPath        string                                     `json:"config_path"`
+	AgentsConfigPath  string                                     `json:"agents_config_path,omitempty"`
+	AgentsConfigError string                                     `json:"agents_config_error,omitempty"`
+}
+
+type datasetProjectInfo struct {
+	Name        string   `json:"name"`
+	Languages   []string `json:"languages,omitempty"`
+	SampleCount int      `json:"sample_count"`
 }
 
 type modelsYAML struct {
@@ -1859,6 +1866,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Languages:         contracts.SupportedLanguages,
 		Scenarios:         mergedDatasetScenarios(s.mgr.datasetRoot),
 		ScenariosByClass:  datasetScenariosByClass(s.mgr.datasetRoot),
+		ProjectsByDataset: datasetProjectsByScenario(s.mgr.datasetRoot),
 		Classes:           []string{"self_contained", "repo_level"},
 		DatasetRoot:       s.mgr.datasetRoot,
 		ConfigPath:        s.configPath,
@@ -1882,6 +1890,25 @@ type runSummaryItem struct {
 	IsMergedReport bool              `json:"is_merged_report,omitempty"`
 	SourceRunIDs   []string          `json:"source_run_ids,omitempty"`
 	ResultCount    int               `json:"result_count,omitempty"`
+}
+
+type diskRunSummary struct {
+	RunID          string            `json:"run_id"`
+	Label          string            `json:"label"`
+	CreatedAtUTC   string            `json:"created_at_utc"`
+	Spec           contracts.RunSpec `json:"spec"`
+	Backend        string            `json:"backend"`
+	IsMergedReport bool              `json:"is_merged_report"`
+	SourceRunIDs   []string          `json:"source_run_ids"`
+	ResultCount    int               `json:"result_count"`
+}
+
+func decodeDiskRunSummary(data []byte) (diskRunSummary, error) {
+	var raw diskRunSummary
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return raw, err
+	}
+	return raw, nil
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -1924,6 +1951,7 @@ func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request) {
 				EndedAt:   entry.EndedAt,
 				Error:     entry.Error,
 				Spec:      entry.Spec,
+				UseDocker: entry.UseDocker,
 			}
 			entry.mu.RUnlock()
 		}
@@ -1949,21 +1977,12 @@ func (s *Server) listRunsFromDisk(w http.ResponseWriter, activeRuns []*RunEntry,
 	pattern := filepath.Join(s.outputRoot, "runs", "*", "run_summary.json")
 	matches, _ := filepath.Glob(pattern)
 	for _, path := range matches {
-		var raw struct {
-			RunID          string            `json:"run_id"`
-			Label          string            `json:"label"`
-			CreatedAtUTC   string            `json:"created_at_utc"`
-			Spec           contracts.RunSpec `json:"spec"`
-			Backend        string            `json:"backend"`
-			IsMergedReport bool              `json:"is_merged_report"`
-			SourceRunIDs   []string          `json:"source_run_ids"`
-			ResultCount    int               `json:"result_count"`
-		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		if err := json.Unmarshal(data, &raw); err != nil {
+		raw, err := decodeDiskRunSummary(data)
+		if err != nil {
 			continue
 		}
 		runID := strings.TrimSpace(raw.RunID)
@@ -1997,6 +2016,7 @@ func (s *Server) listRunsFromDisk(w http.ResponseWriter, activeRuns []*RunEntry,
 			EndedAt:   entry.EndedAt,
 			Error:     entry.Error,
 			Spec:      entry.Spec,
+			UseDocker: entry.UseDocker,
 		}
 		entry.mu.RUnlock()
 		byID[entry.RunID] = item
@@ -2028,12 +2048,13 @@ type createRunRequest struct {
 	Languages       []string `json:"languages"`
 	Class           string   `json:"class"`
 	Scenario        string   `json:"scenario"`
+	Project         string   `json:"project"`
 	Level           string   `json:"level"`
 	MaxSamples      int      `json:"max_samples"`
 	Workers         int      `json:"workers"`
 	Mode            string   `json:"mode"`
 	DryRun          bool     `json:"dry_run"`
-	ReuseGenerated  bool     `json:"reuse_generated"`
+	ReuseGenerated  *bool    `json:"reuse_generated"`
 	ReuseEvaluation bool     `json:"reuse_evaluation"`
 	MutationEnabled bool     `json:"mutation_enabled"`
 	MutationTimeout int      `json:"mutation_timeout"`
@@ -2148,12 +2169,13 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		Languages:        req.Languages,
 		DatasetClasses:   classes,
 		DatasetScenario:  req.Scenario,
+		DatasetProject:   req.Project,
 		DatasetLevel:     req.Level,
 		DatasetRoot:      s.mgr.datasetRoot,
 		ConfigPath:       s.configPath,
 		Mode:             contracts.RunMode(mode),
 		DryRun:           req.DryRun,
-		ReuseGenerated:   req.ReuseGenerated,
+		ReuseGenerated:   req.ReuseGenerated == nil || *req.ReuseGenerated,
 		ReuseEvaluation:  req.ReuseEvaluation,
 		DBPath:           s.mgr.dbPath,
 		MutationEnabled:  req.MutationEnabled,
@@ -2283,10 +2305,8 @@ func (s *Server) handleRunRerun(w http.ResponseWriter, r *http.Request, runID st
 			errJSON(w, http.StatusNotFound, "run not found or summary missing: "+runID)
 			return
 		}
-		var raw struct {
-			Spec contracts.RunSpec `json:"spec"`
-		}
-		if err := json.Unmarshal(data, &raw); err != nil || raw.Spec.RunID == "" {
+		raw, err := decodeDiskRunSummary(data)
+		if err != nil || raw.Spec.RunID == "" {
 			errJSON(w, http.StatusInternalServerError, "run_summary.json missing spec")
 			return
 		}
@@ -2326,10 +2346,7 @@ func (s *Server) loadRunSpec(runID string) (contracts.RunSpec, error) {
 	// 优先从 run_summary.json 恢复
 	path := filepath.Join(s.outputRoot, "runs", runID, "run_summary.json")
 	if data, err := os.ReadFile(path); err == nil {
-		var raw struct {
-			Spec contracts.RunSpec `json:"spec"`
-		}
-		if err := json.Unmarshal(data, &raw); err == nil && raw.Spec.RunID != "" {
+		if raw, err := decodeDiskRunSummary(data); err == nil && raw.Spec.RunID != "" {
 			return raw.Spec, nil
 		}
 	}
@@ -2646,18 +2663,25 @@ func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request, runID stri
 	}
 	entry, ok := s.mgr.Get(runID)
 	if !ok {
-		spec, err := s.loadRunSpec(runID)
+		summaryPath := filepath.Join(s.outputRoot, "runs", runID, "run_summary.json")
+		data, err := os.ReadFile(summaryPath)
 		if err != nil {
 			errJSON(w, http.StatusNotFound, "run not found: "+runID)
 			return
 		}
-		label := s.loadRunLabel(runID)
+		raw, err := decodeDiskRunSummary(data)
+		if err != nil || raw.Spec.RunID == "" {
+			errJSON(w, http.StatusNotFound, "run not found: "+runID)
+			return
+		}
+		startedAt, _ := time.Parse(time.RFC3339Nano, raw.CreatedAtUTC)
 		writeJSON(w, http.StatusOK, runDetailResponse{
-			RunID:  runID,
-			Label:  label,
-			Status: StatusCompleted,
-			Spec:   spec,
-			Logs:   []string{},
+			RunID:     runID,
+			Label:     raw.Label,
+			Status:    StatusCompleted,
+			StartedAt: startedAt,
+			Spec:      raw.Spec,
+			Logs:      []string{},
 		})
 		return
 	}
@@ -3199,6 +3223,106 @@ func datasetScenariosByClass(datasetRoot string) map[string][]string {
 		sort.Strings(out[class])
 	}
 	return out
+}
+
+func datasetProjectsByScenario(datasetRoot string) map[string]map[string][]datasetProjectInfo {
+	out := map[string]map[string][]datasetProjectInfo{
+		"repo_level": {},
+	}
+	if strings.TrimSpace(datasetRoot) == "" {
+		return out
+	}
+	type acc struct {
+		name      string
+		languages map[string]bool
+		count     int
+	}
+	byScenario := map[string]map[string]*acc{}
+	for _, lang := range contracts.SupportedLanguages {
+		classDir := filepath.Join(datasetRoot, lang, lang+"_code_files_repo_level")
+		scenarios, err := os.ReadDir(classDir)
+		if err != nil {
+			continue
+		}
+		for _, scenarioEntry := range scenarios {
+			if !scenarioEntry.IsDir() || strings.HasPrefix(scenarioEntry.Name(), ".") {
+				continue
+			}
+			scenario := scenarioEntry.Name()
+			scenarioDir := filepath.Join(classDir, scenario)
+			projects, err := os.ReadDir(scenarioDir)
+			if err != nil {
+				continue
+			}
+			if byScenario[scenario] == nil {
+				byScenario[scenario] = map[string]*acc{}
+			}
+			for _, projectEntry := range projects {
+				if !projectEntry.IsDir() || strings.HasPrefix(projectEntry.Name(), ".") {
+					continue
+				}
+				project := projectEntry.Name()
+				item := byScenario[scenario][project]
+				if item == nil {
+					item = &acc{name: project, languages: map[string]bool{}}
+					byScenario[scenario][project] = item
+				}
+				item.languages[lang] = true
+				item.count += countRepoLevelProjectSamples(filepath.Join(scenarioDir, project), lang)
+			}
+		}
+	}
+	for scenario, projects := range byScenario {
+		items := make([]datasetProjectInfo, 0, len(projects))
+		for _, project := range projects {
+			langs := make([]string, 0, len(project.languages))
+			for lang := range project.languages {
+				langs = append(langs, lang)
+			}
+			sort.Strings(langs)
+			items = append(items, datasetProjectInfo{Name: project.name, Languages: langs, SampleCount: project.count})
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].SampleCount != items[j].SampleCount {
+				return items[i].SampleCount > items[j].SampleCount
+			}
+			return items[i].Name < items[j].Name
+		})
+		out["repo_level"][scenario] = items
+	}
+	return out
+}
+
+func countRepoLevelProjectSamples(projectRoot, lang string) int {
+	count := 0
+	_ = filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != projectRoot && shouldSkipDatasetProjectDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if _, ok := dataset.SynthesizeRepoLevelMeta(path); ok {
+			count++
+		}
+		return nil
+	})
+	return count
+}
+
+func shouldSkipDatasetProjectDir(name string) bool {
+	switch strings.ToLower(name) {
+	case ".git", ".github", ".cache", ".gradle", ".idea", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".vscode",
+		"__pycache__", "artifacts", "benchmark", "benchmarks", "build", "coverage", "dist", "docs",
+		"examples", "_examples", "generated", "htmlcov", "node_modules", "out", "storage", "target",
+		"test", "tests", "testdata", "vendor", "workspace":
+		return true
+	default:
+		return false
+	}
 }
 
 func datasetExtForLanguage(lang string) string {
