@@ -217,6 +217,67 @@ Survived: 5`,
 }
 
 // TestMullConfigTemplate 验证 Mull 配置模板
+func TestParseMullOutputOutcomeParenFormats(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		validate func(t *testing.T, stats mutationStats)
+	}{
+		{
+			name: "skipped",
+			output: `Running mutants (threads: 4)...
+Killed mutants (0/1)
+Survived mutants (0/1)
+Skipped mutants (1/1)
+Mutation score: 0%`,
+			validate: func(t *testing.T, stats mutationStats) {
+				if stats.Total != 1 {
+					t.Errorf("expected Total=1, got %d", stats.Total)
+				}
+				if stats.Skipped != 1 {
+					t.Errorf("expected Skipped=1, got %d", stats.Skipped)
+				}
+			},
+		},
+		{
+			name: "not covered",
+			output: `Killed mutants (0/3)
+Survived mutants (1/3)
+Not covered mutants (2/3)`,
+			validate: func(t *testing.T, stats mutationStats) {
+				if stats.Total != 3 {
+					t.Errorf("expected Total=3, got %d", stats.Total)
+				}
+				if stats.Survived != 1 {
+					t.Errorf("expected Survived=1, got %d", stats.Survived)
+				}
+				if stats.NoTests != 2 {
+					t.Errorf("expected NoTests=2, got %d", stats.NoTests)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stats, err := parseMullOutput(tt.output)
+			if err != "" {
+				t.Fatalf("unexpected parse error: %s", err)
+			}
+			tt.validate(t, stats)
+		})
+	}
+}
+
+func TestMullOutputReportsNoMutants(t *testing.T) {
+	output := `[info] Warm up run (threads: 1)
+[################################] 1/1. Finished in 3ms
+[info] No mutants found. Mutation score: infinitely high`
+	if !mullOutputReportsNoMutants(output) {
+		t.Fatal("expected Mull no-mutants output to be detected")
+	}
+}
+
 func TestMullConfigTemplate(t *testing.T) {
 	// 验证配置模板不包含显式 mutators（使用默认全部）
 	if contains := contains(cppMullConfigTemplate, "mutators:"); contains {

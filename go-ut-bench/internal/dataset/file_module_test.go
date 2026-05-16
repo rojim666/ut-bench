@@ -150,3 +150,34 @@ func TestSynthesizeJavaRepoLevelMetaPrefersDatasetProjectRoot(t *testing.T) {
 		t.Fatalf("target file = %q", meta.TargetFile)
 	}
 }
+
+func TestSynthesizeCppRepoLevelMetaPrefersDatasetProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "datasets", "cpp", "cpp_code_files_repo_level", "oss", "CLI11")
+	fuzzDir := filepath.Join(repo, "fuzz")
+	if err := os.MkdirAll(fuzzDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "CMakeLists.txt"), []byte("cmake_minimum_required(VERSION 3.16)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fuzzDir, "CMakeLists.txt"), []byte("cmake_minimum_required(VERSION 3.16)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(fuzzDir, "cli11_app_fuzz.cpp")
+	if err := os.WriteFile(sourcePath, []byte("int main() { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, ok := SynthesizeRepoLevelMeta(sourcePath)
+	if !ok {
+		t.Fatal("expected synthetic C++ repo metadata")
+	}
+	workspaceAbs := filepath.Clean(filepath.Join(filepath.Dir(sourcePath), filepath.FromSlash(meta.WorkspaceRoot)))
+	if workspaceAbs != repo {
+		t.Fatalf("workspace root = %q, want %q", workspaceAbs, repo)
+	}
+	if meta.TargetFile != "fuzz/cli11_app_fuzz.cpp" {
+		t.Fatalf("target file = %q", meta.TargetFile)
+	}
+}

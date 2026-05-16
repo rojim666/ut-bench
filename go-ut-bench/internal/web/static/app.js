@@ -2970,7 +2970,7 @@
         const data = await r.json()
         if (!r.ok) { this.showToast('重新评测失败：' + (data.error || 'HTTP ' + r.status), 'err', 6000); return }
         this.currentReport = null
-        this.showToast('evaluator 重新运行完成：' + data.evaluation_path, 'ok', 6000)
+        this.showToast('evaluator 重新运行已启动：' + (data.evaluation_path || ''), 'ok', 6000)
         await this.refreshDetail()
       } catch (e) {
         this.showToast('重新评测失败：' + e.message, 'err', 6000)
@@ -3463,10 +3463,12 @@
 
     get reportCards() {
       const s = this.currentReport?.summary ?? {}
+      const compileRate = s.raw_compile_pass_rate ?? s.compile_pass_rate
+      const sampleTestRate = s.raw_test_pass_rate ?? s.sample_test_pass_rate ?? s.test_pass_rate
       return [
         { label:'样本数',  value: s.total_samples ?? 0, color:'kpi-total' },
-        { label:'编译通过率',  value: pct(s.compile_pass_rate), color: pctColor(s.compile_pass_rate) },
-        { label:'样本测试通过率',  value: pct(s.sample_test_pass_rate ?? s.test_pass_rate), color: pctColor(s.sample_test_pass_rate ?? s.test_pass_rate) },
+        { label:'编译通过率',  value: pct(compileRate), color: pctColor(compileRate) },
+        { label:'样本测试通过率',  value: pct(sampleTestRate), color: pctColor(sampleTestRate) },
         { label:'平均行覆盖率', value: pct(s.avg_line_coverage), color: pctColor(s.avg_line_coverage) },
         { label:'平均变异分', value: pct(s.avg_mutation_score), color: pctColor(s.avg_mutation_score) },
       ]

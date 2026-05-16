@@ -51,6 +51,54 @@ func TestBuildMutationBreakdown(t *testing.T) {
 	}
 }
 
+func TestBuildZeroMutantSamplesIncludesExplicitAndLegacyZeroStats(t *testing.T) {
+	zero := 0.0
+	totalZero := 0
+	totalNonZero := 3
+	killedZero := 0
+	survivedThree := 3
+	rows := []contracts.EvaluationResult{
+		{
+			Language:       "java",
+			SampleID:       "explicit_zero",
+			SourcePath:     "src/main/java/A.java",
+			MutationScore:  &zero,
+			MutationTotal:  &totalZero,
+			MutationTool:   "pitest",
+			MutationKilled: &killedZero,
+		},
+		{
+			Language:      "java",
+			SampleID:      "legacy_zero",
+			SourcePath:    "src/main/java/B.java",
+			MutationScore: &zero,
+			MutationTool:  "pitest",
+		},
+		{
+			Language:         "java",
+			SampleID:         "survived_mutants",
+			SourcePath:       "src/main/java/C.java",
+			MutationScore:    &zero,
+			MutationTotal:    &totalNonZero,
+			MutationKilled:   &killedZero,
+			MutationSurvived: &survivedThree,
+			MutationTool:     "pitest",
+		},
+	}
+
+	got := buildZeroMutantSamples(rows)
+	if len(got) != 2 {
+		t.Fatalf("expected two zero-mutant samples, got %+v", got)
+	}
+	ids := map[string]bool{}
+	for _, row := range got {
+		ids[row.SampleID] = true
+	}
+	if !ids["explicit_zero"] || !ids["legacy_zero"] || ids["survived_mutants"] {
+		t.Fatalf("unexpected zero-mutant sample ids: %+v", ids)
+	}
+}
+
 func TestBuildSummaryUsesSampleLevelTestPassRateWhenCountsMissing(t *testing.T) {
 	pass := true
 	fail := false
@@ -173,6 +221,9 @@ func TestScoreEligibilityExcludesNonModelFailuresFromRanking(t *testing.T) {
 	}
 	if s.CompilePassRate != 1 {
 		t.Fatalf("expected excluded row to be omitted from compile rate, got %v", s.CompilePassRate)
+	}
+	if s.RawCompilePassRate != 0.5 || s.RawTestPassRate != 0.5 {
+		t.Fatalf("expected raw rates to keep all rows, got %+v", s)
 	}
 
 	dims := buildDimensions(rows, nil)

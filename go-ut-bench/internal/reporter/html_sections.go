@@ -197,6 +197,9 @@ func buildOverviewSection(payload contracts.ReportPayload, rows []contracts.Eval
 	}
 	avgLatency := totalLatency / float64(latencyCount) / 1000 // 转换为秒
 	avgTokens := totalTokens / float64(tokenCount)
+	overviewCompileRate := payload.Summary.RawCompilePassRate
+	overviewSampleTestRate := payload.Summary.RawTestPassRate
+	overviewTestCaseRate := payload.Summary.RawTestCasePassRate
 
 	return fmt.Sprintf(`<div class="section" id="overview">
   <h2>概览 Overview</h2>
@@ -240,12 +243,12 @@ func buildOverviewSection(payload contracts.ReportPayload, rows []contracts.Eval
     </div>
   </div>
 </div>`,
-		statusTone(payload.Summary.CompilePassRate, 0.85, 0.65),
-		payload.Summary.CompilePassRate*100,
+		statusTone(overviewCompileRate, 0.85, 0.65),
+		overviewCompileRate*100,
 		payload.Summary.TotalSamples,
-		statusTone(payload.Summary.SampleTestPassRate, 0.75, 0.5),
-		payload.Summary.SampleTestPassRate*100,
-		payload.Summary.TestCasePassRate*100,
+		statusTone(overviewSampleTestRate, 0.75, 0.5),
+		overviewSampleTestRate*100,
+		overviewTestCaseRate*100,
 		payload.Summary.AvgLineCoverage*100,
 		payload.Summary.AvgMutationScore*100,
 		len(scenarioCount),

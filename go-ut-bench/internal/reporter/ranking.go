@@ -649,8 +649,8 @@ func shortErrText(v string) string {
 	return v
 }
 
-// buildZeroMutantSamples 从评测结果中筛选出因源代码结构简单无法产生变异体的样本
-// 这类样本的 MutationError 包含 "produced zero mutants" 或 "did not execute any mutants"
+// buildZeroMutantSamples 从评测结果中筛选出无法产生有效变异体的样本。
+// 新结果会写入 MutationTotal=0；旧结果可能只留下 mutation_score=0 且没有统计明细。
 func buildZeroMutantSamples(rows []contracts.EvaluationResult) []contracts.ZeroMutantSample {
 	type sampleKey struct {
 		sampleID string
@@ -662,11 +662,8 @@ func buildZeroMutantSamples(rows []contracts.EvaluationResult) []contracts.ZeroM
 	}
 	m := map[sampleKey]*sampleAgg{}
 	for _, row := range rows {
-		if row.MutationError == "" {
-			continue
-		}
-		msg := strings.ToLower(row.MutationError)
-		if !strings.Contains(msg, "produced zero mutants") && !strings.Contains(msg, "did not execute any mutants") {
+		isZero, exampleMsg := isZeroMutantRow(row)
+		if !isZero {
 			continue
 		}
 		k := sampleKey{sampleID: row.SampleID, language: row.Language}
@@ -685,8 +682,8 @@ func buildZeroMutantSamples(rows []contracts.EvaluationResult) []contracts.ZeroM
 			m[k] = agg
 		}
 		agg.sample.Count++
-		if row.MutationError != "" {
-			agg.msgs = append(agg.msgs, row.MutationError)
+		if exampleMsg != "" {
+			agg.msgs = append(agg.msgs, exampleMsg)
 		}
 	}
 	out := make([]contracts.ZeroMutantSample, 0, len(m))
@@ -703,6 +700,29 @@ func buildZeroMutantSamples(rows []contracts.EvaluationResult) []contracts.ZeroM
 		return out[i].SampleID < out[j].SampleID
 	})
 	return out
+}
+
+func isZeroMutantRow(row contracts.EvaluationResult) (bool, string) {
+	if row.MutationError != "" {
+		msg := strings.ToLower(row.MutationError)
+		if strings.Contains(msg, "produced zero mutants") ||
+			strings.Contains(msg, "did not execute any mutants") ||
+			strings.Contains(msg, "no mutations found") ||
+			strings.Contains(msg, "created 0 mutation test units") {
+			return true, row.MutationError
+		}
+		return false, ""
+	}
+	if strings.TrimSpace(row.MutationTool) == "" || row.MutationScore == nil || *row.MutationScore != 0 {
+		return false, ""
+	}
+	if row.MutationTotal != nil && *row.MutationTotal == 0 {
+		return true, "mutation tool produced zero mutants"
+	}
+	if row.MutationTotal == nil && row.MutationKilled == nil && row.MutationSurvived == nil {
+		return true, "mutation score is 0 and no mutant statistics were recorded"
+	}
+	return false, ""
 }
 
 // inferZeroMutantReason 根据语言和源文件路径推断零变异体的原因

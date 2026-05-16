@@ -43,6 +43,23 @@ func TestParseGoTestCounts(t *testing.T) {
 	}
 }
 
+func TestPopulateMutationResultRecordsZeroMutants(t *testing.T) {
+	var row contracts.EvaluationResult
+	populateMutationResult(&row, 0, mutationStats{}, "", "pitest")
+	if row.MutationScore == nil || *row.MutationScore != 0 {
+		t.Fatalf("expected zero mutation score, got %+v", row.MutationScore)
+	}
+	if row.MutationTotal == nil || *row.MutationTotal != 0 {
+		t.Fatalf("expected mutation_total=0 to be persisted, got %+v", row.MutationTotal)
+	}
+	if row.MutationKilled == nil || *row.MutationKilled != 0 {
+		t.Fatalf("expected mutation_killed=0 to be persisted, got %+v", row.MutationKilled)
+	}
+	if row.MutationTool != "pitest" {
+		t.Fatalf("expected mutation tool pitest, got %q", row.MutationTool)
+	}
+}
+
 func TestExtractAllClassNamesFromSourceIncludesInterfacesAndEnums(t *testing.T) {
 	source := `
 interface DataSource {
@@ -309,6 +326,34 @@ func TestClassifyFailureOriginMarksPitestNoEffectiveResultsAsTool(t *testing.T) 
 	origin, reason := classifyFailureOrigin(row)
 	if origin != "tool" || reason == "" {
 		t.Fatalf("expected pitest no-results to be tool origin, got origin=%q reason=%q", origin, reason)
+	}
+}
+
+func TestClassifyFailureOriginMarksPitestDependencyInstallAsTool(t *testing.T) {
+	testPass := true
+	rate := 1.0
+	row := contracts.EvaluationResult{
+		CompilePass:   true,
+		TestPass:      &testPass,
+		TestPassRate:  &rate,
+		MutationError: "pitest dependency install failed; run_out=\"PluginResolutionException: Failed to read artifact descriptor\"",
+	}
+
+	origin, reason := classifyFailureOrigin(row)
+	if origin != "tool" || reason == "" {
+		t.Fatalf("expected pitest dependency install failure to be tool origin, got origin=%q reason=%q", origin, reason)
+	}
+}
+
+func TestClassifyFailureOriginMarksMavenPluginResolutionAsEnvironment(t *testing.T) {
+	row := contracts.EvaluationResult{
+		CompilePass:  false,
+		CompileError: "Failed to execute goal com.diffplug.spotless:spotless-maven-plugin:check: PluginResolutionException: Failed to read artifact descriptor",
+	}
+
+	origin, reason := classifyFailureOrigin(row)
+	if origin != "environment" || reason == "" {
+		t.Fatalf("expected Maven plugin resolution failure to be environment origin, got origin=%q reason=%q", origin, reason)
 	}
 }
 

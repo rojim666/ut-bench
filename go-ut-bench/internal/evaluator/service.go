@@ -34,7 +34,7 @@ type Service struct {
 // 限制同时清理的目录数量为2，避免系统资源占用过高
 var cleanupSemaphore = make(chan struct{}, 2)
 
-const evaluatorVersion = "utbench-evaluator.v1"
+const evaluatorVersion = "utbench-evaluator.v4"
 const defaultScorePolicyVersion = "default-v2"
 
 // Output 评测操作的输出结果
@@ -724,6 +724,14 @@ func isEnvironmentFailureMessage(msg string) bool {
 	if strings.Contains(msg, "pitest") || strings.Contains(msg, "junit 5 plugin") {
 		return false
 	}
+	if strings.Contains(msg, "pluginresolutionexception") ||
+		strings.Contains(msg, "pluginincompatibleexception") ||
+		strings.Contains(msg, "could not resolve dependencies") ||
+		strings.Contains(msg, "failed to read artifact descriptor") ||
+		strings.Contains(msg, "one of its dependencies could not be resolved") ||
+		strings.Contains(msg, "could not find artifact") {
+		return true
+	}
 	return strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "access is denied") ||
 		strings.Contains(msg, "executable file not found") ||
@@ -752,6 +760,13 @@ func isToolFailureMessage(msg string) bool {
 	return strings.Contains(msg, "coverage json failed") ||
 		strings.Contains(msg, "coverage files empty") ||
 		strings.Contains(msg, "stats file not found") ||
+		strings.Contains(msg, "pitest dependency install failed") ||
+		strings.Contains(msg, "pluginresolutionexception") ||
+		strings.Contains(msg, "pluginincompatibleexception") ||
+		strings.Contains(msg, "could not resolve dependencies") ||
+		strings.Contains(msg, "failed to read artifact descriptor") ||
+		strings.Contains(msg, "one of its dependencies could not be resolved") ||
+		strings.Contains(msg, "could not find artifact") ||
 		strings.Contains(msg, "gremlins no results to report") ||
 		strings.Contains(msg, "no gremlins output found") ||
 		strings.Contains(msg, "go-mutesting no results to report") ||
@@ -976,6 +991,9 @@ func preparePythonRepoLevelWorkspace(testPath string, samplePath string) (string
 	if workspaceRoot == "" {
 		return "", "", "", "", "repo_level workspace_root not set in metadata"
 	}
+	if strings.TrimSpace(meta.TargetFile) == "" {
+		return "", "", "", "", "repo_level target_file not set in metadata"
+	}
 	if _, err := os.Stat(workspaceRoot); err != nil {
 		return "", "", "", "", "repo_level workspace not found: " + workspaceRoot
 	}
@@ -984,22 +1002,81 @@ func preparePythonRepoLevelWorkspace(testPath string, samplePath string) (string
 	if err != nil {
 		return "", "", "", "", "failed to read generated test: " + err.Error()
 	}
-	testsDir := filepath.Join(workspaceRoot, "tests")
+	tmpdir, err := os.MkdirTemp("", "utbench_python_repo_eval_")
+	if err != nil {
+		return "", "", "", "", "failed to create temp dir: " + err.Error()
+	}
+	skip := func(rel string) bool {
+		relSlash := filepath.ToSlash(rel)
+		base := strings.ToLower(filepath.Base(relSlash))
+		switch base {
+		case ".git", ".cache", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".venv", "venv", "env",
+			"__pycache__", "build", "dist", "htmlcov", ".hypothesis":
+			return true
+		}
+		if strings.HasSuffix(base, ".egg-info") || strings.HasPrefix(base, ".coverage") {
+			return true
+		}
+		return false
+	}
+	if err := copyTreeFiltered(workspaceRoot, tmpdir, skip); err != nil {
+		_ = os.RemoveAll(tmpdir)
+		return "", "", "", "", "failed to copy workspace: " + err.Error()
+	}
+	if err := ensurePythonRepoLevelGeneratedFiles(tmpdir); err != nil {
+		_ = os.RemoveAll(tmpdir)
+		return "", "", "", "", "failed to prepare generated project files: " + err.Error()
+	}
+	if _, err := os.Stat(filepath.Join(tmpdir, filepath.FromSlash(meta.TargetFile))); err != nil {
+		_ = os.RemoveAll(tmpdir)
+		return "", "", "", "", "target_file not found in workspace: " + meta.TargetFile
+	}
+	testsDir := filepath.Join(tmpdir, "tests")
 	if err := os.MkdirAll(testsDir, 0o755); err != nil {
+		_ = os.RemoveAll(tmpdir)
 		return "", "", "", "", "failed to create tests dir: " + err.Error()
 	}
 	testDest := filepath.Join(testsDir, testFileName)
 	if err := os.WriteFile(testDest, generatedSrc, 0o644); err != nil {
+		_ = os.RemoveAll(tmpdir)
 		return "", "", "", "", "failed to write test file: " + err.Error()
 	}
 	testName := filepath.Join("tests", testFileName)
-	return workspaceRoot, testName, meta.PackageName, meta.TargetFile, ""
+	return tmpdir, testName, meta.PackageName, meta.TargetFile, ""
+}
+
+func ensurePythonRepoLevelGeneratedFiles(workdir string) error {
+	pyproject := filepath.Join(workdir, "pyproject.toml")
+	raw, err := os.ReadFile(pyproject)
+	if err != nil {
+		return nil
+	}
+	re := regexp.MustCompile(`(?m)(?:^|\.)version-file\s*=\s*["']([^"']+)["']`)
+	for _, match := range re.FindAllStringSubmatch(string(raw), -1) {
+		if len(match) < 2 {
+			continue
+		}
+		rel := filepath.Clean(filepath.FromSlash(match[1]))
+		if rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			continue
+		}
+		path := filepath.Join(workdir, rel)
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte("__version__ = \"0.0.0\"\n"), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func executePythonTestsInWorkspace(workdir, testName, packageName string, timeoutSeconds int) (bool, string, int) {
 	py := pythonExecutable()
-	env := os.Environ()
-	env = append(env, "PYTHONPATH="+workdir)
+	env := pythonWorkspaceEnv(workdir)
 	runCtx, cancel := context.WithTimeout(context.Background(), normalizedTimeout(timeoutSeconds))
 	defer cancel()
 	started := time.Now()
@@ -1024,8 +1101,7 @@ func collectPythonCoverageInWorkspace(workdir, testName, packageName, targetFile
 		return 0, 0, "failed to get absolute path: " + err.Error()
 	}
 	jsonPath := filepath.Join(absWorkdir, ".coverage.utbench.json")
-	env := os.Environ()
-	env = append(env, "PYTHONPATH="+absWorkdir)
+	env := pythonWorkspaceEnv(absWorkdir)
 	env = append(env, "COVERAGE_FILE="+filepath.Join(absWorkdir, ".coverage.utbench"))
 	runCtx, cancelRun := context.WithTimeout(context.Background(), normalizedTimeout(timeoutSeconds))
 	defer cancelRun()
@@ -1067,6 +1143,57 @@ func collectPythonCoverageInWorkspace(workdir, testName, packageName, targetFile
 		return line, branch, ""
 	}
 	return 0, 0, "coverage files empty"
+}
+
+func pythonWorkspaceEnv(workdir string) []string {
+	env := os.Environ()
+	absWorkdir, err := filepath.Abs(workdir)
+	if err != nil {
+		absWorkdir = workdir
+	}
+	entries := []string{absWorkdir}
+	srcDir := filepath.Join(absWorkdir, "src")
+	if info, err := os.Stat(srcDir); err == nil && info.IsDir() {
+		entries = append(entries, srcDir)
+	}
+	return prependPathEnv(env, "PYTHONPATH", entries...)
+}
+
+func prependPathEnv(env []string, key string, entries ...string) []string {
+	cleaned := make([]string, 0, len(entries))
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		cleaned = append(cleaned, entry)
+	}
+	if len(cleaned) == 0 {
+		return env
+	}
+	prefix := key + "="
+	added := strings.Join(cleaned, string(os.PathListSeparator))
+	out := make([]string, 0, len(env)+1)
+	set := false
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			current := strings.TrimPrefix(entry, prefix)
+			if strings.TrimSpace(current) != "" {
+				out = append(out, prefix+added+string(os.PathListSeparator)+current)
+			} else {
+				out = append(out, prefix+added)
+			}
+			set = true
+			continue
+		}
+		out = append(out, entry)
+	}
+	if !set {
+		out = append(out, prefix+added)
+	}
+	return out
 }
 
 func pythonCompileCheck(path string) (bool, string) {

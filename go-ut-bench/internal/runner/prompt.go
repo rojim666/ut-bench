@@ -427,6 +427,7 @@ func promptLanguageRules(lang, moduleName string) []string {
 			"If the source file has no `package` declaration, the test file must also have no `package` declaration.",
 			"Instantiate the exact class declared in the source before calling instance methods; only call methods statically when the source declares them as `static`.",
 			"Use the exact class names and method names shown in the source; do not derive package names or type names from the sample id or file path.",
+			"Do not import project test-only helper packages or existing test utilities unless their definitions are explicitly included in the prompt; prefer plain JUnit assertions.",
 		}
 	case "cpp":
 		return []string{
@@ -434,6 +435,10 @@ func promptLanguageRules(lang, moduleName string) []string {
 			"Include only the headers needed by the generated tests.",
 			"Include every standard header required by constants or helpers used in the test code, such as `<climits>` for `INT_MAX` and `INT_MIN`.",
 			"Do not invent extra helper headers or duplicate declarations for classes and functions that are already defined in the provided source.",
+			"Only call C++ methods, fields, constructors, and free functions whose exact names and signatures are visible in the provided project context.",
+			"Do not access private or protected members directly; test behavior through public APIs that are visible in the provided context.",
+			"If a free function is defined only in the entry `.cpp` file and no header declaration is shown, include the entry target file in the test translation unit before calling it.",
+			"For third-party dependency objects, do not guess convenience methods or internal flags; use only public methods shown in the provided context.",
 		}
 	default:
 		return []string{

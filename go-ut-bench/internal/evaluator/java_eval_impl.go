@@ -23,6 +23,12 @@ func (e *JavaEvaluator) PrepareWorkspace(item contracts.GeneratedCase) (*Workspa
 		if workdir == "" {
 			return nil, errors.New(prepErr)
 		}
+		packageName := ""
+		targetFile := ""
+		if meta := loadRepoLevelMeta(item.SamplePath); meta != nil {
+			packageName = meta.PackageName
+			targetFile = meta.TargetFile
+		}
 		return &WorkspaceContext{
 			Workdir:  workdir,
 			TestPath: testRel,
@@ -31,6 +37,8 @@ func (e *JavaEvaluator) PrepareWorkspace(item contracts.GeneratedCase) (*Workspa
 				"moduleDir":     moduleDir,
 				"className":     className,
 				"testClassName": testClassName,
+				"packageName":   packageName,
+				"targetFile":    targetFile,
 			},
 			ShouldCleanup: true,
 		}, nil
@@ -96,7 +104,7 @@ func (e *JavaEvaluator) CollectCoverage(ws *WorkspaceContext, testPassed bool, t
 func (e *JavaEvaluator) CollectMutation(ctx context.Context, ws *WorkspaceContext, input MutationInput) (float64, mutationStats, string) {
 	className := ws.Extra["className"]
 	if ws.Extra["isRepoLevel"] == "true" {
-		return 0, mutationStats{}, "pitest: java repo_level mutation is not implemented yet"
+		return collectJavaMutationRepoLevel(ctx, ws.Workdir, ws.Extra["moduleDir"], className, ws.Extra["packageName"], ws.Extra["testClassName"], input.TimeoutSeconds, input.TestPassRate, input.TestPassed, input.TestTotal)
 	}
 	return collectJavaMutation(ctx, ws.Workdir, className, input.TimeoutSeconds, input.TestPassRate, input.TestPassed, input.TestTotal)
 }

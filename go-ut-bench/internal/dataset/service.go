@@ -954,7 +954,7 @@ func synthesizeJavaRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, b
 
 func synthesizeCppRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {
 	ext := strings.ToLower(filepath.Ext(samplePath))
-	workspaceRoot, ok := findWorkspaceRoot(samplePath, []string{"CMakeLists.txt"})
+	workspaceRoot, ok := findCppWorkspaceRoot(samplePath)
 	if !ok {
 		return nil, false
 	}
@@ -1038,6 +1038,20 @@ func findJavaWorkspaceRoot(samplePath string) (string, bool) {
 	return nearestRoot, true
 }
 
+func findCppWorkspaceRoot(samplePath string) (string, bool) {
+	markers := []string{"CMakeLists.txt"}
+	nearestRoot, ok := findWorkspaceRoot(samplePath, markers)
+	if !ok {
+		return "", false
+	}
+	if projectRoot, projectOK := repoLevelDatasetProjectRoot(samplePath, "cpp"); projectOK && pathHasAnyMarker(projectRoot, markers) {
+		if rel, err := filepath.Rel(projectRoot, nearestRoot); err == nil && (rel == "." || !strings.HasPrefix(rel, "..")) {
+			return projectRoot, true
+		}
+	}
+	return nearestRoot, true
+}
+
 func repoLevelDatasetProjectRoot(samplePath, lang string) (string, bool) {
 	marker := lang + "_code_files_repo_level"
 	slashPath := filepath.ToSlash(filepath.Clean(samplePath))
@@ -1095,7 +1109,11 @@ func parseJavaPackageName(path string) (string, bool) {
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "package ") {
-			line = strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(line, "package ")), ";")
+			line = strings.TrimSpace(strings.TrimPrefix(line, "package "))
+			if idx := strings.Index(line, ";"); idx >= 0 {
+				line = line[:idx]
+			}
+			line = strings.TrimSpace(line)
 			if line != "" {
 				return line, true
 			}
@@ -1149,6 +1167,10 @@ func shouldSkipRepoLevelDir(name string) bool {
 
 func shouldSkipSyntheticRepoTarget(rel string) bool {
 	rel = strings.ToLower(filepath.ToSlash(rel))
+	base := filepath.Base(rel)
+	if base == "package-info.java" || base == "module-info.java" {
+		return true
+	}
 	parts := strings.Split(rel, "/")
 	for _, part := range parts {
 		if shouldSkipRepoLevelDir(part) {

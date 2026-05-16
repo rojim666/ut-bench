@@ -17,14 +17,51 @@ func TestJavaRepoLevelPrepareWorkspaceUsesProjectRootAndModuleDir(t *testing.T) 
 	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "pom.xml"), []byte("<project/>"), 0o644); err != nil {
+	helperDir := filepath.Join(moduleRoot, "src", "test", "java", "com", "google", "gson", "common")
+	if err := os.MkdirAll(helperDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(moduleRoot, "pom.xml"), []byte("<project/>"), 0o644); err != nil {
+	existingTestDir := filepath.Join(moduleRoot, "src", "test", "java", "com", "google", "gson")
+	if err := os.MkdirAll(existingTestDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rootPom := `<project>
+  <modelVersion>4.0.0</modelVersion>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.sonatype.central</groupId>
+        <artifactId>central-publishing-maven-plugin</artifactId>
+        <version>0.10.0</version>
+        <extensions>true</extensions>
+      </plugin>
+    </plugins>
+  </build>
+</project>`
+	if err := os.WriteFile(filepath.Join(repo, "pom.xml"), []byte(rootPom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modulePom := `<project>
+  <modelVersion>4.0.0</modelVersion>
+  <dependencies>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>`
+	if err := os.WriteFile(filepath.Join(moduleRoot, "pom.xml"), []byte(modulePom), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	sourcePath := filepath.Join(sourceDir, "JsonParser.java")
 	if err := os.WriteFile(sourcePath, []byte("package com.google.gson;\n\nclass JsonParser {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(helperDir, "MoreAsserts.java"), []byte("package com.google.gson.common;\n\npublic final class MoreAsserts {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(existingTestDir, "ExistingBehaviorTest.java"), []byte("package com.google.gson;\n\npublic final class ExistingBehaviorTest {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	generatedTest := filepath.Join(root, "JsonParserTest.java")
@@ -63,5 +100,229 @@ func TestJavaRepoLevelPrepareWorkspaceUsesProjectRootAndModuleDir(t *testing.T) 
 	}
 	if _, err := os.Stat(filepath.Join(ws.Workdir, "pom.xml")); err != nil {
 		t.Fatalf("root pom not copied: %v", err)
+	}
+	rootPomRaw, err := os.ReadFile(filepath.Join(ws.Workdir, "pom.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rootPomRaw), "<extensions>true</extensions>") {
+		t.Fatalf("central publishing extension was not disabled:\n%s", rootPomRaw)
+	}
+	modulePomRaw, err := os.ReadFile(filepath.Join(ws.Workdir, "gson", "pom.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(modulePomRaw), "<artifactId>junit-jupiter</artifactId>") {
+		t.Fatalf("module pom missing JUnit Jupiter dependency:\n%s", modulePomRaw)
+	}
+	if !strings.Contains(string(modulePomRaw), "<artifactId>maven-surefire-plugin</artifactId>") {
+		t.Fatalf("module pom missing Surefire plugin:\n%s", modulePomRaw)
+	}
+	if !strings.Contains(string(modulePomRaw), "<artifactId>pitest-maven</artifactId>") ||
+		!strings.Contains(string(modulePomRaw), "<artifactId>pitest-junit5-plugin</artifactId>") {
+		t.Fatalf("module pom missing PITest JUnit 5 plugin:\n%s", modulePomRaw)
+	}
+	if _, err := os.Stat(filepath.Join(ws.Workdir, "gson", "src", "test", "java", "com", "google", "gson", "common", "MoreAsserts.java")); !os.IsNotExist(err) {
+		t.Fatalf("existing test helper source should be skipped, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws.Workdir, "gson", "src", "test", "java", "com", "google", "gson", "ExistingBehaviorTest.java")); !os.IsNotExist(err) {
+		t.Fatalf("existing test case should be skipped, stat err=%v", err)
+	}
+}
+
+func TestJavaRepoLevelPOMRewrite(t *testing.T) {
+	pom := `<project>
+  <build><plugins>
+    <plugin>
+      <groupId>org.sonatype.central</groupId>
+      <artifactId>central-publishing-maven-plugin</artifactId>
+      <extensions>true</extensions>
+    </plugin>
+  </plugins></build>
+</project>`
+	rewritten := disableCentralPublishingExtension(pom)
+	if strings.Contains(rewritten, "<extensions>true</extensions>") {
+		t.Fatalf("extension still enabled:\n%s", rewritten)
+	}
+	if !strings.Contains(rewritten, "<extensions>false</extensions>") {
+		t.Fatalf("extension was not rewritten:\n%s", rewritten)
+	}
+	relaxed := relaxJavaRepoLevelStrictWarnings(`<project>
+  <build>
+    <plugins>
+      <plugin>
+        <configuration>
+          <failOnWarning>true</failOnWarning>
+          <failOnWarnings>true</failOnWarnings>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>`)
+	if strings.Contains(relaxed, "<failOnWarning>true</failOnWarning>") || strings.Contains(relaxed, "<failOnWarnings>true</failOnWarnings>") {
+		t.Fatalf("strict warning settings were not relaxed:\n%s", relaxed)
+	}
+	disabled := disableJavaRepoLevelPlugin(`<project>
+  <build><plugins>
+    <plugin>
+      <artifactId>proguard-maven-plugin</artifactId>
+      <configuration>
+        <skip>${maven.test.skip}</skip>
+        <obfuscate>true</obfuscate>
+      </configuration>
+    </plugin>
+    <plugin>
+      <artifactId>another-plugin</artifactId>
+      <configuration><skip>false</skip></configuration>
+    </plugin>
+  </plugins></build>
+</project>`, "proguard-maven-plugin")
+	if strings.Contains(disabled, "<artifactId>proguard-maven-plugin</artifactId>") {
+		t.Fatalf("proguard plugin was not removed:\n%s", disabled)
+	}
+	if !strings.Contains(disabled, "<artifactId>another-plugin</artifactId>") || !strings.Contains(disabled, "<skip>false</skip>") {
+		t.Fatalf("unrelated plugin was changed:\n%s", disabled)
+	}
+	disabledGate := disableJavaRepoLevelPlugin(`<project>
+  <build><plugins>
+    <plugin>
+      <artifactId>spotless-maven-plugin</artifactId>
+      <configuration><encoding>UTF-8</encoding></configuration>
+    </plugin>
+  </plugins></build>
+</project>`, "spotless-maven-plugin")
+	if strings.Contains(disabledGate, "<artifactId>spotless-maven-plugin</artifactId>") {
+		t.Fatalf("quality gate plugin was not removed:\n%s", disabledGate)
+	}
+
+	withJUnit := ensureJUnitJupiterDependency(`<project>
+  <modelVersion>4.0.0</modelVersion>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>example</groupId>
+        <artifactId>managed</artifactId>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+  </dependencies>
+</project>`)
+	if !strings.Contains(withJUnit, "<artifactId>junit-jupiter</artifactId>") {
+		t.Fatalf("JUnit dependency not inserted:\n%s", withJUnit)
+	}
+	if strings.Index(withJUnit, "<artifactId>junit-jupiter</artifactId>") < strings.Index(withJUnit, "</dependencyManagement>") {
+		t.Fatalf("JUnit dependency was inserted into dependencyManagement:\n%s", withJUnit)
+	}
+	again := ensureJUnitJupiterDependency(withJUnit)
+	if strings.Count(again, "<artifactId>junit-jupiter</artifactId>") != 1 {
+		t.Fatalf("JUnit dependency duplicated:\n%s", again)
+	}
+}
+
+func TestJavaPitestTargetClassAttemptsFallbackToPackage(t *testing.T) {
+	got := javaPitestTargetClassAttempts("com.example.pkg", "com.example.pkg.Target")
+	want := []string{"com.example.pkg.Target*", "com.example.pkg.*"}
+	if len(got) != len(want) {
+		t.Fatalf("attempt count = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("attempt[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestJavaPitestArgsUsesStrongerMutatorsAndNoHistory(t *testing.T) {
+	args := strings.Join(javaPitestArgs("com.example.Target*", "com.example.TargetTest"), " ")
+	for _, want := range []string{
+		"-DtargetClasses=com.example.Target*",
+		"-DtargetTests=com.example.TargetTest",
+		"-DwithHistory=false",
+		"-Dmutators=STRONGER",
+		"org.pitest:pitest-maven:mutationCoverage",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("pitest args missing %q: %s", want, args)
+		}
+	}
+}
+
+func TestJavaRepoLevelTestPathForVersionedSourceRoot(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetFile string
+		want       string
+	}{
+		{
+			name:       "root java11 source set",
+			targetFile: "src/main/java11/org/jsoup/helper/HttpClientExecutor.java",
+			want:       "src/test/java/org/jsoup/helper/HttpClientExecutorTest.java",
+		},
+		{
+			name:       "module java source set",
+			targetFile: "gson/src/main/java/com/google/gson/JsonParser.java",
+			want:       "gson/src/test/java/org/jsoup/helper/HttpClientExecutorTest.java",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := javaTestRelForTarget(tt.targetFile, "org.jsoup.helper", "HttpClientExecutorTest")
+			if got != tt.want {
+				t.Fatalf("test path = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestJavaRepoLevelSkipsVersionedTestJavaSourceRoots(t *testing.T) {
+	tests := []struct {
+		rel  string
+		skip bool
+	}{
+		{rel: "src/test/java/org/jsoup/helper/HttpClientExecutorTest.java", skip: true},
+		{rel: "src/test/java11/org/jsoup/helper/HttpClientExecutorTest.java", skip: true},
+		{rel: "module/src/test/java17/com/example/Fixture.java", skip: true},
+		{rel: "src/test/resources/example.json", skip: false},
+		{rel: "src/main/java/org/jsoup/helper/HttpClientExecutor.java", skip: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.rel, func(t *testing.T) {
+			if got := isJavaRepoExistingTestCase(tt.rel); got != tt.skip {
+				t.Fatalf("skip = %v, want %v", got, tt.skip)
+			}
+		})
+	}
+}
+
+func TestJavaMavenArgsSkipRepoQualityGates(t *testing.T) {
+	args := javaMavenArgsForModule("module-a", "test-compile")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"-Denforcer.skip=true",
+		"-Dspotless.check.skip=true",
+		"-Dspotless.apply.skip=true",
+		"-Dspotless.skip=true",
+		"-Dpalantir.format.skip=true",
+		"-Drat.skip=true",
+		"-Dcheckstyle.skip=true",
+		"-Dpmd.skip=true",
+		"-Dspotbugs.skip=true",
+		"-Dgpg.skip=true",
+		"-Dmaven.javadoc.skip=true",
+		"-Dsource.skip=true",
+		"-pl module-a -am",
+		"test-compile",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("maven args missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestPitOutputReportsNoMutants(t *testing.T) {
+	output := "PIT >> INFO : Created 0 mutation test units in pre scan\nPIT >> WARNING : No mutations found"
+	if !pitOutputReportsNoMutants(output) {
+		t.Fatalf("expected no-mutants output to be detected")
 	}
 }

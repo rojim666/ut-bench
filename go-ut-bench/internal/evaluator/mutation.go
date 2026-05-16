@@ -319,6 +319,9 @@ func copyPackageDependencies(srcPackageDir, dstPackageDir, targetFileName string
 func buildMutmutPyproject(sourceNames []string, testName string, failingTests []string) string {
 	sources, _ := json.Marshal(sourceNames)
 	args := []string{"-q", "--tb=no", "--maxfail=9999"}
+	if strings.TrimSpace(testName) != "" {
+		args = append([]string{filepath.ToSlash(testName)}, args...)
+	}
 	if len(failingTests) > 0 {
 		excludes := make([]string, 0, len(failingTests))
 		for _, item := range failingTests {
@@ -369,32 +372,15 @@ func buildMutmutEnv(workdir string) ([]string, error) {
 		return nil, err
 	}
 
-	pyPath := ""
-	for _, entry := range env {
-		if strings.HasPrefix(entry, "PYTHONPATH=") {
-			pyPath = strings.TrimPrefix(entry, "PYTHONPATH=")
-			break
-		}
+	entries := []string{shimDir, mutantsDir}
+	if info, err := os.Stat(filepath.Join(mutantsDir, "src")); err == nil && info.IsDir() {
+		entries = append(entries, filepath.Join(mutantsDir, "src"))
 	}
-	merged := shimDir + string(os.PathListSeparator) + mutantsDir + string(os.PathListSeparator) + absWorkdir
-	if strings.TrimSpace(pyPath) != "" {
-		merged = merged + string(os.PathListSeparator) + pyPath
+	entries = append(entries, absWorkdir)
+	if info, err := os.Stat(filepath.Join(absWorkdir, "src")); err == nil && info.IsDir() {
+		entries = append(entries, filepath.Join(absWorkdir, "src"))
 	}
-
-	out := make([]string, 0, len(env)+1)
-	set := false
-	for _, entry := range env {
-		if strings.HasPrefix(entry, "PYTHONPATH=") {
-			out = append(out, "PYTHONPATH="+merged)
-			set = true
-			continue
-		}
-		out = append(out, entry)
-	}
-	if !set {
-		out = append(out, "PYTHONPATH="+merged)
-	}
-	return out, nil
+	return prependPathEnv(env, "PYTHONPATH", entries...), nil
 }
 
 // parseMutationStats 解析变异测试统计 JSON
@@ -565,7 +551,7 @@ func collectFailingTestsByRerun(ctx context.Context, workdir, testName string) (
 	py := pythonExecutable()
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, _ := runCommandWithProcessGroupKill(runCtx, py, []string{"-m", "pytest", testName, "-q", "--tb=no", "--maxfail=9999"}, workdir, nil)
+	out, _ := runCommandWithProcessGroupKill(runCtx, py, []string{"-m", "pytest", testName, "-q", "--tb=no", "--maxfail=9999"}, workdir, pythonWorkspaceEnv(workdir))
 	if runCtx.Err() != nil {
 		return nil, "pytest timed out after 30s"
 	}

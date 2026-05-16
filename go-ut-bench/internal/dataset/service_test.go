@@ -221,6 +221,8 @@ func TestDiscoverSamplesRepoLevelSkipsTestsAndAcceptsCppCC(t *testing.T) {
 	}
 	write(filepath.Join(datasetRoot, "java", "java_code_files_repo_level", "oss", "demo-java", "pom.xml"), "<project/>")
 	write(filepath.Join(javaMain, "Demo.java"), "package demo;\npublic class Demo {}\n")
+	write(filepath.Join(javaMain, "package-info.java"), "@Deprecated\npackage demo;\n")
+	write(filepath.Join(javaMain, "module-info.java"), "module demo {}\n")
 	write(filepath.Join(javaTest, "DemoTest.java"), "package demo;\npublic class DemoTest {}\n")
 
 	cppRoot := filepath.Join(datasetRoot, "cpp", "cpp_code_files_repo_level", "oss", "demo-cpp")

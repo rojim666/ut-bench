@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"go-ut-bench/internal/contracts"
 )
@@ -1417,49 +1418,126 @@ func asInt(v any) (int, bool) {
 	}
 }
 
-func finalizeAgentAccounting(trace *AgentTrace, _ string, _ string, model modelConfig) {
+func finalizeAgentAccounting(trace *AgentTrace, prompt string, generated string, model modelConfig) {
+	sourceBefore := strings.ToLower(strings.TrimSpace(trace.TokenSource))
+	addedEstimate := estimateMissingTokenUsage(trace, prompt, generated)
+
 	switch {
 	case trace.PromptTokens != nil && trace.CompletionTokens != nil:
 		if trace.TotalTokens == nil {
 			trace.TotalTokens = intPtr(*trace.PromptTokens + *trace.CompletionTokens)
 		}
 		if strings.TrimSpace(trace.TokenSource) == "" {
-			trace.TokenSource = "actual"
+			if addedEstimate {
+				trace.TokenSource = "estimated"
+			} else {
+				trace.TokenSource = "actual"
+			}
+		} else if sourceBefore == "actual" && addedEstimate {
+			trace.TokenSource = "partial"
 		}
 		if strings.TrimSpace(trace.UsageSourceDetail) == "" {
-			trace.UsageSourceDetail = "agent_usage"
+			if addedEstimate {
+				trace.UsageSourceDetail = "prompt_and_generated_test_heuristic"
+			} else {
+				trace.UsageSourceDetail = "agent_usage"
+			}
 		}
 	case trace.PromptTokens != nil || trace.CompletionTokens != nil || trace.TotalTokens != nil:
 		if trace.TotalTokens == nil && trace.PromptTokens != nil && trace.CompletionTokens != nil {
 			trace.TotalTokens = intPtr(*trace.PromptTokens + *trace.CompletionTokens)
 		}
 		if strings.TrimSpace(trace.TokenSource) == "" {
+			if addedEstimate {
+				trace.TokenSource = "estimated"
+			} else {
+				trace.TokenSource = "partial"
+			}
+		} else if sourceBefore == "actual" && addedEstimate {
 			trace.TokenSource = "partial"
 		}
 		if strings.TrimSpace(trace.UsageSourceDetail) == "" {
-			trace.UsageSourceDetail = "agent_usage_partial"
+			if addedEstimate {
+				trace.UsageSourceDetail = "prompt_and_generated_test_heuristic"
+			} else {
+				trace.UsageSourceDetail = "agent_usage_partial"
+			}
 		}
 	default:
-		// For CLI agents, final code size is only a weak lower bound and badly
-		// undercounts multi-turn/tool-heavy sessions. If we do not have usage from
-		// the agent itself, prefer marking the token data as missing rather than
-		// publishing a misleadingly low number.
 		trace.TokenSource = "missing"
 		if strings.TrimSpace(trace.UsageSourceDetail) == "" {
 			trace.UsageSourceDetail = "unavailable"
 		}
 	}
 
-	cost, costSource := estimateCostUSD(model, trace.PromptTokens, trace.CompletionTokens)
+	cost, costSource := estimateCostUSD(model, trace.PromptTokens, trace.CompletionTokens, trace.TokenSource)
 	trace.EstimatedCost = cost
 	trace.CostSource = costSource
+}
+
+func estimateMissingTokenUsage(trace *AgentTrace, prompt string, generated string) bool {
+	added := false
+	if trace.PromptTokens == nil {
+		if estimate := estimateTextTokenCount(prompt); estimate > 0 {
+			trace.PromptTokens = intPtr(estimate)
+			added = true
+		}
+	}
+	if trace.CompletionTokens == nil {
+		if estimate := estimateTextTokenCount(generated); estimate > 0 {
+			trace.CompletionTokens = intPtr(estimate)
+			added = true
+		}
+	}
+	if trace.TotalTokens == nil && trace.PromptTokens != nil && trace.CompletionTokens != nil {
+		trace.TotalTokens = intPtr(*trace.PromptTokens + *trace.CompletionTokens)
+	}
+	return added
+}
+
+func estimateTextTokenCount(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	asciiLike := 0
+	cjk := 0
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		if isCJKRune(r) {
+			cjk++
+			continue
+		}
+		asciiLike++
+	}
+	tokens := cjk + ceilDiv(asciiLike, 4)
+	if tokens == 0 {
+		return 1
+	}
+	return tokens
+}
+
+func isCJKRune(r rune) bool {
+	return (r >= 0x4E00 && r <= 0x9FFF) ||
+		(r >= 0x3400 && r <= 0x4DBF) ||
+		(r >= 0x3040 && r <= 0x30FF) ||
+		(r >= 0xAC00 && r <= 0xD7AF)
+}
+
+func ceilDiv(n, d int) int {
+	if n <= 0 {
+		return 0
+	}
+	return (n + d - 1) / d
 }
 
 func shQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-func estimateCostUSD(model modelConfig, promptTokens, completionTokens *int) (*float64, string) {
+func estimateCostUSD(model modelConfig, promptTokens, completionTokens *int, tokenSource string) (*float64, string) {
 	if promptTokens == nil || completionTokens == nil {
 		return nil, "unavailable"
 	}
@@ -1468,7 +1546,11 @@ func estimateCostUSD(model modelConfig, promptTokens, completionTokens *int) (*f
 	}
 	cost := (float64(*promptTokens) / 1000.0 * model.Pricing.PromptPer1KUSD) +
 		(float64(*completionTokens) / 1000.0 * model.Pricing.CompletionPer1KUSD)
-	return floatPtr(cost), "configured_pricing"
+	source := strings.ToLower(strings.TrimSpace(tokenSource))
+	if source == "" {
+		source = "unknown"
+	}
+	return floatPtr(cost), source + "_tokens+configured_pricing"
 }
 
 func extractLikelyPaths(line string) []string {

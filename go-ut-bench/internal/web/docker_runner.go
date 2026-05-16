@@ -115,6 +115,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 	if cfg.EnvFile != "" {
 		a = append(a, "--env-file", cfg.EnvFile)
 	}
+	a = append(a, "-e", "UTBENCH_MAVEN_REPO_LOCAL=/root/.m2/repository")
 
 	// Mounts: datasets (read-only is safer but writable matches current UX),
 	// artifacts, configs, storage. Paths on the container side are fixed and
@@ -346,10 +347,11 @@ func resolveDockerHostPath(projectRoot, requested, fallbackName string) string {
 // runEvaluateInDocker runs only the evaluation step inside the utbench container.
 // Unlike runInDocker (which runs the full pipeline), this is a simpler synchronous
 // wrapper that captures output as a string. Used by the reevaluate API handler.
-func runEvaluateInDocker(ctx context.Context, runID string, spec contracts.RunSpec, cfg DockerConfig) (string, error) {
+func runEvaluateInDocker(ctx context.Context, runID string, spec contracts.RunSpec, manifestPath string, cfg DockerConfig) (string, error) {
 	opts := orchestrator.Options{
-		Phase:       "evaluate",
-		SourceRunID: runID,
+		Phase:        "evaluate",
+		SourceRunID:  runID,
+		ManifestPath: manifestPath,
 	}
 	args := buildDockerRunArgs(spec, opts, cfg)
 	cmd := exec.CommandContext(ctx, "docker", args...)

@@ -130,7 +130,7 @@ func populateMutationResult(row *contracts.EvaluationResult, score float64, stat
 	} else {
 		row.MutationScore = &score
 	}
-	if stats.Total > 0 {
+	if stats.Total > 0 || (mutationErr == "" && strings.TrimSpace(tool) != "") {
 		total := stats.Total
 		killed := stats.Killed
 		survived := stats.Survived
@@ -304,17 +304,13 @@ func repoLevelCommandPreview(lang, phase string, ws *WorkspaceContext) string {
 		}
 	case "java":
 		module := ws.Extra["moduleDir"]
-		scope := ""
-		if module != "" && module != "." {
-			scope = " -pl " + module + " -am"
-		}
 		if phase == "compile" {
-			return "mvn -q" + scope + " -DskipTests test-compile"
+			return "mvn " + strings.Join(javaMavenArgsForModule(module, "-DskipTests", "test-compile"), " ")
 		}
 		if testClass := ws.Extra["testClassName"]; testClass != "" {
-			return "mvn -q" + scope + " -Dtest=" + testClass + " test"
+			return "mvn " + strings.Join(javaMavenArgsForModule(module, "-Dtest="+testClass, "-DfailIfNoTests=false", "-Dsurefire.failIfNoSpecifiedTests=false", "test"), " ")
 		}
-		return "mvn -q" + scope + " test"
+		return "mvn " + strings.Join(javaMavenArgsForModule(module, "test"), " ")
 	}
 	return lang + "." + phase
 }

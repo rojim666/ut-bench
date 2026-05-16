@@ -83,6 +83,28 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
     libgcc-s1 && \
     cd /usr/src/gtest && cmake . && make && cp lib/*.a /usr/lib/
 
+# Ubuntu 24.04 packages Maven 3.8.x, while several modern Java projects and
+# quality-gate plugins require Maven 3.9+. Install a pinned upstream Maven so
+# project-level evaluation does not fail before generated tests are compiled.
+ARG MAVEN_VERSION=3.9.9
+ENV MAVEN_HOME=/opt/apache-maven-${MAVEN_VERSION}
+ENV PATH="${MAVEN_HOME}/bin:${PATH}"
+RUN set -eux; \
+    tarball="apache-maven-${MAVEN_VERSION}-bin.tar.gz"; \
+    urls="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/${tarball} https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/${tarball}"; \
+    for url in ${urls}; do \
+        echo "Downloading Maven from ${url}"; \
+        if curl -fL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o /tmp/maven.tar.gz "${url}"; then \
+            break; \
+        fi; \
+        rm -f /tmp/maven.tar.gz; \
+    done; \
+    test -s /tmp/maven.tar.gz; \
+    rm -rf "${MAVEN_HOME}"; \
+    tar -C /opt -xzf /tmp/maven.tar.gz; \
+    rm /tmp/maven.tar.gz; \
+    mvn -version
+
 # Add LLVM official repository for LLVM 19 only after base dependencies are
 # installed. This keeps temporary apt.llvm.org failures from breaking the large
 # Ubuntu package layer above.
@@ -100,19 +122,49 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
     lld-19 \
     && rm -rf /var/lib/apt/lists/*
 
-# Configure Maven to use Aliyun mirror for faster downloads in China
+# Configure Maven with a regional repository plus Central fallback. Avoid a
+# global mirror so Maven can still fall back when one repository is incomplete.
 RUN mkdir -p /root/.m2 && cat > /root/.m2/settings.xml << 'SETTINGSEOF'
 <settings>
-  <mirrors>
-    <mirror>
-      <id>aliyun</id>
-      <mirrorOf>central</mirrorOf>
-      <name>Aliyun Maven Mirror</name>
-      <url>https://maven.aliyun.com/repository/central</url>
-    </mirror>
-  </mirrors>
+  <profiles>
+    <profile>
+      <id>utbench-repositories</id>
+      <repositories>
+        <repository>
+          <id>aliyun-central</id>
+          <url>https://maven.aliyun.com/repository/central</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+        <repository>
+          <id>central</id>
+          <url>https://repo.maven.apache.org/maven2</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+      </repositories>
+      <pluginRepositories>
+        <pluginRepository>
+          <id>aliyun-central</id>
+          <url>https://maven.aliyun.com/repository/central</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+        <pluginRepository>
+          <id>central</id>
+          <url>https://repo.maven.apache.org/maven2</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+  </profiles>
+  <activeProfiles>
+    <activeProfile>utbench-repositories</activeProfile>
+  </activeProfiles>
 </settings>
 SETTINGSEOF
+ENV UTBENCH_MAVEN_REPO_LOCAL=/root/.m2/repository
 
 # Pre-download Maven dependencies used by Java evaluation (JUnit 5, JaCoCo, Surefire, PITest).
 # This avoids downloading them on every container run, which is slow and unreliable

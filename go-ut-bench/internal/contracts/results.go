@@ -169,20 +169,26 @@ type EvaluationResultSet struct {
 // ReportSummary 评测结果的汇总统计信息
 // 用于快速了解整体评测效果，包含通过率、覆盖率等关键指标的平均值
 type ReportSummary struct {
-	TotalSamples        int     `json:"total_samples"`          // 总样本数量
-	EligibleSamples     int     `json:"eligible_samples"`       // 参与排名计分的样本数
-	ExcludedSamples     int     `json:"excluded_samples"`       // 因环境/数据集/工具问题剔除的样本数
-	CompilePassCount    int     `json:"compile_pass_count"`     // 编译通过的样本数
-	CompilePassRate     float64 `json:"compile_pass_rate"`      // 编译通过率（样本级）
-	TestPassCount       int     `json:"test_pass_count"`        // 兼容字段：样本级测试通过数
-	TestPassRate        float64 `json:"test_pass_rate"`         // 兼容字段：样本级测试通过率
-	SampleTestPassCount int     `json:"sample_test_pass_count"` // 样本级测试通过数
-	SampleTestPassRate  float64 `json:"sample_test_pass_rate"`  // 样本级测试通过率
-	TestCasePassCount   int     `json:"test_case_pass_count"`   // 用例级测试通过数
-	TestCasePassRate    float64 `json:"test_case_pass_rate"`    // 用例级测试通过率
-	AvgLineCoverage     float64 `json:"avg_line_coverage"`      // 平均行覆盖率（百分比）
-	AvgMutationScore    float64 `json:"avg_mutation_score"`     // 平均变异测试得分（百分比）
-	AvgAssertionDensity float64 `json:"avg_assertion_density"`  // 平均断言密度
+	TotalSamples         int     `json:"total_samples"`            // 总样本数量
+	EligibleSamples      int     `json:"eligible_samples"`         // 参与排名计分的样本数
+	ExcludedSamples      int     `json:"excluded_samples"`         // 因环境/数据集/工具问题剔除的样本数
+	RawCompilePassCount  int     `json:"raw_compile_pass_count"`   // 原始编译通过数，不排除工具/环境失败
+	RawCompilePassRate   float64 `json:"raw_compile_pass_rate"`    // 原始编译通过率，不排除工具/环境失败
+	RawTestPassCount     int     `json:"raw_test_pass_count"`      // 原始样本级测试通过数
+	RawTestPassRate      float64 `json:"raw_test_pass_rate"`       // 原始样本级测试通过率
+	RawTestCasePassCount int     `json:"raw_test_case_pass_count"` // 原始用例级测试通过数
+	RawTestCasePassRate  float64 `json:"raw_test_case_pass_rate"`  // 原始用例级测试通过率
+	CompilePassCount     int     `json:"compile_pass_count"`       // 编译通过的样本数
+	CompilePassRate      float64 `json:"compile_pass_rate"`        // 编译通过率（样本级）
+	TestPassCount        int     `json:"test_pass_count"`          // 兼容字段：样本级测试通过数
+	TestPassRate         float64 `json:"test_pass_rate"`           // 兼容字段：样本级测试通过率
+	SampleTestPassCount  int     `json:"sample_test_pass_count"`   // 样本级测试通过数
+	SampleTestPassRate   float64 `json:"sample_test_pass_rate"`    // 样本级测试通过率
+	TestCasePassCount    int     `json:"test_case_pass_count"`     // 用例级测试通过数
+	TestCasePassRate     float64 `json:"test_case_pass_rate"`      // 用例级测试通过率
+	AvgLineCoverage      float64 `json:"avg_line_coverage"`        // 平均行覆盖率（百分比）
+	AvgMutationScore     float64 `json:"avg_mutation_score"`       // 平均变异测试得分（百分比）
+	AvgAssertionDensity  float64 `json:"avg_assertion_density"`    // 平均断言密度
 }
 
 // TruncationStats 截断统计信息

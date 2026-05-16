@@ -243,6 +243,63 @@ func TestParseCodeBuddyJSONOutputWithMixedOutput(t *testing.T) {
 	}
 }
 
+func TestFinalizeAgentAccountingEstimatesMissingUsage(t *testing.T) {
+	trace := &AgentTrace{Framework: "opencode"}
+	model := modelConfig{
+		Name: "agent-model",
+		Pricing: modelPricing{
+			PromptPer1KUSD:     0.001,
+			CompletionPer1KUSD: 0.002,
+		},
+	}
+
+	finalizeAgentAccounting(trace, "请生成测试\nfunc Add(a int, b int) int", "func TestAdd(t *testing.T) { assert.Equal(t, 3, Add(1, 2)) }", model)
+
+	if trace.TokenSource != "estimated" {
+		t.Fatalf("token source = %q, want estimated", trace.TokenSource)
+	}
+	if trace.UsageSourceDetail != "prompt_and_generated_test_heuristic" {
+		t.Fatalf("usage source detail = %q", trace.UsageSourceDetail)
+	}
+	if trace.PromptTokens == nil || *trace.PromptTokens <= 0 {
+		t.Fatalf("expected prompt token estimate, got %+v", trace.PromptTokens)
+	}
+	if trace.CompletionTokens == nil || *trace.CompletionTokens <= 0 {
+		t.Fatalf("expected completion token estimate, got %+v", trace.CompletionTokens)
+	}
+	if trace.TotalTokens == nil || *trace.TotalTokens != *trace.PromptTokens+*trace.CompletionTokens {
+		t.Fatalf("unexpected total tokens: prompt=%v completion=%v total=%v", trace.PromptTokens, trace.CompletionTokens, trace.TotalTokens)
+	}
+	if trace.EstimatedCost == nil || *trace.EstimatedCost <= 0 {
+		t.Fatalf("expected estimated cost, got %+v", trace.EstimatedCost)
+	}
+	if trace.CostSource != "estimated_tokens+configured_pricing" {
+		t.Fatalf("cost source = %q", trace.CostSource)
+	}
+}
+
+func TestFinalizeAgentAccountingMarksMixedUsagePartial(t *testing.T) {
+	total := 1000
+	trace := &AgentTrace{
+		Framework:    "opencode",
+		TotalTokens:  &total,
+		TokenSource:  "actual",
+		PromptTokens: nil,
+	}
+
+	finalizeAgentAccounting(trace, "prompt text", "generated code", modelConfig{})
+
+	if trace.TokenSource != "partial" {
+		t.Fatalf("token source = %q, want partial", trace.TokenSource)
+	}
+	if trace.PromptTokens == nil || trace.CompletionTokens == nil {
+		t.Fatalf("expected missing token fields to be estimated: %+v", trace)
+	}
+	if trace.TotalTokens == nil || *trace.TotalTokens != 1000 {
+		t.Fatalf("actual total tokens should be preserved, got %+v", trace.TotalTokens)
+	}
+}
+
 func TestSummarizeAgentCommandErrorPrefersActionableTail(t *testing.T) {
 	stderr := strings.Join([]string{
 		"Reading additional input from stdin...",

@@ -1896,6 +1896,9 @@ type diskRunSummary struct {
 	RunID          string            `json:"run_id"`
 	Label          string            `json:"label"`
 	CreatedAtUTC   string            `json:"created_at_utc"`
+	StartedAtUTC   string            `json:"started_at_utc"`
+	CompletedAtUTC string            `json:"completed_at_utc"`
+	EndedAtUTC     string            `json:"ended_at_utc"`
 	Spec           contracts.RunSpec `json:"spec"`
 	Backend        string            `json:"backend"`
 	IsMergedReport bool              `json:"is_merged_report"`
@@ -1909,6 +1912,41 @@ func decodeDiskRunSummary(data []byte) (diskRunSummary, error) {
 		return raw, err
 	}
 	return raw, nil
+}
+
+func parseDiskRunSummaryTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func diskRunStartedAt(raw diskRunSummary) time.Time {
+	if !raw.Spec.CreatedAtUTC.IsZero() {
+		return raw.Spec.CreatedAtUTC
+	}
+	if t, ok := parseDiskRunSummaryTime(raw.StartedAtUTC); ok {
+		return t
+	}
+	if t, ok := parseDiskRunSummaryTime(raw.CreatedAtUTC); ok {
+		return t
+	}
+	return time.Time{}
+}
+
+func diskRunEndedAt(raw diskRunSummary) *time.Time {
+	for _, value := range []string{raw.CompletedAtUTC, raw.EndedAtUTC, raw.CreatedAtUTC} {
+		if t, ok := parseDiskRunSummaryTime(value); ok {
+			return &t
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -1990,12 +2028,12 @@ func (s *Server) listRunsFromDisk(w http.ResponseWriter, activeRuns []*RunEntry,
 			continue
 		}
 		if _, exists := byID[runID]; !exists {
-			t, _ := time.Parse(time.RFC3339Nano, raw.CreatedAtUTC)
 			byID[runID] = runSummaryItem{
 				RunID:          runID,
 				Label:          raw.Label,
 				Status:         StatusCompleted,
-				StartedAt:      t,
+				StartedAt:      diskRunStartedAt(raw),
+				EndedAt:        diskRunEndedAt(raw),
 				Spec:           raw.Spec,
 				UseDocker:      strings.EqualFold(strings.TrimSpace(raw.Backend), "docker"),
 				IsMergedReport: raw.IsMergedReport,
@@ -2409,6 +2447,11 @@ func (s *Server) handleRunReevaluate(w http.ResponseWriter, r *http.Request, run
 		errJSON(w, http.StatusConflict, "Docker image is not ready; reevaluate requires Docker so evaluator tools are complete")
 		return
 	}
+	dockerManifestPath, err := s.mgr.prepareDockerGeneratedManifest(spec)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "prepare docker manifest failed: "+err.Error())
+		return
+	}
 	// 异步执行评测，避免阻塞 HTTP 响应。
 	// 使用 s.mgr 的 stopCleaner channel 作为取消信号，确保服务器关闭时任务也会终止。
 	reevalCtx, reevalCancel := context.WithCancel(context.Background())
@@ -2422,7 +2465,7 @@ func (s *Server) handleRunReevaluate(w http.ResponseWriter, r *http.Request, run
 			case <-reevalCtx.Done():
 			}
 		}()
-		out, err := runEvaluateInDocker(reevalCtx, runID, spec, s.dockerCfg)
+		out, err := runEvaluateInDocker(reevalCtx, runID, spec, dockerManifestPath, s.dockerCfg)
 		if err != nil {
 			if reevalCtx.Err() != nil {
 				fmt.Printf("[reevaluate] run=%s canceled (server shutdown)\n", runID)
@@ -2434,10 +2477,12 @@ func (s *Server) handleRunReevaluate(w http.ResponseWriter, r *http.Request, run
 		fmt.Printf("[reevaluate] run=%s completed\n", runID)
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"run_id":        runID,
-		"manifest_path": manifestPath,
-		"status":        "reevaluation_started",
-		"message":       "Re-evaluation is running in the background. Check run status for completion.",
+		"run_id":               runID,
+		"manifest_path":        manifestPath,
+		"docker_manifest_path": dockerManifestPath,
+		"evaluation_path":      filepath.Join(s.outputRoot, "runs", runID, "evaluation", "evaluation_result.json"),
+		"status":               "reevaluation_started",
+		"message":              "Re-evaluation is running in the background. Check run status for completion.",
 	})
 }
 
@@ -2674,12 +2719,12 @@ func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request, runID stri
 			errJSON(w, http.StatusNotFound, "run not found: "+runID)
 			return
 		}
-		startedAt, _ := time.Parse(time.RFC3339Nano, raw.CreatedAtUTC)
 		writeJSON(w, http.StatusOK, runDetailResponse{
 			RunID:     runID,
 			Label:     raw.Label,
 			Status:    StatusCompleted,
-			StartedAt: startedAt,
+			StartedAt: diskRunStartedAt(raw),
+			EndedAt:   diskRunEndedAt(raw),
 			Spec:      raw.Spec,
 			Logs:      []string{},
 		})

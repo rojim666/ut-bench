@@ -44,7 +44,7 @@ func (e *PythonEvaluator) PrepareWorkspace(item contracts.GeneratedCase) (*Works
 		SourceBase:    sourceBase,
 		SourceStem:    sourceStem,
 		Extra:         extra,
-		ShouldCleanup: !isRepoLevel, // repo_level 复用 in-place，不清理
+		ShouldCleanup: true,
 	}, nil
 }
 

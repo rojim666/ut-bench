@@ -553,6 +553,12 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 			if plan != nil && plan.Reused != nil {
 				reused := *plan.Reused
 				if copyErr := copyFile(reused.GeneratedTestPath, testPath); copyErr == nil {
+					reusedCode := ""
+					if raw, readErr := os.ReadFile(testPath); readErr == nil {
+						reusedCode = string(raw)
+					}
+					reusePromptTokens, reuseCompletionTokens, reuseTotalTokens, reuseTokenSource, reuseEstimatedCost, reuseCostSource :=
+						finalizeGenerationTokenAccounting(target.model, renderedPrompt, reusedCode, reused.PromptTokens, reused.CompletionTokens, reused.TotalTokens, reused.TokenSource, reused.EstimatedCostUSD, reused.CostSource)
 					reuseReason := plan.ReuseReason
 					if reuseReason == "" {
 						reuseReason = "generation_key_match"
@@ -601,8 +607,16 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						"reused_from_run_id":           reused.RunID,
 						"reused_from_case_id":          reused.GeneratedCaseID,
 						"reused_generated_test_sha256": reused.GeneratedTestSHA256,
-						"created_at_utc":               time.Now().UTC(),
-						"success":                      true,
+						"tokens": map[string]any{
+							"prompt_tokens":      reusePromptTokens,
+							"completion_tokens":  reuseCompletionTokens,
+							"total_tokens":       reuseTotalTokens,
+							"token_source":       reuseTokenSource,
+							"estimated_cost_usd": reuseEstimatedCost,
+							"cost_source":        reuseCostSource,
+						},
+						"created_at_utc": time.Now().UTC(),
+						"success":        true,
 					}
 					_ = contracts.WriteJSON(metadataPath, metadata)
 					s.logger.Info("reuse generated test", "subject", model, "language", sample.Language, "sample_id", sample.ID, "from_run", reused.RunID)
@@ -649,18 +663,24 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						ReusedFromRunID:          reused.RunID,
 						ReusedFromCaseID:         reused.GeneratedCaseID,
 						LatencyMS:                int(time.Since(started).Milliseconds()),
-						PromptTokens:             reused.PromptTokens,
-						CompletionTokens:         reused.CompletionTokens,
-						TotalTokens:              reused.TotalTokens,
-						TokenSource:              reused.TokenSource,
-						EstimatedCostUSD:         reused.EstimatedCostUSD,
-						CostSource:               reused.CostSource,
+						PromptTokens:             reusePromptTokens,
+						CompletionTokens:         reuseCompletionTokens,
+						TotalTokens:              reuseTotalTokens,
+						TokenSource:              reuseTokenSource,
+						EstimatedCostUSD:         reuseEstimatedCost,
+						CostSource:               reuseCostSource,
 						GeneratedAtUTC:           time.Now().UTC(),
 						Success:                  true,
 					}
 				}
 			} else if reused, ok, reuseErr := reuseStore.FindReusableGeneratedAsset(ctx, identity.GenerationKey); reuseErr == nil && ok {
 				if copyErr := copyFile(reused.GeneratedTestPath, testPath); copyErr == nil {
+					reusedCode := ""
+					if raw, readErr := os.ReadFile(testPath); readErr == nil {
+						reusedCode = string(raw)
+					}
+					reusePromptTokens, reuseCompletionTokens, reuseTotalTokens, reuseTokenSource, reuseEstimatedCost, reuseCostSource :=
+						finalizeGenerationTokenAccounting(target.model, renderedPrompt, reusedCode, reused.PromptTokens, reused.CompletionTokens, reused.TotalTokens, reused.TokenSource, reused.EstimatedCostUSD, reused.CostSource)
 					metadataPath := filepath.Join(metaRoot, fmt.Sprintf("%s_%s_%s.metadata.json", model, sample.Language, sample.ID))
 					metadata := map[string]any{
 						"model":                        model,
@@ -705,8 +725,16 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						"reused_from_run_id":           reused.RunID,
 						"reused_from_case_id":          reused.GeneratedCaseID,
 						"reused_generated_test_sha256": reused.GeneratedTestSHA256,
-						"created_at_utc":               time.Now().UTC(),
-						"success":                      true,
+						"tokens": map[string]any{
+							"prompt_tokens":      reusePromptTokens,
+							"completion_tokens":  reuseCompletionTokens,
+							"total_tokens":       reuseTotalTokens,
+							"token_source":       reuseTokenSource,
+							"estimated_cost_usd": reuseEstimatedCost,
+							"cost_source":        reuseCostSource,
+						},
+						"created_at_utc": time.Now().UTC(),
+						"success":        true,
 					}
 					_ = contracts.WriteJSON(metadataPath, metadata)
 					s.logger.Info("reuse generated test", "subject", model, "language", sample.Language, "sample_id", sample.ID, "from_run", reused.RunID)
@@ -753,12 +781,12 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						ReusedFromRunID:          reused.RunID,
 						ReusedFromCaseID:         reused.GeneratedCaseID,
 						LatencyMS:                int(time.Since(started).Milliseconds()),
-						PromptTokens:             reused.PromptTokens,
-						CompletionTokens:         reused.CompletionTokens,
-						TotalTokens:              reused.TotalTokens,
-						TokenSource:              reused.TokenSource,
-						EstimatedCostUSD:         reused.EstimatedCostUSD,
-						CostSource:               reused.CostSource,
+						PromptTokens:             reusePromptTokens,
+						CompletionTokens:         reuseCompletionTokens,
+						TotalTokens:              reuseTotalTokens,
+						TokenSource:              reuseTokenSource,
+						EstimatedCostUSD:         reuseEstimatedCost,
+						CostSource:               reuseCostSource,
 						GeneratedAtUTC:           time.Now().UTC(),
 						Success:                  true,
 					}
@@ -834,6 +862,17 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		completionTokens = cTok
 		totalTokens = tTok
 		latencyMS = latency
+	}
+
+	promptTokens, completionTokens, totalTokens, trace.TokenSource, trace.EstimatedCostUSD, trace.CostSource =
+		finalizeGenerationTokenAccounting(target.model, renderedPrompt, content, promptTokens, completionTokens, totalTokens, trace.TokenSource, trace.EstimatedCostUSD, trace.CostSource)
+	if rawResponse != nil {
+		rawResponse["token_source"] = trace.TokenSource
+		rawResponse["estimated_cost_usd"] = trace.EstimatedCostUSD
+		rawResponse["cost_source"] = trace.CostSource
+		rawResponse["prompt_tokens"] = promptTokens
+		rawResponse["completion_tokens"] = completionTokens
+		rawResponse["total_tokens"] = totalTokens
 	}
 
 	if err := os.WriteFile(testPath, []byte(content), 0o644); err != nil {
@@ -1068,6 +1107,29 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+func finalizeGenerationTokenAccounting(
+	model modelConfig,
+	prompt string,
+	generated string,
+	promptTokens *int,
+	completionTokens *int,
+	totalTokens *int,
+	tokenSource string,
+	estimatedCost *float64,
+	costSource string,
+) (*int, *int, *int, string, *float64, string) {
+	trace := AgentTrace{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+		TokenSource:      tokenSource,
+		EstimatedCost:    estimatedCost,
+		CostSource:       costSource,
+	}
+	finalizeAgentAccounting(&trace, prompt, generated, model)
+	return trace.PromptTokens, trace.CompletionTokens, trace.TotalTokens, trace.TokenSource, trace.EstimatedCost, trace.CostSource
 }
 
 // sanitizeIdentifier 将字符串规范化为合法标识符
