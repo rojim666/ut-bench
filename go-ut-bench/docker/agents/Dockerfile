@@ -52,9 +52,30 @@ ARG DEBIAN_MIRROR=
 COPY --from=agent-clis /usr/local/bin/ /usr/local/bin/
 COPY --from=agent-clis /usr/local/lib/ /usr/local/lib/
 
+# 内置多镜像自动 fallback：优先使用 DEBIAN_MIRROR 参数，失败后自动切换备选镜像
+# 镜像列表顺序：外部传入 > 阿里云 > 清华源 > 华为云
 RUN set -eux; \
-    if [ -n "${DEBIAN_MIRROR}" ]; then \
-      MIRROR_HOST=$(echo "${DEBIAN_MIRROR}" | sed 's|https\?://||;s|/$||'); \
+    # 备份原始 sources，供每次循环前恢复
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      cp /etc/apt/sources.list.d/debian.sources /tmp/debian.sources.bak; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+      cp /etc/apt/sources.list /tmp/sources.list.bak; \
+    fi; \
+    # 构建镜像列表（去空）
+    MIRROR_LIST=""; \
+    for m in "${DEBIAN_MIRROR}" "http://mirrors.aliyun.com/debian" "http://repo.huaweicloud.com/debian" "http://mirrors.tuna.tsinghua.edu.cn/debian"; do \
+      [ -n "$m" ] && MIRROR_LIST="$MIRROR_LIST $m"; \
+    done; \
+    # 遍历镜像列表，找到可用的源
+    APT_OK=0; \
+    for MIRROR in $MIRROR_LIST; do \
+      echo ">>> Trying mirror: $MIRROR"; \
+      # 恢复原始 sources
+      if [ -f /tmp/debian.sources.bak ]; then cp /tmp/debian.sources.bak /etc/apt/sources.list.d/debian.sources; fi; \
+      if [ -f /tmp/sources.list.bak ]; then cp /tmp/sources.list.bak /etc/apt/sources.list; fi; \
+      # 替换为主镜像
+      MIRROR_HOST=$(echo "$MIRROR" | sed 's|https\?://||;s|/*$||'); \
       if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
         sed -i "s|deb.debian.org/debian|${MIRROR_HOST}|g" /etc/apt/sources.list.d/debian.sources; \
         sed -i "s|security.debian.org/debian-security|${MIRROR_HOST}-security|g" /etc/apt/sources.list.d/debian.sources || true; \
@@ -62,33 +83,53 @@ RUN set -eux; \
         sed -i "s|deb.debian.org/debian|${MIRROR_HOST}|g" /etc/apt/sources.list; \
         sed -i "s|security.debian.org/debian-security|${MIRROR_HOST}-security|g" /etc/apt/sources.list || true; \
       fi; \
+      if apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update 2>/dev/null; then \
+        echo ">>> Mirror OK: $MIRROR"; \
+        APT_OK=1; \
+        break; \
+      fi; \
+      echo ">>> Mirror failed: $MIRROR, next..."; \
+      rm -rf /var/lib/apt/lists/*; \
+      sleep 5; \
+    done; \
+    if [ "$APT_OK" -ne 1 ]; then \
+      echo "ERROR: all mirrors failed"; \
+      exit 1; \
     fi; \
-    if apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update; then \
-      apt-get install -y --no-install-recommends \
+    # 用可用源安装包（带重试）。不要使用 --fix-missing；它可能在下载失败后
+    # 留下半安装的 Java 元包，后续重试会被 unmet dependencies 卡住。
+    for attempt in 1 2 3 4 5; do \
+      if apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
         git \
         ripgrep \
         curl \
         wget \
-        unzip; \
-      apt-get install -y --no-install-recommends \
+        unzip \
         python3 \
         python3-pip \
         python3-pytest \
         g++ \
         cmake \
         libgtest-dev \
-        default-jdk \
-        maven; \
-      if [ -d /usr/src/gtest ]; then \
-        cd /usr/src/gtest && cmake . && make && cp lib/*.a /usr/lib/; \
+        openjdk-17-jdk-headless \
+        maven; then \
+        if [ -d /usr/src/gtest ]; then \
+          cd /usr/src/gtest && cmake . && make && cp lib/*.a /usr/lib/; \
+        fi; \
+        rm -rf /var/lib/apt/lists/*; \
+        exit 0; \
       fi; \
-    else \
-      echo "ERROR: apt update failed; cannot install required toolchains"; \
-      exit 1; \
-    fi; \
-    rm -rf /var/lib/apt/lists/*
+      echo "apt-get install failed on attempt ${attempt}, retrying in $((attempt * 10))s..."; \
+      apt-get -f install -y --no-install-recommends || true; \
+      dpkg --configure -a || true; \
+      rm -rf /var/lib/apt/lists/*; \
+      sleep $((attempt * 10)); \
+      apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update || true; \
+    done; \
+    echo "ERROR: apt-get install failed after 5 attempts"; \
+    exit 1
 
 # Install Go (same version as main evaluator image).
 # Download method cascades through curl, wget, and Node.js fetch so that the
@@ -118,6 +159,7 @@ RUN set -eux; \
     rm "${dest}"
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 ENV GOPROXY=https://goproxy.cn,direct
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
 RUN useradd -m -s /bin/bash agent \
     && mkdir -p /home/agent/.npm /home/agent/.cache /workspace \
