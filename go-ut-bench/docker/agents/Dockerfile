@@ -135,10 +135,11 @@ RUN set -eux; \
 # Download method cascades through curl, wget, and Node.js fetch so that the
 # build never depends on a single binary being present.
 ARG GO_VERSION=1.24.2
+ARG GO_DOWNLOAD_URLS=
 RUN set -eux; \
     tarball="go${GO_VERSION}.linux-amd64.tar.gz"; \
     dest="/tmp/go.tar.gz"; \
-    urls="https://go.dev/dl/${tarball} https://dl.google.com/go/${tarball} https://mirrors.aliyun.com/golang/${tarball}"; \
+    urls="${GO_DOWNLOAD_URLS:-https://mirrors.aliyun.com/golang/${tarball} https://go.dev/dl/${tarball} https://dl.google.com/go/${tarball}}"; \
     downloaded=0; \
     for url in ${urls}; do \
       echo "Trying ${url}"; \
