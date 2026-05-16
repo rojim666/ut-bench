@@ -20,6 +20,8 @@ type DockerConfig struct {
 	EvalImageName string // e.g. "utbench:latest"
 	ProjectRoot   string // host absolute path of project root (parent of datasets/, artifacts/, configs/)
 	EnvFile       string // optional host path to .env; ignored if empty or missing
+	EvalMemory    string // optional Docker memory limit for eval containers, e.g. "4g"
+	EvalCPUs      string // optional Docker CPU limit for eval containers, e.g. "4"
 }
 
 func (c DockerConfig) EffectiveEvalImage() string {
@@ -114,6 +116,12 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 
 	if cfg.EnvFile != "" {
 		a = append(a, "--env-file", cfg.EnvFile)
+	}
+	if memory := strings.TrimSpace(cfg.EvalMemory); memory != "" {
+		a = append(a, "--memory", memory, "--memory-swap", memory)
+	}
+	if cpus := strings.TrimSpace(cfg.EvalCPUs); cpus != "" {
+		a = append(a, "--cpus", cpus)
 	}
 
 	// Mounts: datasets (read-only is safer but writable matches current UX),
@@ -283,6 +291,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if spec.TestTimeout > 0 {
 			a = append(a, "--test-timeout", fmt.Sprintf("%d", spec.TestTimeout))
 		}
+		if spec.Workers > 0 {
+			a = append(a, "--workers", fmt.Sprintf("%d", spec.Workers))
+		}
 		if spec.ReuseEvaluation {
 			a = append(a, "--reuse-evaluation", "--db-path", "/app/storage/utbench.db")
 		}
@@ -340,6 +351,12 @@ func buildDockerBaseArgs(cfg DockerConfig) []string {
 	a := []string{"run", "--rm"}
 	if cfg.EnvFile != "" && fileExists(cfg.EnvFile) {
 		a = append(a, "--env-file", cfg.EnvFile)
+	}
+	if memory := strings.TrimSpace(cfg.EvalMemory); memory != "" {
+		a = append(a, "--memory", memory, "--memory-swap", memory)
+	}
+	if cpus := strings.TrimSpace(cfg.EvalCPUs); cpus != "" {
+		a = append(a, "--cpus", cpus)
 	}
 	root := strings.TrimRight(cfg.ProjectRoot, `/\`)
 	return append(a,

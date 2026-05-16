@@ -146,6 +146,52 @@ models:
 	}
 }
 
+func TestHTTPClientStreamTextParsesOpenAIStyleSSE(t *testing.T) {
+	var pathSeen string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pathSeen = r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "models.yaml")
+	if err := os.WriteFile(cfgPath, []byte(fmt.Sprintf(`
+models:
+  fake:
+    enabled: true
+    provider: openai
+    config:
+      api_endpoint: %s/v1
+      model: fake-model
+      api_key_env: FAKE_MODEL_KEY
+`, server.URL)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_MODEL_KEY", "token")
+	var deltas []string
+	text, err := (&HTTPClient{Client: server.Client()}).StreamText(context.Background(), LLMTextRequest{
+		ConfigPath: cfgPath,
+		ModelName:  "fake",
+		UserPrompt: "hello",
+		OnDelta: func(delta string) {
+			deltas = append(deltas, delta)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathSeen != "/v1/chat/completions" {
+		t.Fatalf("path = %s", pathSeen)
+	}
+	if text != "你好" || strings.Join(deltas, "") != "你好" {
+		t.Fatalf("stream text=%q deltas=%q", text, strings.Join(deltas, ""))
+	}
+}
+
 func TestBuildChatPayloadUsesAnalysisSizedMaxTokens(t *testing.T) {
 	payload := buildChatPayload(llmModelConfig{
 		Provider: "openai",

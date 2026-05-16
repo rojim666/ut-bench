@@ -306,27 +306,38 @@ func injectAgentNativeSkill(workRoot, framework string, skill contracts.SkillSpe
 
 	switch strings.ToLower(framework) {
 	case "codebuddy":
-		return copySkillToNativeDir(workRoot, skill, ".codebuddy", "skills", true)
-	case "opencode":
-		return copySkillToNativeDir(workRoot, skill, ".opencode", "skills", false)
-	case "claudecode", "claude_code", "claude-code":
-		return copySkillToNativeDir(workRoot, skill, ".claude", "skills", true)
-	case "codex", "codex_cli", "codex-cli":
-		dest, err := copySkillToNativeDir(workRoot, skill, ".codex", "skills", true)
+		nativeName := codeBuddyNativeSkillName(skill)
+		dest, err := copySkillToNativeDir(workRoot, skill, ".codebuddy", "skills", true, nativeName)
 		if err != nil {
 			return "", err
 		}
-		return dest, ensureCodexSkillFrontmatter(filepath.Join(dest, "SKILL.md"), skill)
+		return dest, ensureNativeSkillFrontmatter(filepath.Join(dest, "SKILL.md"), nativeName, skill)
+	case "opencode":
+		nativeName := openCodeNativeSkillName(skill)
+		dest, err := copySkillToNativeDir(workRoot, skill, ".opencode", "skills", true, nativeName)
+		if err != nil {
+			return "", err
+		}
+		return dest, ensureNativeSkillFrontmatter(filepath.Join(dest, "SKILL.md"), nativeName, skill)
+	case "claudecode", "claude_code", "claude-code":
+		return copySkillToNativeDir(workRoot, skill, ".claude", "skills", true, safePathName(skill.Name))
+	case "codex", "codex_cli", "codex-cli":
+		dest, err := copySkillToNativeDir(workRoot, skill, ".codex", "skills", true, safePathName(skill.Name))
+		if err != nil {
+			return "", err
+		}
+		return dest, ensureNativeSkillFrontmatter(filepath.Join(dest, "SKILL.md"), safePathName(skill.Name), skill)
 	default:
 		return "", nil
 	}
 }
 
 // copySkillToNativeDir 将 skill 的 instruction_path + files 原样复制到
-// <workRoot>/<topDir>/<subDir>/<skillName>/ 目录。
+// <workRoot>/<topDir>/<subDir>/<nativeName>/ 目录。
 // Agent 启动后通过其原生机制发现并加载这些文件。
-func copySkillToNativeDir(workRoot string, skill contracts.SkillSpec, topDir, subDir string, renameInstructionToSkill bool) (string, error) {
-	destDir := filepath.Join(workRoot, topDir, subDir, safePathName(skill.Name))
+func copySkillToNativeDir(workRoot string, skill contracts.SkillSpec, topDir, subDir string, renameInstructionToSkill bool, nativeName string) (string, error) {
+	nativeName = safeNativeSkillName(defaultString(nativeName, skill.Name))
+	destDir := filepath.Join(workRoot, topDir, subDir, nativeName)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return "", err
 	}
@@ -372,7 +383,7 @@ func samePath(left, right string) bool {
 	return left == right
 }
 
-func ensureCodexSkillFrontmatter(path string, skill contracts.SkillSpec) error {
+func ensureNativeSkillFrontmatter(path, nativeName string, skill contracts.SkillSpec) error {
 	raw, err := os.ReadFile(path)
 	if err != nil || hasYAMLFrontmatter(raw) {
 		return err
@@ -382,12 +393,56 @@ func ensureCodexSkillFrontmatter(path string, skill contracts.SkillSpec) error {
 		description = "UT-Bench skill package"
 	}
 	description = strings.Join(strings.Fields(description), " ")
-	prefix := fmt.Sprintf("---\nname: %s\ndescription: %q\n---\n\n", safePathName(skill.Name), description)
+	prefix := fmt.Sprintf("---\nname: %s\ndescription: %q\n---\n\n", safeNativeSkillName(nativeName), description)
 	return os.WriteFile(path, append([]byte(prefix), raw...), 0o644)
 }
 
 func hasYAMLFrontmatter(raw []byte) bool {
 	return strings.HasPrefix(string(raw), "---\n") || strings.HasPrefix(string(raw), "---\r\n")
+}
+
+func codeBuddyNativeSkillName(skill contracts.SkillSpec) string {
+	if name := skillFrontmatterName(skill.InstructionPath); name != "" {
+		return safeNativeSkillName(name)
+	}
+	return safeNativeSkillName(skill.Name)
+}
+
+func openCodeNativeSkillName(skill contracts.SkillSpec) string {
+	if name := skillFrontmatterName(skill.InstructionPath); name != "" {
+		return safeOpenCodeSkillName(name)
+	}
+	return safeOpenCodeSkillName(skill.Name)
+}
+
+func skillFrontmatterName(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	if !strings.HasPrefix(text, "---\n") {
+		return ""
+	}
+	rest := strings.TrimPrefix(text, "---\n")
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return ""
+	}
+	for _, line := range strings.Split(rest[:end], "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(key) != "name" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		value = strings.Trim(value, `"'`)
+		return value
+	}
+	return ""
 }
 
 func appendSkillInstruction(prompt string, skill contracts.SkillSpec) string {
@@ -419,6 +474,13 @@ func appendSkillInstruction(prompt string, skill contracts.SkillSpec) string {
 
 func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, outputFile, skillDir string, framework string, skillName string) string {
 	var b strings.Builder
+	slashSkill := ""
+	if skillDir != "" && skillName != "" && skillName != agentconfig.NoSkill && usesSlashSkillInvocation(framework) {
+		slashSkill = nativeSkillNameFromDir(skillDir, skillName)
+		b.WriteString("/")
+		b.WriteString(slashSkill)
+		b.WriteString(" ")
+	}
 	b.WriteString(prompt)
 	b.WriteString("\n\nAgent execution contract:\n")
 	b.WriteString("- Work only inside the provided workspace.\n")
@@ -441,6 +503,14 @@ func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, out
 			b.WriteString(strings.ReplaceAll(skillName, "-", "_"))
 			b.WriteString(" command to generate tests according to the skill methodology.\n")
 			b.WriteString("The skill provides structured guidelines for test generation.\n")
+		} else if strings.EqualFold(framework, "codebuddy") {
+			b.WriteString("\nIMPORTANT: This task must run through the CodeBuddy native skill /")
+			b.WriteString(slashSkill)
+			b.WriteString(". The prompt starts with that slash command; keep following the skill until the final test file is written.\n")
+		} else if strings.EqualFold(framework, "opencode") {
+			b.WriteString("\nIMPORTANT: This task must run through the OpenCode native skill /")
+			b.WriteString(slashSkill)
+			b.WriteString(". The prompt starts with that slash command; keep following the skill until the final test file is written.\n")
 		} else {
 			// 其他框架使用原生 skill 机制或工作区可见的 skill 文件目录。
 			b.WriteString("- Skill files are available at: ")
@@ -452,6 +522,21 @@ func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, out
 		}
 	}
 	return b.String()
+}
+
+func usesSlashSkillInvocation(framework string) bool {
+	return strings.EqualFold(framework, "codebuddy") || strings.EqualFold(framework, "opencode")
+}
+
+func nativeSkillNameFromDir(skillDir, fallback string) string {
+	skillDir = strings.TrimRight(filepath.ToSlash(strings.TrimSpace(skillDir)), "/")
+	if skillDir == "" {
+		return safeNativeSkillName(fallback)
+	}
+	if idx := strings.LastIndex(skillDir, "/"); idx >= 0 {
+		skillDir = skillDir[idx+1:]
+	}
+	return safeNativeSkillName(defaultString(skillDir, fallback))
 }
 
 func renderTemplateText(name, content string, data commandTemplateData) (string, error) {
@@ -864,6 +949,45 @@ func copyDir(src, dst string) error {
 
 func safePathName(raw string) string {
 	return sanitizeIdentifier(raw)
+}
+
+func safeNativeSkillName(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	var b strings.Builder
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune('_')
+	}
+	out := strings.Trim(b.String(), "_-")
+	if out == "" {
+		return "skill"
+	}
+	return out
+}
+
+func safeOpenCodeSkillName(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteRune('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "skill"
+	}
+	return out
 }
 
 func uniqueSortedStrings(values []string) []string {

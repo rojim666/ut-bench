@@ -16,6 +16,7 @@ type LLMEvidenceBundle struct {
 	SchemaVersion   string                             `json:"schema_version"`
 	RunID           string                             `json:"run_id"`
 	GeneratedAt     time.Time                          `json:"generated_at"`
+	Selection       contracts.AnalysisSelection        `json:"selection,omitempty"`
 	Summary         contracts.AnalysisSummary          `json:"summary"`
 	TraceQuality    contracts.AnalysisTraceQuality     `json:"trace_quality"`
 	Subjects        []LLMEvidenceSubject               `json:"subjects"`
@@ -46,6 +47,7 @@ type LLMEvidenceSubject struct {
 	EvidenceIDs        []string `json:"evidence_ids,omitempty"`
 	FailureSummary     string   `json:"failure_summary,omitempty"`
 	SelectedReason     []string `json:"selected_reason,omitempty"`
+	ComparisonGroup    string   `json:"comparison_group,omitempty"`
 	GeneratedTestPath  string   `json:"generated_test_path,omitempty"`
 	TrajectoryPath     string   `json:"trajectory_path,omitempty"`
 	WorkspaceDiffPath  string   `json:"workspace_diff_path,omitempty"`
@@ -67,6 +69,7 @@ func buildLLMEvidenceBundle(outputRoot string, report *contracts.AnalysisReport)
 		SchemaVersion:   llmEvidenceSchemaVersion,
 		RunID:           report.RunID,
 		GeneratedAt:     time.Now().UTC(),
+		Selection:       report.Selection,
 		Summary:         report.Summary,
 		TraceQuality:    report.TraceQuality,
 		RuleFindings:    compactFindingsForEvidence(report.Findings),
@@ -104,8 +107,12 @@ func buildLLMEvidenceBundle(outputRoot string, report *contracts.AnalysisReport)
 		return id
 	}
 
-	selected := selectEvidenceSubjects(report.Subjects)
+	selected := selectEvidenceSubjects(report.Subjects, report.Selection)
 	for _, subject := range selected {
+		reasons := evidenceSelectionReasons(subject)
+		if isUserSelectedSubject(subject, report.Selection) {
+			reasons = append([]string{"user_selected"}, reasons...)
+		}
 		view := LLMEvidenceSubject{
 			SubjectID:          subject.SubjectID,
 			SampleID:           subject.SampleID,
@@ -128,7 +135,10 @@ func buildLLMEvidenceBundle(outputRoot string, report *contracts.AnalysisReport)
 			GeneratedTestPath:  subject.GeneratedTestPath,
 			TrajectoryPath:     subject.TrajectoryPath,
 			WorkspaceDiffPath:  subject.WorkspaceDiffPath,
-			SelectedReason:     evidenceSelectionReasons(subject),
+			SelectedReason:     compactStringList(reasons),
+		}
+		if report.Selection.CompareMode && len(report.Selection.SelectedSubjects) > 1 {
+			view.ComparisonGroup = "selected"
 		}
 		view.FailureSummary = failureSummaryForSubject(report.Findings, subject)
 		view.EvidenceIDs = append(view.EvidenceIDs, addEvidence("metrics", "评测指标摘要", subject.SubjectID, subject.SampleID, "", 0, subjectMetricsExcerpt(subject, view.FailureSummary)))
@@ -149,7 +159,20 @@ func buildLLMEvidenceBundle(outputRoot string, report *contracts.AnalysisReport)
 	return bundle, evidenceMap
 }
 
-func selectEvidenceSubjects(subjects []contracts.AnalysisSubject) []contracts.AnalysisSubject {
+func selectEvidenceSubjects(subjects []contracts.AnalysisSubject, selection contracts.AnalysisSelection) []contracts.AnalysisSubject {
+	if len(selection.SelectedSubjects) > 0 {
+		byKey := map[string]contracts.AnalysisSubject{}
+		for _, subject := range subjects {
+			byKey[analysisSubjectKey(subject.SubjectID, subject.SampleID, subject.Language)] = subject
+		}
+		selected := make([]contracts.AnalysisSubject, 0, len(selection.SelectedSubjects))
+		for _, item := range selection.SelectedSubjects {
+			if subject, ok := byKey[analysisSubjectKey(item.SubjectID, item.SampleID, item.Language)]; ok {
+				selected = append(selected, subject)
+			}
+		}
+		return selected
+	}
 	var selected []contracts.AnalysisSubject
 	seenAgent := map[string]bool{}
 	for _, subject := range subjects {
@@ -167,6 +190,15 @@ func selectEvidenceSubjects(subjects []contracts.AnalysisSubject) []contracts.An
 		selected = selected[:12]
 	}
 	return selected
+}
+
+func isUserSelectedSubject(subject contracts.AnalysisSubject, selection contracts.AnalysisSelection) bool {
+	for _, item := range selection.SelectedSubjects {
+		if analysisSubjectKey(subject.SubjectID, subject.SampleID, subject.Language) == analysisSubjectKey(item.SubjectID, item.SampleID, item.Language) {
+			return true
+		}
+	}
+	return false
 }
 
 func evidenceSelectionReasons(subject contracts.AnalysisSubject) []string {

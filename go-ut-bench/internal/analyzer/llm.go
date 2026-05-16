@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,6 +20,14 @@ import (
 
 type HTTPClient struct {
 	Client *http.Client
+}
+
+type LLMTextRequest struct {
+	ConfigPath   string
+	ModelName    string
+	SystemPrompt string
+	UserPrompt   string
+	OnDelta      func(string)
 }
 
 type llmModelConfig struct {
@@ -103,6 +112,96 @@ func (c *HTTPClient) Analyze(ctx context.Context, req LLMRequest) (contracts.LLM
 	parsed.Status = "ok"
 	parsed.RawOutput = text
 	return parsed, nil
+}
+
+func (c *HTTPClient) StreamText(ctx context.Context, req LLMTextRequest) (string, error) {
+	model, err := loadAnalysisModel(req.ConfigPath, req.ModelName)
+	if err != nil {
+		return "", err
+	}
+	apiKey := strings.TrimSpace(os.Getenv(model.APIKeyEnv))
+	if apiKey == "" {
+		return "", fmt.Errorf("missing API key env var: %s", model.APIKeyEnv)
+	}
+	client := c.Client
+	if client == nil {
+		client = &http.Client{Timeout: 180 * time.Second}
+	}
+
+	payload := buildChatTextPayload(model, req.SystemPrompt, req.UserPrompt, true)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	endpoint := resolveEndpoint(model)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	if strings.EqualFold(model.Provider, "dashscope") && !strings.Contains(endpoint, "compatible-mode") {
+		httpReq.Header.Set("X-DashScope-SSE", "enable")
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("llm http %d: %s", resp.StatusCode, trim(string(raw), 500))
+	}
+
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "event-stream") {
+		raw, _ := io.ReadAll(resp.Body)
+		text, err := extractLLMText(raw)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(text) != "" && req.OnDelta != nil {
+			req.OnDelta(text)
+		}
+		return text, nil
+	}
+
+	var b strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			break
+		}
+		delta, done, err := extractLLMStreamDelta([]byte(data))
+		if err != nil {
+			return b.String(), err
+		}
+		if delta != "" {
+			b.WriteString(delta)
+			if req.OnDelta != nil {
+				req.OnDelta(delta)
+			}
+		}
+		if done {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return b.String(), err
+	}
+	return b.String(), nil
 }
 
 func loadAnalysisModel(configPath, selected string) (llmModelConfig, error) {
@@ -210,6 +309,58 @@ func buildChatPayload(model llmModelConfig, prompt string) map[string]any {
 	}
 }
 
+func buildChatTextPayload(model llmModelConfig, systemPrompt, userPrompt string, stream bool) map[string]any {
+	maxTokens := 4096
+	if v, ok := intParam(model.Params["max_tokens"]); ok && v > maxTokens {
+		maxTokens = v
+	}
+	if maxTokens > 12000 {
+		maxTokens = 12000
+	}
+	temperature := 0.2
+	if v, ok := floatParam(model.Params["temperature"]); ok {
+		temperature = v
+	}
+	topP := 0.9
+	if v, ok := floatParam(model.Params["top_p"]); ok {
+		topP = v
+	}
+	messages := []map[string]string{}
+	if strings.TrimSpace(systemPrompt) != "" {
+		messages = append(messages, map[string]string{"role": "system", "content": systemPrompt})
+	}
+	messages = append(messages, map[string]string{"role": "user", "content": userPrompt})
+	if strings.EqualFold(model.Provider, "dashscope") && !strings.Contains(strings.ToLower(model.Endpoint), "compatible-mode") {
+		params := map[string]any{
+			"temperature": temperature,
+			"top_p":       topP,
+			"max_tokens":  maxTokens,
+		}
+		if stream {
+			params["incremental_output"] = true
+			params["result_format"] = "message"
+		}
+		return map[string]any{
+			"model": model.Model,
+			"input": map[string]any{
+				"messages": messages,
+			},
+			"parameters": params,
+		}
+	}
+	payload := map[string]any{
+		"model":       model.Model,
+		"messages":    messages,
+		"temperature": temperature,
+		"top_p":       topP,
+		"max_tokens":  maxTokens,
+	}
+	if stream {
+		payload["stream"] = true
+	}
+	return payload
+}
+
 func resolveEndpoint(model llmModelConfig) string {
 	endpoint := strings.TrimRight(strings.TrimSpace(model.Endpoint), "/")
 	lower := strings.ToLower(endpoint)
@@ -263,6 +414,79 @@ func extractLLMText(raw []byte) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("unable to extract text from llm response")
+}
+
+func extractLLMStreamDelta(raw []byte) (string, bool, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", false, err
+	}
+	if errObj, ok := payload["error"].(map[string]any); ok {
+		if msg, ok := errObj["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return "", false, fmt.Errorf("%s", msg)
+		}
+		return "", false, fmt.Errorf("llm stream error")
+	}
+	if choices, ok := payload["choices"].([]any); ok && len(choices) > 0 {
+		if ch, ok := choices[0].(map[string]any); ok {
+			if delta, ok := ch["delta"].(map[string]any); ok {
+				if s, ok := delta["content"].(string); ok {
+					return s, streamChoiceDone(ch), nil
+				}
+				if parts, ok := delta["content"].([]any); ok {
+					return contentPartsText(parts), streamChoiceDone(ch), nil
+				}
+			}
+			if msg, ok := ch["message"].(map[string]any); ok {
+				if s, ok := msg["content"].(string); ok {
+					return s, streamChoiceDone(ch), nil
+				}
+			}
+			if s, ok := ch["text"].(string); ok {
+				return s, streamChoiceDone(ch), nil
+			}
+			return "", streamChoiceDone(ch), nil
+		}
+	}
+	if output, ok := payload["output"].(map[string]any); ok {
+		if s, ok := output["text"].(string); ok {
+			return s, streamOutputDone(output), nil
+		}
+		if choices, ok := output["choices"].([]any); ok && len(choices) > 0 {
+			if ch, ok := choices[0].(map[string]any); ok {
+				if msg, ok := ch["message"].(map[string]any); ok {
+					if s, ok := msg["content"].(string); ok {
+						return s, streamChoiceDone(ch) || streamOutputDone(output), nil
+					}
+				}
+				if delta, ok := ch["delta"].(map[string]any); ok {
+					if s, ok := delta["content"].(string); ok {
+						return s, streamChoiceDone(ch) || streamOutputDone(output), nil
+					}
+				}
+				return "", streamChoiceDone(ch) || streamOutputDone(output), nil
+			}
+		}
+		return "", streamOutputDone(output), nil
+	}
+	return "", false, nil
+}
+
+func streamChoiceDone(ch map[string]any) bool {
+	if reason, ok := ch["finish_reason"].(string); ok && reason != "" && reason != "null" {
+		return true
+	}
+	return false
+}
+
+func streamOutputDone(output map[string]any) bool {
+	if reason, ok := output["finish_reason"].(string); ok && reason != "" && reason != "null" {
+		return true
+	}
+	if status, ok := output["status"].(string); ok && strings.EqualFold(status, "finished") {
+		return true
+	}
+	return false
 }
 
 func contentPartsText(parts []any) string {

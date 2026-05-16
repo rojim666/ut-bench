@@ -19,12 +19,15 @@ import (
 const promptVersion = "analysis-prompt.v0.1.1"
 
 type Options struct {
-	RunID      string
-	OutputRoot string
-	ConfigPath string
-	LLMEnabled bool
-	LLMModel   string
-	Force      bool
+	RunID            string
+	OutputRoot       string
+	ConfigPath       string
+	LLMEnabled       bool
+	LLMModel         string
+	Force            bool
+	SelectedSubjects []contracts.AnalysisSubjectSelector
+	CompareMode      bool
+	Progress         func(phase string)
 }
 
 type Service struct {
@@ -49,7 +52,14 @@ func NewServiceWithLLM(llm LLMClient) *Service {
 	return &Service{llm: llm}
 }
 
+func reportProgress(fn func(string), phase string) {
+	if fn != nil && strings.TrimSpace(phase) != "" {
+		fn(phase)
+	}
+}
+
 func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.AnalysisReport, error) {
+	reportProgress(opts.Progress, "准备证据")
 	opts.RunID = strings.TrimSpace(opts.RunID)
 	if opts.RunID == "" {
 		return nil, errors.New("run id is required")
@@ -72,6 +82,7 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 		return nil, fmt.Errorf("read evaluation result: %w", err)
 	}
 
+	reportProgress(opts.Progress, "规则分析")
 	manifestPath := filepath.Join(runDir, "generated", "generated_manifest.json")
 	var manifest contracts.GeneratedManifest
 	_ = readJSON(manifestPath, &manifest)
@@ -110,6 +121,12 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 	report.Recommendations = buildRecommendations(report.Findings, report.Subjects)
 	report.Summary = buildSummary(report)
 
+	selection, err := validateAnalysisSelection(report.Subjects, opts.SelectedSubjects, opts.CompareMode)
+	if err != nil {
+		return nil, err
+	}
+	report.Selection = selection
+
 	if opts.LLMEnabled {
 		llmResult, evidenceCount, evidenceSubjectCount := s.runLLM(ctx, opts, report, analysisDir)
 		report.LLM = &llmResult
@@ -130,6 +147,7 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 	sortRecommendations(report.Recommendations)
 	report.Summary = buildSummary(report)
 
+	reportProgress(opts.Progress, "写入报告")
 	if err := os.MkdirAll(analysisDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -140,6 +158,48 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 		return nil, err
 	}
 	return report, nil
+}
+
+func validateAnalysisSelection(subjects []contracts.AnalysisSubject, selected []contracts.AnalysisSubjectSelector, compareMode bool) (contracts.AnalysisSelection, error) {
+	out := contracts.AnalysisSelection{CompareMode: compareMode}
+	if len(selected) == 0 {
+		return out, nil
+	}
+	if len(selected) > 3 {
+		return out, fmt.Errorf("selected_subjects supports at most 3 items, got %d", len(selected))
+	}
+	available := map[string]contracts.AnalysisSubject{}
+	for _, subject := range subjects {
+		available[analysisSubjectKey(subject.SubjectID, subject.SampleID, subject.Language)] = subject
+	}
+	seen := map[string]bool{}
+	for _, item := range selected {
+		selector := contracts.AnalysisSubjectSelector{
+			SubjectID: strings.TrimSpace(item.SubjectID),
+			SampleID:  strings.TrimSpace(item.SampleID),
+			Language:  strings.TrimSpace(item.Language),
+		}
+		key := analysisSubjectKey(selector.SubjectID, selector.SampleID, selector.Language)
+		if selector.SubjectID == "" || selector.SampleID == "" || selector.Language == "" {
+			return out, fmt.Errorf("selected_subjects contains empty subject_id/sample_id/language")
+		}
+		if _, ok := available[key]; !ok {
+			return out, fmt.Errorf("selected subject not found: subject_id=%s sample_id=%s language=%s", selector.SubjectID, selector.SampleID, selector.Language)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out.SelectedSubjects = append(out.SelectedSubjects, selector)
+	}
+	if len(out.SelectedSubjects) > 1 {
+		out.CompareMode = true
+	}
+	return out, nil
+}
+
+func analysisSubjectKey(subjectID, sampleID, language string) string {
+	return strings.Join([]string{strings.TrimSpace(subjectID), strings.TrimSpace(sampleID), strings.TrimSpace(language)}, "\x00")
 }
 
 func (s *Service) analyzeResult(outputRoot string, res contracts.EvaluationResult, gen contracts.GeneratedCase) (contracts.AnalysisSubject, []contracts.AnalysisFinding) {
@@ -322,6 +382,7 @@ func (s *Service) runLLM(ctx context.Context, opts Options, report *contracts.An
 	if s.llm == nil {
 		return contracts.LLMAnalysisResult{Model: opts.LLMModel, PromptVersion: promptVersion, Status: "skipped", Error: "llm client not configured"}, 0, 0
 	}
+	reportProgress(opts.Progress, "构建证据包")
 	bundle, evidenceMap := buildLLMEvidenceBundle(opts.OutputRoot, report)
 	_ = contracts.WriteJSON(filepath.Join(analysisDir, "llm_evidence_bundle.json"), bundle)
 
@@ -331,6 +392,7 @@ func (s *Service) runLLM(ctx context.Context, opts Options, report *contracts.An
 	}
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
+	reportProgress(opts.Progress, "LLM 生成中")
 	result, err := s.llm.Analyze(ctx, LLMRequest{ConfigPath: opts.ConfigPath, ModelName: opts.LLMModel, Prompt: prompt})
 	if err != nil {
 		result = contracts.LLMAnalysisResult{Model: opts.LLMModel, PromptVersion: promptVersion, Status: "degraded", Error: err.Error()}
@@ -355,6 +417,13 @@ func buildLLMPrompt(bundle LLMEvidenceBundle) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	selectionHint := ""
+	selectedCount := len(bundle.Selection.SelectedSubjects)
+	if selectedCount == 1 {
+		selectionHint = "\n10. 本次是用户定点分析：请围绕 selection.selected_subjects 中的对象解释行为链路、测试质量、trajectory 证据和改进建议，不要把重点转移到未选对象。\n"
+	} else if selectedCount > 1 || bundle.Selection.CompareMode {
+		selectionHint = "\n10. 本次是用户选择的横向对比：请比较 selection.selected_subjects 中 2-3 个对象的共同问题、差异点、最优/最差表现原因和可迁移策略。不要把重点转移到未选对象。\n"
+	}
 	return `你是 UTBench 的单元测试 agent 诊断器。请基于 evidence bundle 分析 agent/skill 的弱点，并给出能落地的优化建议。
 
 硬性要求：
@@ -367,6 +436,7 @@ func buildLLMPrompt(bundle LLMEvidenceBundle) (string, error) {
 7. 不要复述 rule_findings，不要逐条复制规则诊断；只补充规则没有覆盖的归因、跨 agent 对比和优化建议。
 8. findings 最多 5 条，recommendations 最多 5 条；每条 detail 控制在 120 字以内，recommendation/detail/expected_impact/risk 都要简短。
 9. 如果最重要的问题已经在规则里出现，请在 LLM 中合并为更高层的归因，不要重复同名 finding。
+` + selectionHint + `
 
 输出 JSON 格式：
 {

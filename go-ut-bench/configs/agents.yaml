@@ -408,6 +408,7 @@ skills:
             - ./skills/qta-ut/references/
             - ./skills/qta-ut/scripts/
         compatible_frameworks:
+            - opencode
             - codebuddy
             - claudecode
             - codex

@@ -399,6 +399,170 @@ func TestInjectAgentNativeSkillForClaudeCodeRenamesInstructionToSkillMD(t *testi
 	}
 }
 
+func TestInjectAgentNativeSkillForCodeBuddyUsesSkillFrontmatterName(t *testing.T) {
+	tmp := t.TempDir()
+	skillSrc := filepath.Join(tmp, "SKILL.md")
+	if err := os.WriteFile(skillSrc, []byte("---\nname: qta-gen-ut\ndescription: 为指定代码生成单元测试\n---\n\n# QTA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workRoot := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dest, err := injectAgentNativeSkill(workRoot, "codebuddy", contracts.SkillSpec{
+		Name:            "qta-ut",
+		Enabled:         true,
+		Description:     "fallback description",
+		InstructionPath: skillSrc,
+	})
+	if err != nil {
+		t.Fatalf("injectAgentNativeSkill returned error: %v", err)
+	}
+
+	wantDir := filepath.Join(workRoot, ".codebuddy", "skills", "qta-gen-ut")
+	if dest != wantDir {
+		t.Fatalf("dest = %q, want %q", dest, wantDir)
+	}
+	raw, err := os.ReadFile(filepath.Join(dest, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected SKILL.md to exist: %v", err)
+	}
+	text := string(raw)
+	if !strings.HasPrefix(text, "---\nname: qta-gen-ut\n") {
+		t.Fatalf("expected frontmatter name to stay aligned with native skill name, got %q", text)
+	}
+}
+
+func TestInjectAgentNativeSkillForCodeBuddyAddsFrontmatterWhenMissing(t *testing.T) {
+	tmp := t.TempDir()
+	skillSrc := filepath.Join(tmp, "instructions.md")
+	if err := os.WriteFile(skillSrc, []byte("# Unit Test Skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workRoot := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dest, err := injectAgentNativeSkill(workRoot, "codebuddy", contracts.SkillSpec{
+		Name:            "unit_test_skill",
+		Enabled:         true,
+		Description:     "Generate runnable unit tests.",
+		InstructionPath: skillSrc,
+	})
+	if err != nil {
+		t.Fatalf("injectAgentNativeSkill returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dest, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected SKILL.md to exist: %v", err)
+	}
+	text := string(raw)
+	if !strings.HasPrefix(text, "---\nname: unit_test_skill\n") {
+		t.Fatalf("expected generated CodeBuddy frontmatter, got %q", text)
+	}
+	if !strings.Contains(text, "# Unit Test Skill") {
+		t.Fatalf("expected original skill content to be preserved, got %q", text)
+	}
+}
+
+func TestBuildAgentPromptForCodeBuddyStartsWithSlashSkill(t *testing.T) {
+	prompt := buildAgentPrompt("Task body", contracts.SampleRef{
+		ID:       "s1",
+		Language: "go",
+	}, "/workspace/source.go", "/workspace/generated_test.go", "/workspace/.codebuddy/skills/qta-gen-ut", "codebuddy", "qta-ut")
+
+	if !strings.HasPrefix(prompt, "/qta-gen-ut Task body") {
+		t.Fatalf("expected prompt to start with CodeBuddy slash skill invocation, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "CodeBuddy native skill /qta-gen-ut") {
+		t.Fatalf("expected prompt to explicitly require native skill, got %q", prompt)
+	}
+}
+
+func TestInjectAgentNativeSkillForOpenCodeUsesSKILLMDAndCompatibleName(t *testing.T) {
+	tmp := t.TempDir()
+	skillSrc := filepath.Join(tmp, "instructions.md")
+	if err := os.WriteFile(skillSrc, []byte("# Unit Test Skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checklist := filepath.Join(tmp, "checklist.md")
+	if err := os.WriteFile(checklist, []byte("- runnable\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workRoot := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dest, err := injectAgentNativeSkill(workRoot, "opencode", contracts.SkillSpec{
+		Name:            "unit_test_skill",
+		Enabled:         true,
+		Description:     "Generate runnable unit tests.",
+		InstructionPath: skillSrc,
+		Files:           []string{checklist},
+	})
+	if err != nil {
+		t.Fatalf("injectAgentNativeSkill returned error: %v", err)
+	}
+
+	wantDir := filepath.Join(workRoot, ".opencode", "skills", "unit-test-skill")
+	if dest != wantDir {
+		t.Fatalf("dest = %q, want %q", dest, wantDir)
+	}
+	raw, err := os.ReadFile(filepath.Join(dest, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected SKILL.md to exist: %v", err)
+	}
+	text := string(raw)
+	if !strings.HasPrefix(text, "---\nname: unit-test-skill\n") {
+		t.Fatalf("expected generated OpenCode frontmatter, got %q", text)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "checklist.md")); err != nil {
+		t.Fatalf("expected extra skill file to be copied: %v", err)
+	}
+}
+
+func TestInjectAgentNativeSkillForOpenCodeUsesFrontmatterName(t *testing.T) {
+	tmp := t.TempDir()
+	skillSrc := filepath.Join(tmp, "SKILL.md")
+	if err := os.WriteFile(skillSrc, []byte("---\nname: qta-gen-ut\ndescription: 为指定代码生成单元测试\n---\n\n# QTA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workRoot := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dest, err := injectAgentNativeSkill(workRoot, "opencode", contracts.SkillSpec{
+		Name:            "qta-ut",
+		Enabled:         true,
+		InstructionPath: skillSrc,
+	})
+	if err != nil {
+		t.Fatalf("injectAgentNativeSkill returned error: %v", err)
+	}
+	if want := filepath.Join(workRoot, ".opencode", "skills", "qta-gen-ut"); dest != want {
+		t.Fatalf("dest = %q, want %q", dest, want)
+	}
+}
+
+func TestBuildAgentPromptForOpenCodeStartsWithSlashSkill(t *testing.T) {
+	prompt := buildAgentPrompt("Task body", contracts.SampleRef{
+		ID:       "s1",
+		Language: "python",
+	}, "/workspace/source.py", "/workspace/generated_test.py", "/workspace/.opencode/skills/unit-test-skill", "opencode", "unit_test_skill")
+
+	if !strings.HasPrefix(prompt, "/unit-test-skill Task body") {
+		t.Fatalf("expected prompt to start with OpenCode slash skill invocation, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "OpenCode native skill /unit-test-skill") {
+		t.Fatalf("expected prompt to explicitly require native skill, got %q", prompt)
+	}
+}
+
 func TestInjectAgentNativeSkillForCodexAddsFrontmatter(t *testing.T) {
 	tmp := t.TempDir()
 	skillSrc := filepath.Join(tmp, "instructions.md")

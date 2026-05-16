@@ -435,6 +435,8 @@ func runWeb(args []string) error {
 	agentsConfigPath := fs.String("agents-config", "", "Agent/skill config path (auto-detected from --config dir if omitted)")
 	imageName := fs.String("docker-image", "", "Deprecated alias for --docker-eval-image")
 	evalImageName := fs.String("docker-eval-image", "utbench:latest", "Docker image for containerized evaluation runs")
+	evalMemory := fs.String("docker-eval-memory", "12g", "Docker memory limit for containerized evaluation runs; empty disables the limit")
+	evalCPUs := fs.String("docker-eval-cpus", "", "Docker CPU limit for containerized evaluation runs; empty disables the limit")
 	projectRoot := fs.String("project-root", ".", "Project root mounted into Docker")
 	envFile := fs.String("env-file", "./.env", "Environment file passed to Docker runs")
 
@@ -499,6 +501,8 @@ func runWeb(args []string) error {
 		EvalImageName: *evalImageName,
 		ProjectRoot:   absProjectRoot,
 		EnvFile:       absEnvFile,
+		EvalMemory:    *evalMemory,
+		EvalCPUs:      *evalCPUs,
 	}
 	if *agentsConfigPath != "" {
 		fmt.Printf("[web] agents config: %s\n", *agentsConfigPath)
@@ -870,6 +874,7 @@ func runEvaluate(args []string) error {
 	mutationTimeout := fs.Int("mutation-timeout", 600, "Mutation timeout (seconds)")
 	mutationPolicy := fs.String("mutation-policy", "warn", "Mutation policy")
 	testTimeout := fs.Int("test-timeout", 180, "Test execution timeout (seconds)")
+	workers := fs.Int("workers", 0, "Number of concurrent evaluation workers")
 	runID := fs.String("run-id", "", "Run ID")
 	evalBackendFlag := fs.String("eval-backend", "local", "Evaluation backend (local, docker)")
 	evalDockerImage := fs.String("eval-docker-image", "utbench:latest", "Docker image for docker eval backend")
@@ -894,6 +899,7 @@ func runEvaluate(args []string) error {
 		MutationTimeout: *mutationTimeout,
 		MutationPolicy:  policy,
 		TestTimeout:     *testTimeout,
+		Workers:         *workers,
 		RunID:           *runID,
 		CreatedAtUTC:    time.Now().UTC(),
 	}

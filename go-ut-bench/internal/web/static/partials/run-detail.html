@@ -272,8 +272,117 @@
             </div>
 
             <!-- AI Analysis -->
-            <div x-show="detailTab === 'analysis'" class="space-y-4">
+            <div x-show="detailTab === 'analysis'" class="space-y-4 pb-[190px] lg:pb-0 lg:pr-[400px]">
+              <template x-teleport="body">
+                <div x-show="page === 'run-detail' && detailTab === 'analysis' && currentAnalysis">
+                  <div class="hidden lg:block fixed right-6 top-24 bottom-6 w-[380px] z-[80]">
+                    <div class="form-section h-full flex flex-col p-0 overflow-hidden shadow-lg" style="border-color:var(--border);background:var(--bg)">
+                      <div class="p-4 border-b flex items-start justify-between gap-3" style="border-color:var(--border)">
+                        <div class="min-w-0">
+                          <div class="section-title mb-1">AI 追问助手</div>
+                          <div class="text-[12px] line-clamp-2" style="color:var(--fg-muted)" x-text="analysisChatSelectionLabel(analysisChatSession)"></div>
+                        </div>
+                        <button x-show="analysisChatStreaming" @click="stopAnalysisChatStream()" class="btn-ghost text-[12px]" style="color:var(--red)">停止</button>
+                      </div>
+                      <div class="px-3 py-2 border-b flex gap-2" style="border-color:var(--border);background:var(--bg-elevated)">
+                        <select x-show="analysisChatSessions.length" class="input-field text-[12px] min-w-0 flex-1"
+                                :value="analysisChatSession?.session_id || ''"
+                                @change="loadAnalysisChatSession($event.target.value)">
+                          <option value="">选择历史会话</option>
+                          <template x-for="s in analysisChatSessions" :key="s.session_id">
+                            <option :value="s.session_id" x-text="s.title || s.session_id"></option>
+                          </template>
+                        </select>
+                        <button @click="startNewAnalysisChatSession()" class="btn-ghost text-[12px]">新会话</button>
+                      </div>
+                      <div class="flex-1 overflow-y-auto p-3 space-y-3" style="background:var(--bg-muted)">
+                        <div x-show="!analysisChatMessages().length" class="text-[12px] leading-5" style="color:var(--fg-muted)">
+                          看 trace、诊断或优化方案时，可以直接追问当前对象。回答会基于当前选择对象和分析报告流式生成。
+                        </div>
+                        <template x-for="m in analysisChatMessages()" :key="'side-' + m.message_id">
+                          <div class="rounded border p-3" :style="m.role === 'user' ? 'border-color:rgba(14,165,233,.35);background:rgba(14,165,233,.08)' : 'border-color:var(--border);background:var(--bg-elevated)'">
+                            <div class="flex items-center gap-2 mb-2 text-[11px]" style="color:var(--fg-muted)">
+                              <span class="tag-pill" x-text="m.role === 'user' ? '你' : 'AI 助手'"></span>
+                              <span x-show="m.status" x-text="m.status"></span>
+                              <span x-show="m.elapsed_ms" x-text="'· ' + fmtMs(m.elapsed_ms)"></span>
+                            </div>
+                            <div class="text-[13px] whitespace-pre-wrap break-words leading-5" style="color:var(--fg)" x-text="m.content"></div>
+                            <div x-show="m.error" class="mt-2 text-[12px]" style="color:var(--red)" x-text="m.error"></div>
+                          </div>
+                        </template>
+                      </div>
+                      <div class="border-t p-3 space-y-2" style="border-color:var(--border);background:var(--bg-elevated)">
+                        <textarea x-model="analysisChatInput"
+                                  @keydown.ctrl.enter.prevent="sendAnalysisChatMessage()"
+                                  class="input-field w-full min-h-[92px] text-[13px]"
+                                  placeholder="追问当前 Agent 行为、对比差异或改进策略。Ctrl+Enter 发送。"></textarea>
+                        <div class="flex items-center justify-between gap-2">
+                          <div class="text-[12px] min-w-0" style="color:var(--fg-muted)">
+                            <span x-show="analysisChatStreaming" class="animate-pulse">流式生成中...</span>
+                            <span x-show="analysisChatError" class="truncate" style="color:var(--red)" x-text="analysisChatError"></span>
+                            <span x-show="!analysisChatStreaming && !analysisChatError">上下文跟随当前选择对象</span>
+                          </div>
+                          <button @click="sendAnalysisChatMessage()" :disabled="analysisChatStreaming || !analysisChatInput.trim()" class="btn-primary flex-shrink-0">
+                            <span x-text="analysisChatStreaming ? '生成中' : '发送'"></span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="lg:hidden fixed left-3 right-3 bottom-3 z-[90]">
+                    <div class="rounded-xl border shadow-xl overflow-hidden" style="border-color:var(--border);background:var(--bg)">
+                      <div class="px-3 py-2 border-b flex items-center justify-between gap-3" style="border-color:var(--border);background:var(--bg-elevated)">
+                        <div class="min-w-0">
+                          <div class="text-[13px] font-medium" style="color:var(--fg)">AI 追问助手</div>
+                          <div class="text-[11px] truncate" style="color:var(--fg-muted)" x-text="analysisChatSelectionLabel(analysisChatSession)"></div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <button x-show="analysisChatStreaming" @click="stopAnalysisChatStream()" class="btn-ghost text-[12px]" style="color:var(--red)">停止</button>
+                          <button @click="startNewAnalysisChatSession()" class="btn-ghost text-[12px]">新会话</button>
+                        </div>
+                      </div>
+                      <div x-show="analysisChatMessages().length" class="max-h-[180px] overflow-y-auto p-2 space-y-2" style="background:var(--bg-muted)">
+                        <template x-for="m in analysisChatMessages().slice(-4)" :key="'dock-' + m.message_id">
+                          <div class="rounded border px-3 py-2" :style="m.role === 'user' ? 'border-color:rgba(14,165,233,.35);background:rgba(14,165,233,.08)' : 'border-color:var(--border);background:var(--bg-elevated)'">
+                            <div class="text-[11px] mb-1" style="color:var(--fg-muted)" x-text="m.role === 'user' ? '你' : 'AI 助手'"></div>
+                            <div class="text-[12px] whitespace-pre-wrap break-words line-clamp-4" style="color:var(--fg)" x-text="m.content"></div>
+                          </div>
+                        </template>
+                      </div>
+                      <div class="p-3 space-y-2" style="background:var(--bg-elevated)">
+                        <textarea x-model="analysisChatInput"
+                                  @keydown.ctrl.enter.prevent="sendAnalysisChatMessage()"
+                                  class="input-field w-full min-h-[72px] text-[13px]"
+                                  placeholder="追问当前 Agent 行为、对比差异或改进策略。Ctrl+Enter 发送。"></textarea>
+                        <div class="flex items-center justify-between gap-2">
+                          <div class="text-[12px] min-w-0" style="color:var(--fg-muted)">
+                            <span x-show="analysisChatStreaming" class="animate-pulse">流式生成中...</span>
+                            <span x-show="analysisChatError" class="truncate" style="color:var(--red)" x-text="analysisChatError"></span>
+                            <span x-show="!analysisChatStreaming && !analysisChatError">输入框固定在这里</span>
+                          </div>
+                          <button @click="sendAnalysisChatMessage()" :disabled="analysisChatStreaming || !analysisChatInput.trim()" class="btn-primary flex-shrink-0">
+                            <span x-text="analysisChatStreaming ? '生成中' : '发送'"></span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
               <div class="form-section">
+                <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+                  <div>
+                    <div class="section-title mb-1">AI 分析工作台</div>
+                    <div class="text-[12px]" style="color:var(--fg-muted)">选择对象、还原行为、诊断差异、沉淀优化方案，并可继续流式追问。</div>
+                  </div>
+                  <div class="flex flex-wrap gap-2 text-[11px]" style="color:var(--fg-muted)">
+                    <span class="tag-pill">1 选择对象</span>
+                    <span class="tag-pill">2 生成分析</span>
+                    <span class="tag-pill">3 行为还原</span>
+                    <span class="tag-pill">4 诊断对比</span>
+                    <span class="tag-pill">5 优化追问</span>
+                  </div>
+                </div>
                 <div class="flex flex-wrap items-end gap-3">
                   <label class="inline-flex items-center gap-2 text-[12px]" style="color:var(--fg-muted)">
                     <input type="checkbox" x-model="analysisOptions.llm_enabled">
@@ -296,6 +405,48 @@
                     LLM: <span x-text="currentAnalysis?.llm_status?.status || 'unknown'"></span>
                   </span>
                 </div>
+                <div x-show="analysisJob" class="mt-3 rounded border p-3 text-[12px]" style="border-color:var(--border);background:var(--bg-muted);color:var(--fg-muted)">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="tag-pill" x-text="analysisJob?.status || 'running'"></span>
+                    <span x-text="analysisJobPhaseLabel()"></span>
+                    <span x-show="analysisJob?.error" style="color:var(--red)" x-text="analysisJob?.error"></span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-section p-0 overflow-hidden">
+                <div class="px-4 py-3 border-b flex flex-wrap items-center gap-3" style="border-color:var(--border)">
+                  <span class="text-[13px] font-medium">分析对象选择</span>
+                  <span class="text-[12px]" style="color:var(--fg-muted)" x-text="analysisSelection.length ? ('已选 ' + analysisSelection.length + ' 项') : '未选择时自动挑选代表性问题项'"></span>
+                  <button @click="selectRecommendedAnalysisSubjects()" class="btn-ghost text-[12px]">推荐问题项</button>
+                  <button @click="selectBestWorstAnalysisSubjects()" class="btn-ghost text-[12px]">最好+最差</button>
+                  <button @click="selectSameSampleComparison()" class="btn-ghost text-[12px]">同样本对比</button>
+                  <button @click="analysisShowSelectedOnly = !analysisShowSelectedOnly" class="btn-ghost text-[12px]" x-text="analysisShowSelectedOnly ? '显示全部' : '只看已选'"></button>
+                  <button @click="clearAnalysisSelection()" class="btn-ghost text-[12px]">清空选择</button>
+                  <button @click="loadAnalysisSubjects()" class="btn-ghost text-[12px]">刷新对象</button>
+                </div>
+                <div class="px-4 py-2 text-[12px]" style="color:var(--fg-muted)" x-text="analysisSelectionLabel()"></div>
+                <div class="max-h-[260px] overflow-y-auto">
+                  <table class="data-table">
+                    <thead><tr><th>选择</th><th>Subject</th><th>样本</th><th>语言</th><th>编译</th><th>测试</th><th>覆盖率</th><th>变异</th><th>Trace</th></tr></thead>
+                    <tbody>
+                      <template x-for="s in analysisSubjectRows()" :key="analysisSubjectKey(s)">
+                        <tr :style="isAnalysisSubjectSelected(s) ? 'background:rgba(14,165,233,.08)' : ''">
+                          <td><input type="checkbox" :checked="isAnalysisSubjectSelected(s)" @change="toggleAnalysisSubject(s)"></td>
+                          <td class="font-mono text-[12px]" x-text="s.subject_id"></td>
+                          <td class="font-mono text-[12px]" x-text="s.sample_id"></td>
+                          <td class="text-[12px]" x-text="s.language"></td>
+                          <td class="text-[12px]" x-text="s.compile_pass ? '通过' : '失败'"></td>
+                          <td class="text-[12px]" x-text="s.test_pass == null ? '未执行' : (s.test_pass ? '通过' : '失败')"></td>
+                          <td class="text-[12px]" x-text="metricPct(s.line_coverage)"></td>
+                          <td class="text-[12px]" x-text="metricPct(s.mutation_score)"></td>
+                          <td class="text-[12px]" x-text="s.trace_step_count ?? 0"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+                <div x-show="!analysisSubjectRows().length" class="p-4 text-[12px]" style="color:var(--fg-muted)">暂无可选对象。请先完成评测，或刷新对象列表。</div>
               </div>
 
               <div x-show="analysisLoading && !currentAnalysis" class="form-section py-10 text-center text-[13px]" style="color:var(--fg-muted)">正在读取分析结果...</div>
@@ -337,6 +488,14 @@
                       <div><div class="mb-1">证据条数</div><span class="font-mono" x-text="currentAnalysis.llm_status?.evidence_count ?? 0"></span></div>
                       <div><div class="mb-1">证据样本</div><span class="font-mono" x-text="currentAnalysis.llm_status?.evidence_subject_count ?? 0"></span></div>
                       <div><div class="mb-1">降级原因</div><span x-text="currentAnalysis.llm_status?.message || '无'"></span></div>
+                    </div>
+                    <div x-show="(currentAnalysis.selection?.selected_subjects || []).length" class="mt-3 text-[12px]" style="color:var(--fg-muted)">
+                      <div class="mb-2" style="color:var(--fg)">本次 LLM 分析对象</div>
+                      <div class="flex flex-wrap gap-2">
+                        <template x-for="s in currentAnalysis.selection?.selected_subjects || []" :key="analysisSubjectKey(s)">
+                          <span class="tag-pill font-mono" x-text="s.subject_id + ' / ' + s.sample_id + ' / ' + s.language"></span>
+                        </template>
+                      </div>
                     </div>
                   </div>
 
@@ -387,12 +546,15 @@
                   </div>
 
                   <div class="form-section p-0 overflow-hidden">
-                    <div class="px-4 py-3 border-b text-[13px] font-medium" style="border-color:var(--border)">Agent 对比</div>
+                    <div class="px-4 py-3 border-b flex flex-wrap items-center gap-3" style="border-color:var(--border)">
+                      <span class="text-[13px] font-medium">诊断与横向对比</span>
+                      <span class="text-[12px]" style="color:var(--fg-muted)">高亮项为本次 LLM 分析对象；多选时用于比较步骤和表现差异。</span>
+                    </div>
                     <table class="data-table">
                       <thead><tr><th>Subject</th><th>样本</th><th>Trace</th><th>读源码</th><th>写测试</th><th>运行测试</th><th>策略命令</th><th>噪声</th></tr></thead>
                       <tbody>
                         <template x-for="s in currentAnalysis.subjects || []" :key="s.subject_id + s.sample_id">
-                          <tr>
+                          <tr :style="isAnalysisSubjectInReportSelection(s) ? 'background:rgba(14,165,233,.08)' : ''">
                             <td class="font-mono text-[12px]" x-text="s.subject_id"></td>
                             <td class="font-mono text-[12px]" x-text="s.sample_id"></td>
                             <td class="text-[12px]" x-text="s.trace_step_count"></td>
@@ -408,8 +570,35 @@
                   </div>
 
                   <div class="form-section">
-                    <div class="section-title">Step-by-step Trajectory</div>
-                    <template x-for="s in currentAnalysis.subjects || []" :key="s.subject_id + '-trajectory-' + s.sample_id">
+                    <div class="section-title">行为还原：Step-by-step Trajectory</div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                      <template x-for="s in selectedAnalysisReportSubjects()" :key="'behavior-' + analysisSubjectKey(s)">
+                        <div class="rounded border p-3" style="border-color:var(--border);background:var(--bg-elevated)">
+                          <div class="flex items-start justify-between gap-3 mb-3">
+                            <div class="min-w-0">
+                              <div class="font-mono text-[12px] truncate" style="color:var(--fg)" x-text="s.subject_id"></div>
+                              <div class="font-mono text-[11px]" style="color:var(--fg-muted)" x-text="s.sample_id + ' / ' + s.language"></div>
+                            </div>
+                            <span class="tag-pill" x-text="(s.trace_step_count || 0) + ' steps'"></span>
+                          </div>
+                          <div class="grid grid-cols-2 gap-2 text-[12px] mb-3" style="color:var(--fg-muted)">
+                            <div>编译：<span :style="s.compile_pass ? 'color:var(--green)' : 'color:var(--red)'" x-text="s.compile_pass ? '通过' : '失败'"></span></div>
+                            <div>测试：<span :style="s.test_pass ? 'color:var(--green)' : (s.test_pass === false ? 'color:var(--red)' : 'color:var(--yellow)')" x-text="s.test_pass == null ? '未执行' : (s.test_pass ? '通过' : '失败')"></span></div>
+                            <div>覆盖：<span x-text="metricPct(s.line_coverage)"></span></div>
+                            <div>变异：<span x-text="metricPct(s.mutation_score)"></span></div>
+                          </div>
+                          <div class="flex flex-wrap gap-1.5 text-[11px]">
+                            <span class="tag-pill" :style="s.has_source_read ? 'color:var(--green)' : 'color:var(--yellow)'" x-text="s.has_source_read ? '已读源码' : '未见读源码'"></span>
+                            <span class="tag-pill" :style="s.has_test_write ? 'color:var(--green)' : 'color:var(--yellow)'" x-text="s.has_test_write ? '已写测试' : '未见写测试'"></span>
+                            <span class="tag-pill" :style="s.has_test_execution ? 'color:var(--green)' : 'color:var(--yellow)'" x-text="s.has_test_execution ? '已运行测试' : '未见运行测试'"></span>
+                            <span x-show="s.modified_source" class="tag-pill" style="color:var(--red)">修改源码</span>
+                            <span x-show="s.policy_command_count" class="tag-pill" style="color:var(--yellow)" x-text="'策略命令 ' + s.policy_command_count"></span>
+                            <span x-show="s.runtime_noise_count" class="tag-pill" style="color:var(--fg-muted)" x-text="'噪声 ' + s.runtime_noise_count"></span>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                    <template x-for="s in selectedAnalysisReportSubjects()" :key="s.subject_id + '-trajectory-' + s.sample_id">
                       <details class="mb-3 rounded border" style="border-color:var(--border)">
                         <summary class="cursor-pointer px-3 py-2 text-[13px] font-medium" x-text="s.subject_id + ' / ' + s.sample_id + ' · ' + s.trace_step_count + ' steps'"></summary>
                         <div class="max-h-[520px] overflow-y-auto divide-y" style="border-color:var(--border)">
@@ -588,6 +777,64 @@
                         </template>
                       </div>
                     </template>
+                  </div>
+
+                  <div class="hidden">
+                    <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                      <div>
+                        <div class="section-title mb-1">AI 追问助手</div>
+                        <div class="text-[12px]" style="color:var(--fg-muted)" x-text="analysisChatSelectionLabel(analysisChatSession)"></div>
+                      </div>
+                      <div class="flex flex-wrap gap-2">
+                        <select x-show="analysisChatSessions.length" class="input-field text-[12px] min-w-[220px]"
+                                :value="analysisChatSession?.session_id || ''"
+                                @change="loadAnalysisChatSession($event.target.value)">
+                          <option value="">选择历史会话</option>
+                          <template x-for="s in analysisChatSessions" :key="s.session_id">
+                            <option :value="s.session_id" x-text="s.title || s.session_id"></option>
+                          </template>
+                        </select>
+                        <button @click="startNewAnalysisChatSession()" class="btn-ghost text-[12px]">新会话</button>
+                        <button @click="loadAnalysisChatSessions(true)" class="btn-ghost text-[12px]">刷新会话</button>
+                      </div>
+                    </div>
+                    <div class="rounded border overflow-hidden" style="border-color:var(--border)">
+                      <div class="h-[300px] overflow-y-auto p-3 space-y-3" style="background:var(--bg-muted)">
+                        <div x-show="!analysisChatMessages().length" class="text-[12px]" style="color:var(--fg-muted)">
+                          可以询问“这个 Agent 为什么没跑测试？”、“这三个 Agent 哪个策略最好？”、“这个成功样本有哪些步骤值得迁移？”等问题。回答会基于当前选择对象和分析报告流式生成。
+                        </div>
+                        <template x-for="m in analysisChatMessages()" :key="m.message_id">
+                          <div class="rounded border p-3" :style="m.role === 'user' ? 'border-color:rgba(14,165,233,.35);background:rgba(14,165,233,.08)' : 'border-color:var(--border);background:var(--bg-elevated)'">
+                            <div class="flex items-center gap-2 mb-2 text-[11px]" style="color:var(--fg-muted)">
+                              <span class="tag-pill" x-text="m.role === 'user' ? '你' : 'AI 助手'"></span>
+                              <span x-show="m.status" x-text="m.status"></span>
+                              <span x-show="m.elapsed_ms" x-text="'· ' + fmtMs(m.elapsed_ms)"></span>
+                            </div>
+                            <div class="text-[13px] whitespace-pre-wrap break-words" style="color:var(--fg)" x-text="m.content"></div>
+                            <div x-show="m.error" class="mt-2 text-[12px]" style="color:var(--red)" x-text="m.error"></div>
+                          </div>
+                        </template>
+                      </div>
+                      <div class="border-t p-3 space-y-2" style="border-color:var(--border);background:var(--bg-elevated)">
+                        <textarea x-model="analysisChatInput"
+                                  @keydown.ctrl.enter.prevent="sendAnalysisChatMessage()"
+                                  class="input-field w-full min-h-[84px] text-[13px]"
+                                  placeholder="围绕当前选择对象追问 Agent 行为、完成质量、横向差异或改进策略。Ctrl+Enter 发送。"></textarea>
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                          <div class="text-[12px]" style="color:var(--fg-muted)">
+                            <span x-show="analysisChatStreaming" class="animate-pulse">正在流式生成...</span>
+                            <span x-show="analysisChatError" style="color:var(--red)" x-text="analysisChatError"></span>
+                            <span x-show="!analysisChatStreaming && !analysisChatError">追问上下文默认只包含当前选择对象。</span>
+                          </div>
+                          <div class="flex gap-2">
+                            <button x-show="analysisChatStreaming" @click="stopAnalysisChatStream()" class="btn-ghost text-[12px]" style="color:var(--red)">停止</button>
+                            <button @click="sendAnalysisChatMessage()" :disabled="analysisChatStreaming || !analysisChatInput.trim()" class="btn-primary">
+                              <span x-text="analysisChatStreaming ? '生成中...' : '发送追问'"></span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </template>

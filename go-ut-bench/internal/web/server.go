@@ -51,11 +51,13 @@ type Server struct {
 	httpServer *http.Server       // 用于优雅关闭
 
 	// 缓存层：避免重复读磁盘/解析YAML
-	automation    *AutomationScheduler
-	cacheMu       sync.RWMutex
-	catalogCache  *catalogCacheEntry
-	runsCache     *runsCacheEntry
-	envCheckCache *envCheckCacheEntry
+	automation     *AutomationScheduler
+	cacheMu        sync.RWMutex
+	catalogCache   *catalogCacheEntry
+	runsCache      *runsCacheEntry
+	envCheckCache  *envCheckCacheEntry
+	analysisJobs   map[string]*analysisJob
+	analysisJobsMu sync.RWMutex
 }
 
 type catalogCacheEntry struct {
@@ -92,12 +94,13 @@ func NewServer(mgr *RunManager, bld *BuildManager, configPath, outputRoot, dbPat
 	}
 
 	s := &Server{
-		mgr:        mgr,
-		bld:        bld,
-		configPath: configPath,
-		outputRoot: outputRoot,
-		dockerCfg:  cfg,
-		db:         db,
+		mgr:          mgr,
+		bld:          bld,
+		configPath:   configPath,
+		outputRoot:   outputRoot,
+		dockerCfg:    cfg,
+		db:           db,
+		analysisJobs: map[string]*analysisJob{},
 	}
 	s.automation = NewAutomationScheduler(s)
 	s.mux = http.NewServeMux()
@@ -2196,6 +2199,19 @@ func (s *Server) handleRunSub(w http.ResponseWriter, r *http.Request) {
 		sub = parts[1]
 	}
 
+	if sub == "analysis/jobs" || strings.HasPrefix(sub, "analysis/jobs/") {
+		s.handleRunAnalysisJob(w, r, runID, strings.TrimPrefix(sub, "analysis/jobs"))
+		return
+	}
+	if sub == "analysis/chat" || strings.HasPrefix(sub, "analysis/chat/") {
+		s.handleRunAnalysisChat(w, r, runID, strings.TrimPrefix(sub, "analysis/chat"))
+		return
+	}
+	if sub == "analysis/subjects" {
+		s.handleRunAnalysisSubjects(w, r, runID)
+		return
+	}
+
 	switch sub {
 	case "events":
 		s.handleRunEvents(w, r, runID)
@@ -2767,9 +2783,11 @@ func (s *Server) handleRunReport(w http.ResponseWriter, r *http.Request, runID s
 }
 
 type runAnalysisRequest struct {
-	LLMEnabled bool   `json:"llm_enabled"`
-	LLMModel   string `json:"llm_model"`
-	Force      bool   `json:"force"`
+	LLMEnabled       bool                                `json:"llm_enabled"`
+	LLMModel         string                              `json:"llm_model"`
+	Force            bool                                `json:"force"`
+	SelectedSubjects []contracts.AnalysisSubjectSelector `json:"selected_subjects"`
+	CompareMode      bool                                `json:"compare_mode"`
 }
 
 func (s *Server) handleRunAnalysis(w http.ResponseWriter, r *http.Request, runID string) {
@@ -2790,12 +2808,14 @@ func (s *Server) handleRunAnalysis(w http.ResponseWriter, r *http.Request, runID
 			_ = json.NewDecoder(r.Body).Decode(&req)
 		}
 		report, err := analyzer.NewService().Analyze(r.Context(), analyzer.Options{
-			RunID:      runID,
-			OutputRoot: s.outputRoot,
-			ConfigPath: s.configPath,
-			LLMEnabled: req.LLMEnabled,
-			LLMModel:   req.LLMModel,
-			Force:      req.Force,
+			RunID:            runID,
+			OutputRoot:       s.outputRoot,
+			ConfigPath:       s.configPath,
+			LLMEnabled:       req.LLMEnabled,
+			LLMModel:         req.LLMModel,
+			Force:            req.Force,
+			SelectedSubjects: req.SelectedSubjects,
+			CompareMode:      req.CompareMode,
 		})
 		if err != nil {
 			errJSON(w, http.StatusInternalServerError, err.Error())
@@ -2805,6 +2825,45 @@ func (s *Server) handleRunAnalysis(w http.ResponseWriter, r *http.Request, runID
 	default:
 		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (s *Server) handleRunAnalysisSubjects(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	analysisPath := filepath.Join(s.outputRoot, "runs", runID, "analysis", "analysis_report.json")
+	if data, err := os.ReadFile(analysisPath); err == nil {
+		var report contracts.AnalysisReport
+		if json.Unmarshal(data, &report) == nil {
+			writeJSON(w, http.StatusOK, report.Subjects)
+			return
+		}
+	}
+	evalPath := filepath.Join(s.outputRoot, "runs", runID, "evaluation", "evaluation_result.json")
+	var eval contracts.EvaluationResultSet
+	data, err := os.ReadFile(evalPath)
+	if err != nil || json.Unmarshal(data, &eval) != nil {
+		errJSON(w, http.StatusNotFound, "evaluation not available yet")
+		return
+	}
+	subjects := make([]contracts.AnalysisSubject, 0, len(eval.Results))
+	for _, res := range eval.Results {
+		subjects = append(subjects, contracts.AnalysisSubject{
+			SubjectID:      firstNonEmptyString(res.SubjectID, res.Model),
+			Model:          res.Model,
+			AgentFramework: res.AgentFramework,
+			AgentModel:     res.AgentModel,
+			SkillName:      res.SkillName,
+			Language:       res.Language,
+			SampleID:       res.SampleID,
+			CompilePass:    res.CompilePass,
+			TestPass:       res.TestPass,
+			LineCoverage:   res.LineCoverage,
+			MutationScore:  res.MutationScore,
+		})
+	}
+	writeJSON(w, http.StatusOK, subjects)
 }
 
 func (s *Server) handleRunOptimizationPlan(w http.ResponseWriter, r *http.Request, runID string) {

@@ -4,6 +4,7 @@ import "time"
 
 const AnalysisSchemaVersion = "analysis.v0.1.1"
 const OptimizationPlanSchemaVersion = "optimization_plan.v0.1.0"
+const AnalysisChatSessionSchemaVersion = "analysis_chat.v0.1.0"
 
 // AnalysisReport 是一次 run 的规则诊断与 LLM 诊断报告。
 type AnalysisReport struct {
@@ -11,6 +12,7 @@ type AnalysisReport struct {
 	RunID           string                   `json:"run_id"`
 	GeneratedAt     time.Time                `json:"generated_at"`
 	SourceFiles     AnalysisSourceFiles      `json:"source_files"`
+	Selection       AnalysisSelection        `json:"selection,omitempty"`
 	LLMStatus       LLMAnalysisStatus        `json:"llm_status"`
 	Summary         AnalysisSummary          `json:"summary"`
 	TraceQuality    AnalysisTraceQuality     `json:"trace_quality"`
@@ -24,6 +26,17 @@ type AnalysisSourceFiles struct {
 	ManifestPath   string `json:"manifest_path,omitempty"`
 	EvaluationPath string `json:"evaluation_path,omitempty"`
 	ReportPath     string `json:"report_path,omitempty"`
+}
+
+type AnalysisSelection struct {
+	SelectedSubjects []AnalysisSubjectSelector `json:"selected_subjects,omitempty"`
+	CompareMode      bool                      `json:"compare_mode,omitempty"`
+}
+
+type AnalysisSubjectSelector struct {
+	SubjectID string `json:"subject_id"`
+	SampleID  string `json:"sample_id"`
+	Language  string `json:"language"`
 }
 
 type AnalysisSummary struct {
@@ -148,6 +161,30 @@ type LLMAnalysisResult struct {
 	Findings        []AnalysisFinding        `json:"findings,omitempty"`
 	Recommendations []AnalysisRecommendation `json:"recommendations,omitempty"`
 	Error           string                   `json:"error,omitempty"`
+}
+
+// AnalysisChatSession 保存 AI 分析工作台里的追问会话。
+type AnalysisChatSession struct {
+	SchemaVersion    string                    `json:"schema_version"`
+	SessionID        string                    `json:"session_id"`
+	RunID            string                    `json:"run_id"`
+	CreatedAt        time.Time                 `json:"created_at"`
+	UpdatedAt        time.Time                 `json:"updated_at"`
+	Title            string                    `json:"title,omitempty"`
+	LLMModel         string                    `json:"llm_model,omitempty"`
+	SelectedSubjects []AnalysisSubjectSelector `json:"selected_subjects,omitempty"`
+	Messages         []AnalysisChatMessage     `json:"messages,omitempty"`
+}
+
+type AnalysisChatMessage struct {
+	MessageID        string                    `json:"message_id"`
+	Role             string                    `json:"role"`
+	Content          string                    `json:"content"`
+	Status           string                    `json:"status,omitempty"`
+	Error            string                    `json:"error,omitempty"`
+	CreatedAt        time.Time                 `json:"created_at"`
+	ElapsedMS        int64                     `json:"elapsed_ms,omitempty"`
+	SelectedSubjects []AnalysisSubjectSelector `json:"selected_subjects,omitempty"`
 }
 
 // OptimizationPlan 是从 AI 分析报告生成的可人工执行优化方案。

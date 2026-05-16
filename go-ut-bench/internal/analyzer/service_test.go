@@ -42,6 +42,20 @@ func (fakeLLM) Analyze(ctx context.Context, req LLMRequest) (contracts.LLMAnalys
 	}, nil
 }
 
+type captureLLM struct {
+	prompt string
+}
+
+func (c *captureLLM) Analyze(ctx context.Context, req LLMRequest) (contracts.LLMAnalysisResult, error) {
+	c.prompt = req.Prompt
+	return contracts.LLMAnalysisResult{
+		Model:     "fake",
+		Status:    "ok",
+		Summary:   "ok",
+		RawOutput: `{"summary":"ok","findings":[],"recommendations":[]}`,
+	}, nil
+}
+
 func TestAnalyzeRulesAndLLMWritesEvidenceArtifacts(t *testing.T) {
 	root := t.TempDir()
 	runID := "run-test"
@@ -192,6 +206,131 @@ func TestAnalyzeWithoutLLMStillWritesRules(t *testing.T) {
 	}
 	if !hasFinding(report.Findings, "compile") {
 		t.Fatalf("compile finding missing: %+v", report.Findings)
+	}
+}
+
+func TestAnalyzeSelectedHealthySubjectIncludedInEvidence(t *testing.T) {
+	root := t.TempDir()
+	runID := "run-selected"
+	runDir := filepath.Join(root, "runs", runID)
+	ok := true
+	cov := 0.95
+	mut := 0.9
+	eval := contracts.EvaluationResultSet{
+		SchemaVersion:  contracts.SchemaVersion,
+		RunID:          runID,
+		EvaluatedAtUTC: time.Now().UTC(),
+		Results: []contracts.EvaluationResult{{
+			Model:         "agent-a",
+			SubjectID:     "agent-a",
+			Language:      "python",
+			SampleID:      "sample-a",
+			CompilePass:   true,
+			TestPass:      &ok,
+			LineCoverage:  &cov,
+			MutationScore: &mut,
+		}, {
+			Model:        "agent-b",
+			SubjectID:    "agent-b",
+			Language:     "python",
+			SampleID:     "sample-b",
+			CompilePass:  false,
+			CompileError: "boom",
+		}},
+	}
+	if err := contracts.WriteJSON(filepath.Join(runDir, "evaluation", "evaluation_result.json"), eval); err != nil {
+		t.Fatal(err)
+	}
+	llm := &captureLLM{}
+	report, err := NewServiceWithLLM(llm).Analyze(context.Background(), Options{
+		RunID:      runID,
+		OutputRoot: root,
+		LLMEnabled: true,
+		Force:      true,
+		SelectedSubjects: []contracts.AnalysisSubjectSelector{{
+			SubjectID: "agent-a",
+			SampleID:  "sample-a",
+			Language:  "python",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Selection.SelectedSubjects) != 1 {
+		t.Fatalf("selection missing: %+v", report.Selection)
+	}
+	var bundle LLMEvidenceBundle
+	raw, err := os.ReadFile(filepath.Join(runDir, "analysis", "llm_evidence_bundle.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Subjects) != 1 || bundle.Subjects[0].SubjectID != "agent-a" {
+		t.Fatalf("selected subject not focused in bundle: %+v", bundle.Subjects)
+	}
+	if !strings.Contains(strings.Join(bundle.Subjects[0].SelectedReason, ","), "user_selected") {
+		t.Fatalf("selected reason missing: %+v", bundle.Subjects[0].SelectedReason)
+	}
+}
+
+func TestAnalyzeCompareSelectionPromptAndMissingSubject(t *testing.T) {
+	root := t.TempDir()
+	runID := "run-compare"
+	runDir := filepath.Join(root, "runs", runID)
+	eval := contracts.EvaluationResultSet{
+		SchemaVersion:  contracts.SchemaVersion,
+		RunID:          runID,
+		EvaluatedAtUTC: time.Now().UTC(),
+		Results: []contracts.EvaluationResult{{
+			Model:       "agent-a",
+			SubjectID:   "agent-a",
+			Language:    "go",
+			SampleID:    "sample",
+			CompilePass: true,
+		}, {
+			Model:       "agent-b",
+			SubjectID:   "agent-b",
+			Language:    "go",
+			SampleID:    "sample",
+			CompilePass: true,
+		}},
+	}
+	if err := contracts.WriteJSON(filepath.Join(runDir, "evaluation", "evaluation_result.json"), eval); err != nil {
+		t.Fatal(err)
+	}
+	llm := &captureLLM{}
+	_, err := NewServiceWithLLM(llm).Analyze(context.Background(), Options{
+		RunID:       runID,
+		OutputRoot:  root,
+		LLMEnabled:  true,
+		Force:       true,
+		CompareMode: true,
+		SelectedSubjects: []contracts.AnalysisSubjectSelector{
+			{SubjectID: "agent-a", SampleID: "sample", Language: "go"},
+			{SubjectID: "agent-b", SampleID: "sample", Language: "go"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(llm.prompt, "横向对比") {
+		t.Fatalf("compare prompt missing: %s", llm.prompt)
+	}
+	_, err = NewServiceWithLLM(&captureLLM{}).Analyze(context.Background(), Options{
+		RunID:      runID,
+		OutputRoot: root,
+		LLMEnabled: true,
+		Force:      true,
+		SelectedSubjects: []contracts.AnalysisSubjectSelector{{
+			SubjectID: "missing",
+			SampleID:  "sample",
+			Language:  "go",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "selected subject not found") {
+		t.Fatalf("expected selected subject error, got %v", err)
 	}
 }
 

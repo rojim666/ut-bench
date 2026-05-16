@@ -2,11 +2,10 @@
 #
 # Purpose:
 # - Run CLI agents such as Codex, Claude Code, OpenCode, and CodeBuddy.
-# - Keep this image focused on generation-time tools so "Install Agent CLI"
-#   is fast and is not blocked by evaluator toolchain packages.
+# - Includes Go/Java/C++ compilers so agents can compile-verify generated tests.
 #
-# Evaluation compilers, coverage tools, and mutation tools live in the main
-# evaluator image built from the repository root Dockerfile.
+# Coverage, mutation, and full evaluation toolchains live in the main evaluator
+# image built from the repository root Dockerfile.
 
 FROM node:22-bookworm-slim AS agent-clis
 
@@ -72,16 +71,53 @@ RUN set -eux; \
         ripgrep \
         curl \
         wget \
-        unzip \
+        unzip; \
+      apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         python3-pytest \
-        python-is-python3 \
-      || echo "warning: optional agent helper tools failed to install; CLI runtime remains usable"; \
+        g++ \
+        cmake \
+        libgtest-dev \
+        default-jdk \
+        maven; \
+      if [ -d /usr/src/gtest ]; then \
+        cd /usr/src/gtest && cmake . && make && cp lib/*.a /usr/lib/; \
+      fi; \
     else \
-      echo "warning: apt update failed; skipping optional agent helper tools"; \
+      echo "ERROR: apt update failed; cannot install required toolchains"; \
+      exit 1; \
     fi; \
     rm -rf /var/lib/apt/lists/*
+
+# Install Go (same version as main evaluator image).
+# Download method cascades through curl, wget, and Node.js fetch so that the
+# build never depends on a single binary being present.
+ARG GO_VERSION=1.24.2
+RUN set -eux; \
+    tarball="go${GO_VERSION}.linux-amd64.tar.gz"; \
+    dest="/tmp/go.tar.gz"; \
+    urls="https://go.dev/dl/${tarball} https://dl.google.com/go/${tarball} https://mirrors.aliyun.com/golang/${tarball}"; \
+    downloaded=0; \
+    for url in ${urls}; do \
+      echo "Trying ${url}"; \
+      if command -v curl >/dev/null 2>&1 && curl -fL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o "${dest}" "${url}"; then \
+        downloaded=1; break; \
+      fi; \
+      if command -v wget >/dev/null 2>&1 && wget -q --tries=5 --timeout=20 -O "${dest}" "${url}"; then \
+        downloaded=1; break; \
+      fi; \
+      if node -e "const fs=require('fs'),h=require('https');function dl(u){h.get(u,r=>{if(r.statusCode>=300&&r.statusCode<400&&r.headers.location){return dl(r.headers.location)}const f=fs.createWriteStream('${dest}');r.pipe(f);f.on('finish',()=>process.exit(0))}).on('error',()=>process.exit(1))}dl('${url}')" 2>/dev/null && [ -s "${dest}" ]; then \
+        downloaded=1; break; \
+      fi; \
+      rm -f "${dest}"; \
+    done; \
+    if [ "${downloaded}" -ne 1 ]; then echo "ERROR: failed to download Go from all mirrors" && exit 1; fi; \
+    rm -rf /usr/local/go; \
+    tar -C /usr/local -xzf "${dest}"; \
+    rm "${dest}"
+ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+ENV GOPROXY=https://goproxy.cn,direct
 
 RUN useradd -m -s /bin/bash agent \
     && mkdir -p /home/agent/.npm /home/agent/.cache /workspace \

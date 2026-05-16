@@ -191,6 +191,18 @@
     optimizationGenerating: false,
     analysisOptions: { llm_enabled: true, llm_model: '', force: true },
     analysisFilters: { source: '', severity: '', category: '', subject: '' },
+    analysisSubjectOptions: [],
+    analysisSelection: [],
+    analysisShowSelectedOnly: false,
+    analysisJob: null,
+    analysisJobTimer: null,
+    analysisChatSessions: [],
+    analysisChatSession: null,
+    analysisChatInput: '',
+    analysisChatStreaming: false,
+    analysisChatError: '',
+    analysisChatController: null,
+    analysisChatForceNew: false,
     detailTab: 'logs',
     sseSource: null,
     runActionBusy: '',
@@ -3207,7 +3219,17 @@
     },
 
     async openRun(runId) {
+      this.stopAnalysisJobPolling()
+      this.stopAnalysisChatStream()
       this.stopSSE(); this.currentReport = null; this.currentAnalysis = null; this.currentOptimizationPlan = null; this.currentLogs = []; this._logCount = 0; this.detailTab = 'logs'
+      this.analysisSelection = []
+      this.analysisShowSelectedOnly = false
+      this.analysisJob = null
+      this.analysisChatSessions = []
+      this.analysisChatSession = null
+      this.analysisChatInput = ''
+      this.analysisChatError = ''
+      this.analysisChatForceNew = false
       this._resetLogPre()
       this.page = 'run-detail'
       this.syncPageVisibility()
@@ -3318,6 +3340,12 @@
     },
 
     stopSSE() { if (this.sseSource) { this.sseSource.close(); this.sseSource = null } },
+    stopAnalysisJobPolling() {
+      if (this.analysisJobTimer) {
+        clearTimeout(this.analysisJobTimer)
+        this.analysisJobTimer = null
+      }
+    },
 
     async refreshDetail() {
       if (!this.currentRun) return
@@ -3345,9 +3373,12 @@
         const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis`, { cache: 'no-store' })
         if (r.ok) {
           this.currentAnalysis = await r.json()
+          this.analysisSubjectOptions = this.currentAnalysis.subjects || []
           await this.loadOptimizationPlan(false)
+          await this.loadAnalysisChatSessions(false)
           return
         }
+        await this.loadAnalysisSubjects()
         if (showMissing && r.status !== 404) {
           const data = await r.json().catch(() => ({}))
           this.showToast('加载分析失败：' + (data.error || 'HTTP ' + r.status), 'err')
@@ -3360,27 +3391,236 @@
     async generateAnalysis(force = true) {
       if (!this.currentRun) return
       this.analysisGenerating = true
+      this.analysisJob = { status: 'queued', phase: '排队中', selected_count: this.analysisSelection.length, elapsed_ms: 0 }
       try {
         const body = {
           llm_enabled: !!this.analysisOptions.llm_enabled,
           llm_model: this.analysisOptions.llm_model || '',
           force,
+          selected_subjects: this.selectedAnalysisSubjectsPayload(),
+          compare_mode: this.analysisSelection.length > 1,
         }
-        const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis`, {
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/jobs`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         })
         const data = await r.json()
         if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
-        this.currentAnalysis = data
-        this.currentOptimizationPlan = null
-        this.showToast('AI 分析已生成', data.llm_status?.status === 'degraded' ? 'warn' : 'ok')
+        this.analysisJob = data
+        await this.pollAnalysisJob(data.job_id)
       } catch(e) {
         this.showToast('生成分析失败：' + (e.message || String(e)), 'err', 6000)
-      } finally {
+        if (this.analysisJob) this.analysisJob = { ...this.analysisJob, status: 'failed', error: e.message || String(e) }
         this.analysisGenerating = false
+      } finally {
+        this.stopAnalysisJobPolling()
       }
+    },
+
+    async loadAnalysisSubjects() {
+      if (!this.currentRun) return
+      const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/subjects`, { cache: 'no-store' })
+      if (r.ok) {
+        this.analysisSubjectOptions = await r.json()
+      }
+    },
+
+    async pollAnalysisJob(jobId) {
+      if (!this.currentRun || !jobId) return
+      while (this.currentRun && this.analysisGenerating) {
+        try {
+          const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/jobs/${jobId}`, { cache: 'no-store' })
+          const data = await r.json()
+          if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+          this.analysisJob = data
+          if (data.status === 'succeeded') {
+            this.currentAnalysis = data.report
+            this.currentOptimizationPlan = null
+            await this.loadAnalysisChatSessions(false)
+            this.analysisGenerating = false
+            this.showToast('AI 分析已生成', data.report?.llm_status?.status === 'degraded' ? 'warn' : 'ok')
+            return
+          }
+          if (data.status === 'failed') {
+            this.analysisGenerating = false
+            this.showToast('生成分析失败：' + (data.error || '未知错误'), 'err', 6000)
+            return
+          }
+          await new Promise(resolve => { this.analysisJobTimer = setTimeout(resolve, 900) })
+          this.analysisJobTimer = null
+        } catch (e) {
+          this.analysisGenerating = false
+          this.showToast('分析状态读取失败：' + (e.message || String(e)), 'err', 6000)
+          return
+        }
+      }
+    },
+
+    async loadAnalysisChatSessions(selectMatching = true) {
+      if (!this.currentRun) return
+      const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/chat/sessions`, { cache: 'no-store' })
+      if (!r.ok) return
+      this.analysisChatSessions = await r.json()
+      if (!selectMatching) return
+      if (this.analysisChatSession && this.analysisChatSessions.some(s => s.session_id === this.analysisChatSession.session_id)) return
+      const selectionKey = this.analysisSelectionKey(this.selectedAnalysisSubjectsPayload())
+      this.analysisChatSession = this.analysisChatSessions.find(s => this.analysisSelectionKey(s.selected_subjects || []) === selectionKey) || this.analysisChatSessions[0] || null
+    },
+
+    async loadAnalysisChatSession(sessionId) {
+      if (!this.currentRun || !sessionId) return null
+      const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/chat/sessions/${sessionId}`, { cache: 'no-store' })
+      if (!r.ok) return null
+      const session = await r.json()
+      this.analysisChatSession = session
+      this.analysisChatForceNew = false
+      const idx = this.analysisChatSessions.findIndex(s => s.session_id === session.session_id)
+      if (idx >= 0) this.analysisChatSessions.splice(idx, 1, session)
+      else this.analysisChatSessions.unshift(session)
+      return session
+    },
+
+    async ensureAnalysisChatSession() {
+      if (!this.currentRun || !this.currentAnalysis) {
+        this.showToast('请先生成 AI 分析报告，再追问助手', 'warn', 5000)
+        return null
+      }
+      const selected = this.selectedAnalysisSubjectsPayload()
+      const selectionKey = this.analysisSelectionKey(selected)
+      const forceNew = !!this.analysisChatForceNew
+      if (!forceNew && this.analysisChatSession && this.analysisSelectionKey(this.analysisChatSession.selected_subjects || []) === selectionKey) {
+        return this.analysisChatSession
+      }
+      const existing = !forceNew && this.analysisChatSessions.find(s => this.analysisSelectionKey(s.selected_subjects || []) === selectionKey)
+      if (existing) {
+        this.analysisChatSession = await this.loadAnalysisChatSession(existing.session_id) || existing
+        return this.analysisChatSession
+      }
+      const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/chat/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selected_subjects: selected, llm_model: this.analysisOptions.llm_model || '' }),
+      })
+      const data = await r.json()
+      if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+      this.analysisChatSession = data
+      this.analysisChatSessions.unshift(data)
+      this.analysisChatForceNew = false
+      return data
+    },
+
+    async sendAnalysisChatMessage() {
+      if (this.analysisChatStreaming) return
+      const content = (this.analysisChatInput || '').trim()
+      if (!content) return
+      this.analysisChatError = ''
+      let session
+      try {
+        session = await this.ensureAnalysisChatSession()
+      } catch (e) {
+        this.showToast('创建追问会话失败：' + (e.message || String(e)), 'err', 6000)
+        return
+      }
+      if (!session) return
+      const localUser = {
+        message_id: 'local-user-' + Date.now(),
+        role: 'user',
+        content,
+        status: 'succeeded',
+        created_at: new Date().toISOString(),
+        selected_subjects: session.selected_subjects || [],
+      }
+      const localAssistant = {
+        message_id: 'local-assistant-' + Date.now(),
+        role: 'assistant',
+        content: '',
+        status: 'running',
+        created_at: new Date().toISOString(),
+        selected_subjects: session.selected_subjects || [],
+      }
+      this.analysisChatSession.messages = [...(this.analysisChatSession.messages || []), localUser, localAssistant]
+      this.analysisChatInput = ''
+      this.analysisChatStreaming = true
+      this.analysisChatController = new AbortController()
+      try {
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/chat/sessions/${session.session_id}/messages:stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content, llm_model: this.analysisOptions.llm_model || '' }),
+          signal: this.analysisChatController.signal,
+        })
+        if (!r.ok || !r.body) {
+          const data = await r.json().catch(() => ({}))
+          throw new Error(data.error || 'HTTP ' + r.status)
+        }
+        await this.readAnalysisChatStream(r.body, localAssistant)
+        await this.loadAnalysisChatSession(session.session_id)
+      } catch (e) {
+        if (e.name === 'AbortError') {
+          localAssistant.status = 'stopped'
+          localAssistant.error = '已停止生成'
+          await this.loadAnalysisChatSession(session.session_id).catch(() => null)
+        } else {
+          localAssistant.status = 'failed'
+          localAssistant.error = e.message || String(e)
+          this.analysisChatError = localAssistant.error
+        }
+      } finally {
+        this.analysisChatStreaming = false
+        this.analysisChatController = null
+      }
+    },
+
+    async readAnalysisChatStream(body, assistantMsg) {
+      const reader = body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let idx
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, idx)
+          buffer = buffer.slice(idx + 2)
+          this.handleAnalysisChatSSEBlock(block, assistantMsg)
+        }
+      }
+      if (buffer.trim()) this.handleAnalysisChatSSEBlock(buffer, assistantMsg)
+    },
+
+    handleAnalysisChatSSEBlock(block, assistantMsg) {
+      const lines = block.split(/\r?\n/)
+      let event = 'message'
+      let data = ''
+      lines.forEach(line => {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        if (line.startsWith('data:')) data += line.slice(5).trim()
+      })
+      if (!data) return
+      let payload = {}
+      try { payload = JSON.parse(data) } catch { payload = { text: data } }
+      if (event === 'message_start' && payload.message_id) {
+        assistantMsg.message_id = payload.message_id
+      } else if (event === 'delta') {
+        assistantMsg.content += payload.text || ''
+      } else if (event === 'message_end') {
+        assistantMsg.status = 'succeeded'
+        assistantMsg.elapsed_ms = payload.elapsed_ms
+      } else if (event === 'error') {
+        assistantMsg.status = 'failed'
+        assistantMsg.error = payload.error || 'LLM 生成失败'
+        this.analysisChatError = assistantMsg.error
+      }
+    },
+
+    stopAnalysisChatStream() {
+      if (this.analysisChatController) {
+        try { this.analysisChatController.abort() } catch {}
+      }
+      this.analysisChatController = null
+      this.analysisChatStreaming = false
     },
 
     async loadOptimizationPlan(showMissing = false) {
@@ -3500,6 +3740,154 @@
     metricPct(v) {
       if (v == null) return '—'
       return (v > 1 ? v : v * 100).toFixed(1) + '%'
+    },
+    analysisSubjectKey(s) {
+      return [s?.subject_id || '', s?.sample_id || '', s?.language || ''].join('\u0000')
+    },
+    analysisSelectionKey(items) {
+      return (items || []).map(s => this.analysisSubjectKey(s)).sort().join('\u0001')
+    },
+    analysisSubjectRows() {
+      let rows = this.analysisSubjectOptions?.length ? this.analysisSubjectOptions : (this.currentAnalysis?.subjects || [])
+      if (this.analysisShowSelectedOnly) {
+        rows = rows.filter(s => this.isAnalysisSubjectSelected(s))
+      }
+      return rows
+    },
+    isAnalysisSubjectSelected(s) {
+      const key = this.analysisSubjectKey(s)
+      return (this.analysisSelection || []).some(x => this.analysisSubjectKey(x) === key)
+    },
+    toggleAnalysisSubject(s) {
+      const key = this.analysisSubjectKey(s)
+      const idx = this.analysisSelection.findIndex(x => this.analysisSubjectKey(x) === key)
+      if (idx >= 0) {
+        this.analysisSelection.splice(idx, 1)
+        this.resetAnalysisChatContext()
+        return
+      }
+      if (this.analysisSelection.length >= 3) {
+        this.showToast('最多选择 3 个对象做横向对比', 'warn', 4000)
+        return
+      }
+      this.analysisSelection.push({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language })
+      this.resetAnalysisChatContext()
+    },
+    selectedAnalysisSubjectsPayload() {
+      return (this.analysisSelection || []).map(s => ({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language }))
+    },
+    clearAnalysisSelection() {
+      this.analysisSelection = []
+      this.analysisShowSelectedOnly = false
+      this.resetAnalysisChatContext()
+    },
+    selectRecommendedAnalysisSubjects() {
+      const rows = this.analysisSubjectOptions?.length ? this.analysisSubjectOptions : (this.currentAnalysis?.subjects || [])
+      const ranked = [...rows].sort((a, b) => this.analysisSubjectRiskRank(b) - this.analysisSubjectRiskRank(a))
+      this.analysisSelection = ranked.filter(s => this.analysisSubjectRiskRank(s) > 0).slice(0, 3).map(s => ({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language }))
+      this.resetAnalysisChatContext()
+      if (!this.analysisSelection.length) this.showToast('当前没有明显问题项可推荐', 'warn', 4000)
+    },
+    selectBestWorstAnalysisSubjects() {
+      const rows = this.analysisSubjectOptions?.length ? this.analysisSubjectOptions : (this.currentAnalysis?.subjects || [])
+      if (rows.length < 2) {
+        this.showToast('至少需要 2 个对象才能做最好+最差对比', 'warn', 4000)
+        return
+      }
+      const ranked = [...rows].sort((a, b) => this.analysisSubjectQualityScore(b) - this.analysisSubjectQualityScore(a))
+      const picked = [ranked[0], ranked[ranked.length - 1]]
+      this.analysisSelection = picked.filter(Boolean).map(s => ({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language }))
+      this.resetAnalysisChatContext()
+    },
+    selectSameSampleComparison() {
+      const rows = this.analysisSubjectOptions?.length ? this.analysisSubjectOptions : (this.currentAnalysis?.subjects || [])
+      const groups = new Map()
+      rows.forEach(s => {
+        const key = `${s.sample_id || ''}\u0000${s.language || ''}`
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(s)
+      })
+      let bestGroup = []
+      groups.forEach(group => {
+        if (group.length > bestGroup.length) bestGroup = group
+      })
+      if (bestGroup.length < 2) {
+        this.showToast('没有找到同一样本下可对比的多个 Agent', 'warn', 4000)
+        return
+      }
+      const ranked = [...bestGroup].sort((a, b) => this.analysisSubjectRiskRank(b) - this.analysisSubjectRiskRank(a))
+      this.analysisSelection = ranked.slice(0, 3).map(s => ({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language }))
+      this.resetAnalysisChatContext()
+    },
+    resetAnalysisChatContext() {
+      this.analysisChatSession = null
+      this.analysisChatError = ''
+      this.analysisChatForceNew = false
+    },
+    startNewAnalysisChatSession() {
+      if (this.analysisChatStreaming) return
+      this.analysisChatSession = null
+      this.analysisChatInput = ''
+      this.analysisChatError = ''
+      this.analysisChatForceNew = true
+    },
+    analysisSubjectRiskRank(s) {
+      let score = 0
+      if (!s.compile_pass) score += 100
+      if (s.test_pass === false || s.test_pass == null) score += 60
+      if (s.mutation_score == null || this.metricNumber(s.mutation_score) < 60) score += 30
+      if (s.line_coverage != null && this.metricNumber(s.line_coverage) < 70) score += 20
+      if ((s.trace_step_count || 0) === 0) score += 10
+      return score
+    },
+    analysisSubjectQualityScore(s) {
+      let score = 0
+      if (s.compile_pass) score += 100
+      if (s.test_pass === true) score += 100
+      if (s.test_pass === false) score -= 40
+      const mutation = this.metricNumber(s.mutation_score)
+      const coverage = this.metricNumber(s.line_coverage)
+      if (mutation != null) score += mutation
+      if (coverage != null) score += coverage * 0.7
+      if (s.has_source_read) score += 10
+      if (s.has_test_write) score += 10
+      if (s.has_test_execution) score += 15
+      if (s.modified_source) score -= 80
+      score -= (s.policy_command_count || 0) * 8
+      score -= (s.runtime_noise_count || 0) * 2
+      return score
+    },
+    metricNumber(v) {
+      if (v == null) return null
+      return v > 1 ? v : v * 100
+    },
+    analysisSelectionLabel() {
+      if (!this.analysisSelection.length) return '未手动选择，将自动挑选代表性问题项'
+      return this.analysisSelection.map(s => `${s.subject_id} / ${s.sample_id} / ${s.language}`).join('；')
+    },
+    analysisChatSelectionLabel(session = null) {
+      const items = session?.selected_subjects || this.selectedAnalysisSubjectsPayload()
+      if (!items.length) return '当前上下文：自动/全局分析报告'
+      return '当前上下文：' + items.map(s => `${s.subject_id} / ${s.sample_id} / ${s.language}`).join('；')
+    },
+    analysisChatMessages() {
+      return this.analysisChatSession?.messages || []
+    },
+    selectedAnalysisReportSubjects() {
+      const selected = this.currentAnalysis?.selection?.selected_subjects || []
+      if (!selected.length) return this.currentAnalysis?.subjects || []
+      const keys = new Set(selected.map(s => this.analysisSubjectKey(s)))
+      return (this.currentAnalysis?.subjects || []).filter(s => keys.has(this.analysisSubjectKey(s)))
+    },
+    isAnalysisSubjectInReportSelection(s) {
+      return (this.currentAnalysis?.selection?.selected_subjects || []).some(x => this.analysisSubjectKey(x) === this.analysisSubjectKey(s))
+    },
+    analysisJobPhaseLabel() {
+      if (!this.analysisJob) return ''
+      const parts = [this.analysisJob.phase || this.analysisJob.status || '运行中']
+      if (this.analysisJob.elapsed_ms != null) parts.push(this.fmtMs(this.analysisJob.elapsed_ms))
+      parts.push(`已选 ${this.analysisJob.selected_count || 0} 项`)
+      return parts.join(' · ')
     },
     analysisModels() {
       return (this.config?.models || this.models || []).filter(m => m.enabled !== false).map(m => m.name)
