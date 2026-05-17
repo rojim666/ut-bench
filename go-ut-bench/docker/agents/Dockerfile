@@ -157,7 +157,9 @@ RUN set -eux; \
     if [ "${downloaded}" -ne 1 ]; then echo "ERROR: failed to download Go from all mirrors" && exit 1; fi; \
     rm -rf /usr/local/go; \
     tar -C /usr/local -xzf "${dest}"; \
-    rm "${dest}"
+    rm "${dest}"; \
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go; \
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 ENV GOPROXY=https://goproxy.cn,direct
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64

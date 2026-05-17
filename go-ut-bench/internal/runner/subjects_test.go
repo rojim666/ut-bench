@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -396,6 +397,34 @@ func TestInjectAgentNativeSkillForClaudeCodeRenamesInstructionToSkillMD(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(dest, "references", "checklist.md")); err != nil {
 		t.Fatalf("expected copied references dir to exist: %v", err)
+	}
+}
+
+func TestCopyFileNormalizesShellScriptLineEndingsAndPreservesMode(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "push_trace_data.sh")
+	dst := filepath.Join(tmp, "out", "push_trace_data.sh")
+	if err := os.WriteFile(src, []byte("#!/usr/bin/env bash\r\n\r\necho ok\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(src, dst); err != nil {
+		t.Fatalf("copyFile returned error: %v", err)
+	}
+	raw, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "\r") {
+		t.Fatalf("expected CRLF to be normalized, got %q", string(raw))
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			t.Fatalf("expected executable bits to be preserved, got mode %v", info.Mode().Perm())
+		}
 	}
 }
 

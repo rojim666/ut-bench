@@ -26,17 +26,23 @@ type subjectTrace struct {
 	SandboxProvider    string
 	SandboxFingerprint string
 	TokenSource        string
+	RawInputTokens     *int
+	CacheReadTokens    *int
+	CacheCreateTokens  *int
 	EstimatedCostUSD   *float64
 	CostSource         string
 }
 
 // agentTraceSummary 封装从 AgentTrace 中提取的摘要信息，用于运行时显示。
 type agentTraceSummary struct {
-	InteractionCount int
-	ToolCallCount    int
-	FilesRead        int
-	FilesWritten     int
-	CommandsExecuted int
+	InteractionCount  int
+	ToolCallCount     int
+	FilesRead         int
+	FilesWritten      int
+	CommandsExecuted  int
+	RawInputTokens    int
+	CacheReadTokens   int
+	CacheCreateTokens int
 }
 
 type commandTemplateData struct {
@@ -170,6 +176,9 @@ func (s *Service) generateWithSubject(
 		"prompt_tokens", result.PromptTokens,
 		"completion_tokens", result.CompletionTokens,
 		"total_tokens", result.TotalTokens,
+		"raw_input_tokens", result.RawInputTokens,
+		"cache_read_input_tokens", result.CacheReadTokens,
+		"cache_creation_input_tokens", result.CacheCreateTokens,
 		"latency_ms", result.LatencyMS,
 		"truncated", result.Truncated,
 		"interaction_count", result.Trace.InteractionCount,
@@ -189,6 +198,9 @@ func (s *Service) generateWithSubject(
 		SandboxProvider:    result.Trace.SandboxProvider,
 		SandboxFingerprint: result.Trace.SandboxFingerprint,
 		TokenSource:        result.TokenSource,
+		RawInputTokens:     result.RawInputTokens,
+		CacheReadTokens:    result.CacheReadTokens,
+		CacheCreateTokens:  result.CacheCreateTokens,
 		EstimatedCostUSD:   result.EstimatedCostUSD,
 		CostSource:         result.CostSource,
 	}
@@ -199,6 +211,15 @@ func (s *Service) generateWithSubject(
 		FilesRead:        len(result.Trace.FilesRead),
 		FilesWritten:     len(result.Trace.FilesWritten),
 		CommandsExecuted: len(result.Trace.CommandsExecuted),
+	}
+	if result.RawInputTokens != nil {
+		summary.RawInputTokens = *result.RawInputTokens
+	}
+	if result.CacheReadTokens != nil {
+		summary.CacheReadTokens = *result.CacheReadTokens
+	}
+	if result.CacheCreateTokens != nil {
+		summary.CacheCreateTokens = *result.CacheCreateTokens
 	}
 
 	return result.Code, result.RawResponse, trace, result.LatencyMS,

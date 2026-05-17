@@ -328,6 +328,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		"session_id":          trace.SessionID,
 		"session_export_path": trace.SessionExportPath,
 	}
+	addTokenAccountingToMap(rawResponse, trace)
 	if trace.SessionExportError != "" {
 		rawResponse["session_export_error"] = trace.SessionExportError
 	}
@@ -336,9 +337,18 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	if runErr != nil {
 		_ = writeAgentTrajectory(trajectoryPath, trace, "", fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000)), runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
-			RawResponse: rawResponse,
-			Trace:       trace,
-			LatencyMS:   latency,
+			RawResponse:       rawResponse,
+			Trace:             trace,
+			LatencyMS:         latency,
+			PromptTokens:      trace.PromptTokens,
+			CompletionTokens:  trace.CompletionTokens,
+			TotalTokens:       trace.TotalTokens,
+			RawInputTokens:    trace.RawInputTokens,
+			CacheReadTokens:   trace.CacheReadTokens,
+			CacheCreateTokens: trace.CacheCreateTokens,
+			TokenSource:       trace.TokenSource,
+			EstimatedCostUSD:  trace.EstimatedCost,
+			CostSource:        trace.CostSource,
 			Error: &contracts.ErrorInfo{
 				Kind:      "agent_execution_error",
 				Message:   fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000)),
@@ -352,9 +362,18 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		rawResponse["policy_violation"] = violation
 		_ = writeAgentTrajectory(trajectoryPath, trace, "", violation, runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
-			RawResponse: rawResponse,
-			Trace:       trace,
-			LatencyMS:   latency,
+			RawResponse:       rawResponse,
+			Trace:             trace,
+			LatencyMS:         latency,
+			PromptTokens:      trace.PromptTokens,
+			CompletionTokens:  trace.CompletionTokens,
+			TotalTokens:       trace.TotalTokens,
+			RawInputTokens:    trace.RawInputTokens,
+			CacheReadTokens:   trace.CacheReadTokens,
+			CacheCreateTokens: trace.CacheCreateTokens,
+			TokenSource:       trace.TokenSource,
+			EstimatedCostUSD:  trace.EstimatedCost,
+			CostSource:        trace.CostSource,
 			Error: &contracts.ErrorInfo{
 				Kind:      "sandbox_policy_error",
 				Message:   violation,
@@ -368,9 +387,18 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	if generatedPath == "" {
 		_ = writeAgentTrajectory(trajectoryPath, trace, "", "agent did not produce a test file", runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
-			RawResponse: rawResponse,
-			Trace:       trace,
-			LatencyMS:   latency,
+			RawResponse:       rawResponse,
+			Trace:             trace,
+			LatencyMS:         latency,
+			PromptTokens:      trace.PromptTokens,
+			CompletionTokens:  trace.CompletionTokens,
+			TotalTokens:       trace.TotalTokens,
+			RawInputTokens:    trace.RawInputTokens,
+			CacheReadTokens:   trace.CacheReadTokens,
+			CacheCreateTokens: trace.CacheCreateTokens,
+			TokenSource:       trace.TokenSource,
+			EstimatedCostUSD:  trace.EstimatedCost,
+			CostSource:        trace.CostSource,
 			Error: &contracts.ErrorInfo{
 				Kind:      "agent_output_error",
 				Message:   "agent did not produce a test file",
@@ -383,10 +411,19 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	if err != nil {
 		_ = writeAgentTrajectory(trajectoryPath, trace, "", err.Error(), runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
-			RawResponse: rawResponse,
-			Trace:       trace,
-			LatencyMS:   latency,
-			Error:       &contracts.ErrorInfo{Kind: "agent_output_error", Message: err.Error(), Retryable: false},
+			RawResponse:       rawResponse,
+			Trace:             trace,
+			LatencyMS:         latency,
+			PromptTokens:      trace.PromptTokens,
+			CompletionTokens:  trace.CompletionTokens,
+			TotalTokens:       trace.TotalTokens,
+			RawInputTokens:    trace.RawInputTokens,
+			CacheReadTokens:   trace.CacheReadTokens,
+			CacheCreateTokens: trace.CacheCreateTokens,
+			TokenSource:       trace.TokenSource,
+			EstimatedCostUSD:  trace.EstimatedCost,
+			CostSource:        trace.CostSource,
+			Error:             &contracts.ErrorInfo{Kind: "agent_output_error", Message: err.Error(), Retryable: false},
 		}
 	}
 	code := strings.TrimSpace(string(raw))
@@ -397,6 +434,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	rawResponse["usage_source_detail"] = trace.UsageSourceDetail
 	rawResponse["session_id"] = trace.SessionID
 	rawResponse["session_export_path"] = trace.SessionExportPath
+	addTokenAccountingToMap(rawResponse, trace)
 	if trace.SessionExportError != "" {
 		rawResponse["session_export_error"] = trace.SessionExportError
 	}
@@ -405,17 +443,20 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	if err := validateGeneratedTest(code, sample.Language); err != nil {
 		_ = writeAgentTrajectory(trajectoryPath, trace, generatedPath, err.Error(), runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
-			Code:             code,
-			RawResponse:      rawResponse,
-			Trace:            trace,
-			LatencyMS:        latency,
-			PromptTokens:     trace.PromptTokens,
-			CompletionTokens: trace.CompletionTokens,
-			TotalTokens:      trace.TotalTokens,
-			TokenSource:      trace.TokenSource,
-			EstimatedCostUSD: trace.EstimatedCost,
-			CostSource:       trace.CostSource,
-			Error:            &contracts.ErrorInfo{Kind: "quality_error", Message: err.Error(), Retryable: false},
+			Code:              code,
+			RawResponse:       rawResponse,
+			Trace:             trace,
+			LatencyMS:         latency,
+			PromptTokens:      trace.PromptTokens,
+			CompletionTokens:  trace.CompletionTokens,
+			TotalTokens:       trace.TotalTokens,
+			RawInputTokens:    trace.RawInputTokens,
+			CacheReadTokens:   trace.CacheReadTokens,
+			CacheCreateTokens: trace.CacheCreateTokens,
+			TokenSource:       trace.TokenSource,
+			EstimatedCostUSD:  trace.EstimatedCost,
+			CostSource:        trace.CostSource,
+			Error:             &contracts.ErrorInfo{Kind: "quality_error", Message: err.Error(), Retryable: false},
 		}
 	}
 
@@ -423,16 +464,19 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	rawResponse["generated_test_path"] = req.TestPath
 
 	return AgentGenerateResult{
-		Code:             code,
-		RawResponse:      rawResponse,
-		Trace:            trace,
-		LatencyMS:        latency,
-		PromptTokens:     trace.PromptTokens,
-		CompletionTokens: trace.CompletionTokens,
-		TotalTokens:      trace.TotalTokens,
-		TokenSource:      trace.TokenSource,
-		EstimatedCostUSD: trace.EstimatedCost,
-		CostSource:       trace.CostSource,
+		Code:              code,
+		RawResponse:       rawResponse,
+		Trace:             trace,
+		LatencyMS:         latency,
+		PromptTokens:      trace.PromptTokens,
+		CompletionTokens:  trace.CompletionTokens,
+		TotalTokens:       trace.TotalTokens,
+		RawInputTokens:    trace.RawInputTokens,
+		CacheReadTokens:   trace.CacheReadTokens,
+		CacheCreateTokens: trace.CacheCreateTokens,
+		TokenSource:       trace.TokenSource,
+		EstimatedCostUSD:  trace.EstimatedCost,
+		CostSource:        trace.CostSource,
 	}
 }
 
@@ -486,6 +530,18 @@ func tailText(value string, max int) string {
 	return value[len(value)-max:]
 }
 
+func addTokenAccountingToMap(out map[string]any, trace AgentTrace) {
+	if out == nil {
+		return
+	}
+	out["prompt_tokens"] = trace.PromptTokens
+	out["completion_tokens"] = trace.CompletionTokens
+	out["total_tokens"] = trace.TotalTokens
+	out["raw_input_tokens"] = trace.RawInputTokens
+	out["cache_read_input_tokens"] = trace.CacheReadTokens
+	out["cache_creation_input_tokens"] = trace.CacheCreateTokens
+}
+
 func parseAgentOutput(trace *AgentTrace, stdout, stderr string) {
 	fullOutput := stdout + "\n" + stderr
 
@@ -500,6 +556,7 @@ func parseAgentOutput(trace *AgentTrace, stdout, stderr string) {
 	default:
 		trace.ToolCalls = parseToolCalls(fullOutput)
 	}
+	trace.CommandsExecuted = mergeCommands(trace.CommandsExecuted, commandsFromToolCalls(trace.ToolCalls))
 
 	// 解析文件读写
 	trace.FilesRead = parseFileReads(trace.CommandsExecuted, trace.Command)
@@ -508,18 +565,16 @@ func parseAgentOutput(trace *AgentTrace, stdout, stderr string) {
 	// 尝试从结构化输出/日志中解析 token 用量与 session 信息
 	parseUsageAndSession(trace, stdout, stderr)
 
-	// 计算交互轮次（基于工具调用数量）
-	trace.InteractionCount = len(trace.ToolCalls)
-	if trace.InteractionCount == 0 {
-		// 如果没有解析到工具调用，至少算 1 轮（Agent 生成了一次）
-		trace.InteractionCount = 1
-	}
+	finalizeInteractionCount(trace)
 }
 
 type usageRecord struct {
-	Prompt     *int
-	Completion *int
-	Total      *int
+	Prompt      *int
+	Completion  *int
+	Total       *int
+	RawInput    *int
+	CacheRead   *int
+	CacheCreate *int
 }
 
 // parseToolCalls 从输出中解析工具调用记录。
@@ -628,6 +683,79 @@ func parseCommands(output string) []string {
 	return commands
 }
 
+func commandsFromToolCalls(calls []ToolCall) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, call := range calls {
+		tool := strings.ToLower(strings.TrimSpace(call.Tool))
+		if tool != "bash" && tool != "shell" && tool != "sh" && tool != "powershell" {
+			continue
+		}
+		cmd := extractCommandFromToolInput(call.Input)
+		if cmd == "" || !looksLikeRealCommand(cmd) {
+			continue
+		}
+		cmd = trimText(cmd, 500)
+		if _, ok := seen[cmd]; ok {
+			continue
+		}
+		seen[cmd] = struct{}{}
+		out = append(out, cmd)
+	}
+	return out
+}
+
+func extractCommandFromToolInput(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(input), &payload); err == nil {
+		for _, key := range []string{"command", "cmd", "script"} {
+			if raw, ok := payload[key]; ok {
+				if cmd := strings.TrimSpace(fmt.Sprint(raw)); cmd != "" {
+					return cmd
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(input)
+}
+
+func mergeCommands(groups ...[]string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, group := range groups {
+		for _, cmd := range group {
+			cmd = strings.TrimSpace(cmd)
+			if cmd == "" {
+				continue
+			}
+			if _, ok := seen[cmd]; ok {
+				continue
+			}
+			seen[cmd] = struct{}{}
+			out = append(out, cmd)
+		}
+	}
+	return out
+}
+
+func finalizeInteractionCount(trace *AgentTrace) {
+	if trace == nil {
+		return
+	}
+	if trace.InteractionCount > 0 {
+		return
+	}
+	if len(trace.ToolCalls) > 0 {
+		trace.InteractionCount = len(trace.ToolCalls)
+		return
+	}
+	trace.InteractionCount = 1
+}
+
 func runSandboxPreflight(ctx context.Context, sandboxRunner SandboxRunner, baseReq SandboxRunRequest, commands []string) ([]PreflightCheck, error) {
 	checks := make([]PreflightCheck, 0, len(commands))
 	for _, command := range commands {
@@ -713,37 +841,40 @@ func writeAgentTrace(path string, trace AgentTrace) error {
 	}
 
 	if err := emit("summary", map[string]any{
-		"subject_id":           trace.SubjectID,
-		"framework":            trace.Framework,
-		"model":                trace.Model,
-		"skill":                trace.Skill,
-		"sample_id":            trace.SampleID,
-		"language":             trace.Language,
-		"started_at":           trace.StartedAt,
-		"finished_at":          trace.FinishedAt,
-		"session_id":           trace.SessionID,
-		"session_export_path":  trace.SessionExportPath,
-		"session_export_error": trace.SessionExportError,
-		"raw_trace_path":       trace.RawTracePath,
-		"raw_stdout_path":      trace.RawStdoutPath,
-		"raw_stderr_path":      trace.RawStderrPath,
-		"trajectory_path":      trace.TrajectoryPath,
-		"workspace_diff_path":  trace.WorkspaceDiffPath,
-		"sandbox_provider":     trace.SandboxProvider,
-		"sandbox_image":        trace.SandboxImage,
-		"sandbox_fingerprint":  trace.SandboxFingerprint,
-		"interaction_count":    trace.InteractionCount,
-		"tool_call_count":      len(trace.ToolCalls),
-		"commands_count":       len(trace.CommandsExecuted),
-		"files_read_count":     len(trace.FilesRead),
-		"files_written_count":  len(trace.FilesWritten),
-		"prompt_tokens":        trace.PromptTokens,
-		"completion_tokens":    trace.CompletionTokens,
-		"total_tokens":         trace.TotalTokens,
-		"token_source":         trace.TokenSource,
-		"estimated_cost":       trace.EstimatedCost,
-		"cost_source":          trace.CostSource,
-		"usage_source_detail":  trace.UsageSourceDetail,
+		"subject_id":                  trace.SubjectID,
+		"framework":                   trace.Framework,
+		"model":                       trace.Model,
+		"skill":                       trace.Skill,
+		"sample_id":                   trace.SampleID,
+		"language":                    trace.Language,
+		"started_at":                  trace.StartedAt,
+		"finished_at":                 trace.FinishedAt,
+		"session_id":                  trace.SessionID,
+		"session_export_path":         trace.SessionExportPath,
+		"session_export_error":        trace.SessionExportError,
+		"raw_trace_path":              trace.RawTracePath,
+		"raw_stdout_path":             trace.RawStdoutPath,
+		"raw_stderr_path":             trace.RawStderrPath,
+		"trajectory_path":             trace.TrajectoryPath,
+		"workspace_diff_path":         trace.WorkspaceDiffPath,
+		"sandbox_provider":            trace.SandboxProvider,
+		"sandbox_image":               trace.SandboxImage,
+		"sandbox_fingerprint":         trace.SandboxFingerprint,
+		"interaction_count":           trace.InteractionCount,
+		"tool_call_count":             len(trace.ToolCalls),
+		"commands_count":              len(trace.CommandsExecuted),
+		"files_read_count":            len(trace.FilesRead),
+		"files_written_count":         len(trace.FilesWritten),
+		"prompt_tokens":               trace.PromptTokens,
+		"completion_tokens":           trace.CompletionTokens,
+		"total_tokens":                trace.TotalTokens,
+		"raw_input_tokens":            trace.RawInputTokens,
+		"cache_read_input_tokens":     trace.CacheReadTokens,
+		"cache_creation_input_tokens": trace.CacheCreateTokens,
+		"token_source":                trace.TokenSource,
+		"estimated_cost":              trace.EstimatedCost,
+		"cost_source":                 trace.CostSource,
+		"usage_source_detail":         trace.UsageSourceDetail,
 	}); err != nil {
 		return err
 	}
@@ -840,7 +971,9 @@ func parseCodeBuddyJSONOutput(trace *AgentTrace, stdout string) {
 // accumulateUsage 将 usageRecord 累加到 trace 的 token 字段。
 func accumulateUsage(trace *AgentTrace, records []usageRecord) {
 	var promptSum, completionSum, totalSum int
+	var rawInputSum, cacheReadSum, cacheCreateSum int
 	var promptSeen, completionSeen, totalSeen bool
+	var rawInputSeen, cacheReadSeen, cacheCreateSeen bool
 	for _, record := range records {
 		if record.Prompt != nil {
 			promptSum += *record.Prompt
@@ -854,6 +987,18 @@ func accumulateUsage(trace *AgentTrace, records []usageRecord) {
 			totalSum += *record.Total
 			totalSeen = true
 		}
+		if record.RawInput != nil {
+			rawInputSum += *record.RawInput
+			rawInputSeen = true
+		}
+		if record.CacheRead != nil {
+			cacheReadSum += *record.CacheRead
+			cacheReadSeen = true
+		}
+		if record.CacheCreate != nil {
+			cacheCreateSum += *record.CacheCreate
+			cacheCreateSeen = true
+		}
 	}
 	if promptSeen && trace.PromptTokens == nil {
 		trace.PromptTokens = intPtr(promptSum)
@@ -866,6 +1011,15 @@ func accumulateUsage(trace *AgentTrace, records []usageRecord) {
 	}
 	if trace.TotalTokens == nil && trace.PromptTokens != nil && trace.CompletionTokens != nil {
 		trace.TotalTokens = intPtr(*trace.PromptTokens + *trace.CompletionTokens)
+	}
+	if rawInputSeen && trace.RawInputTokens == nil {
+		trace.RawInputTokens = intPtr(rawInputSum)
+	}
+	if cacheReadSeen && trace.CacheReadTokens == nil {
+		trace.CacheReadTokens = intPtr(cacheReadSum)
+	}
+	if cacheCreateSeen && trace.CacheCreateTokens == nil {
+		trace.CacheCreateTokens = intPtr(cacheCreateSum)
 	}
 }
 
@@ -904,7 +1058,8 @@ func parseStructuredAgentJSONOutput(trace *AgentTrace, stdout, usageDetail strin
 	}
 
 	assignSessionID(trace, payload)
-	records := extractUsageRecords(payload)
+	assignInteractionCount(trace, payload)
+	records := preferredUsageRecords(payload)
 	if len(records) == 0 {
 		return
 	}
@@ -914,8 +1069,7 @@ func parseStructuredAgentJSONOutput(trace *AgentTrace, stdout, usageDetail strin
 }
 
 func parseStructuredAgentJSONLUsage(trace *AgentTrace, output, usageDetail string) {
-	var promptSum, completionSum, totalSum int
-	var promptSeen, completionSeen, totalSeen bool
+	var records []usageRecord
 
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
@@ -928,54 +1082,17 @@ func parseStructuredAgentJSONLUsage(trace *AgentTrace, output, usageDetail strin
 			continue
 		}
 		assignSessionID(trace, payload)
+		assignInteractionCount(trace, payload)
 		if typ, _ := payload["type"].(string); typ == "result" {
 			if usage, ok := payload["usage"].(map[string]any); ok {
-				for _, r := range extractUsageRecords(usage) {
-					if r.Prompt != nil {
-						promptSum += *r.Prompt
-						promptSeen = true
-					}
-					if r.Completion != nil {
-						completionSum += *r.Completion
-						completionSeen = true
-					}
-					if r.Total != nil {
-						totalSum += *r.Total
-						totalSeen = true
-					}
-				}
+				records = append(records, extractUsageRecords(usage)...)
 				continue
 			}
 		}
-		for _, r := range extractUsageRecords(payload) {
-			if r.Prompt != nil {
-				promptSum += *r.Prompt
-				promptSeen = true
-			}
-			if r.Completion != nil {
-				completionSum += *r.Completion
-				completionSeen = true
-			}
-			if r.Total != nil {
-				totalSum += *r.Total
-				totalSeen = true
-			}
-		}
+		records = append(records, preferredUsageRecords(payload)...)
 	}
-
-	if promptSeen && trace.PromptTokens == nil {
-		trace.PromptTokens = intPtr(promptSum)
-	}
-	if completionSeen && trace.CompletionTokens == nil {
-		trace.CompletionTokens = intPtr(completionSum)
-	}
-	if totalSeen && trace.TotalTokens == nil {
-		trace.TotalTokens = intPtr(totalSum)
-	}
-	if trace.TotalTokens == nil && trace.PromptTokens != nil && trace.CompletionTokens != nil {
-		trace.TotalTokens = intPtr(*trace.PromptTokens + *trace.CompletionTokens)
-	}
-	if promptSeen || completionSeen || totalSeen {
+	if len(records) > 0 {
+		accumulateUsage(trace, records)
 		trace.TokenSource = "actual"
 		trace.UsageSourceDetail = usageDetail
 	}
@@ -1073,6 +1190,36 @@ func assignSessionID(trace *AgentTrace, value any) {
 		for _, child := range v {
 			assignSessionID(trace, child)
 			if trace.SessionID != "" {
+				return
+			}
+		}
+	}
+}
+
+func assignInteractionCount(trace *AgentTrace, value any) {
+	if trace == nil || trace.InteractionCount > 0 {
+		return
+	}
+	switch v := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"num_turns", "numTurns", "turns", "interaction_count", "interactionCount"} {
+			if raw, ok := v[key]; ok {
+				if n, ok := asInt(raw); ok && n > 0 {
+					trace.InteractionCount = n
+					return
+				}
+			}
+		}
+		for _, child := range v {
+			assignInteractionCount(trace, child)
+			if trace.InteractionCount > 0 {
+				return
+			}
+		}
+	case []any:
+		for _, child := range v {
+			assignInteractionCount(trace, child)
+			if trace.InteractionCount > 0 {
 				return
 			}
 		}
@@ -1187,35 +1334,7 @@ func parseUsageAndSession(trace *AgentTrace, stdout, stderr string) {
 	if len(records) == 0 {
 		return
 	}
-
-	var promptSum, completionSum, totalSum int
-	var promptSeen, completionSeen, totalSeen bool
-	for _, record := range records {
-		if record.Prompt != nil {
-			promptSum += *record.Prompt
-			promptSeen = true
-		}
-		if record.Completion != nil {
-			completionSum += *record.Completion
-			completionSeen = true
-		}
-		if record.Total != nil {
-			totalSum += *record.Total
-			totalSeen = true
-		}
-	}
-	if promptSeen && trace.PromptTokens == nil {
-		trace.PromptTokens = intPtr(promptSum)
-	}
-	if completionSeen && trace.CompletionTokens == nil {
-		trace.CompletionTokens = intPtr(completionSum)
-	}
-	if totalSeen && trace.TotalTokens == nil {
-		trace.TotalTokens = intPtr(totalSum)
-	}
-	if trace.TotalTokens == nil && trace.PromptTokens != nil && trace.CompletionTokens != nil {
-		trace.TotalTokens = intPtr(*trace.PromptTokens + *trace.CompletionTokens)
-	}
+	accumulateUsage(trace, records)
 	if trace.TokenSource == "" {
 		trace.TokenSource = "actual"
 	}
@@ -1286,50 +1405,76 @@ func collectOpenCodeSessionExport(
 	}
 
 	records := deduplicateUsageRecords(extractUsageRecords(payload))
-	if len(records) == 0 {
-		return
-	}
-
-	// OpenCode 的 tokens.total 是累积值（从会话开始到当前消息的总 token），
-	// 不能直接求和；prompt/completion (input/output) 是单次值，可以求和。
-	var promptSum, completionSum int
-	var maxTotal int
-	var promptSeen, completionSeen, totalSeen bool
-	for _, record := range records {
-		if record.Prompt != nil {
-			promptSum += *record.Prompt
-			promptSeen = true
-		}
-		if record.Completion != nil {
-			completionSum += *record.Completion
-			completionSeen = true
-		}
-		if record.Total != nil {
-			totalSeen = true
-			if *record.Total > maxTotal {
-				maxTotal = *record.Total
+	if len(records) > 0 {
+		// OpenCode 的 tokens.total 是累积值（从会话开始到当前消息的总 token），
+		// 不能直接求和；prompt/completion (input/output) 是单次值，可以求和。
+		var promptSum, completionSum, rawInputSum, cacheReadSum, cacheCreateSum int
+		var maxTotal int
+		var promptSeen, completionSeen, totalSeen bool
+		var rawInputSeen, cacheReadSeen, cacheCreateSeen bool
+		for _, record := range records {
+			if record.Prompt != nil {
+				promptSum += *record.Prompt
+				promptSeen = true
+			}
+			if record.Completion != nil {
+				completionSum += *record.Completion
+				completionSeen = true
+			}
+			if record.Total != nil {
+				totalSeen = true
+				if *record.Total > maxTotal {
+					maxTotal = *record.Total
+				}
+			}
+			if record.RawInput != nil {
+				rawInputSum += *record.RawInput
+				rawInputSeen = true
+			}
+			if record.CacheRead != nil {
+				cacheReadSum += *record.CacheRead
+				cacheReadSeen = true
+			}
+			if record.CacheCreate != nil {
+				cacheCreateSum += *record.CacheCreate
+				cacheCreateSeen = true
 			}
 		}
+		if promptSeen {
+			trace.PromptTokens = intPtr(promptSum)
+		}
+		if completionSeen {
+			trace.CompletionTokens = intPtr(completionSum)
+		}
+		if promptSeen && completionSeen {
+			trace.TotalTokens = intPtr(promptSum + completionSum)
+		} else if totalSeen {
+			trace.TotalTokens = intPtr(maxTotal)
+		}
+		if rawInputSeen {
+			trace.RawInputTokens = intPtr(rawInputSum)
+		}
+		if cacheReadSeen {
+			trace.CacheReadTokens = intPtr(cacheReadSum)
+		}
+		if cacheCreateSeen {
+			trace.CacheCreateTokens = intPtr(cacheCreateSum)
+		}
+		trace.TokenSource = "actual"
+		trace.UsageSourceDetail = "opencode_session_export"
 	}
-	if promptSeen {
-		trace.PromptTokens = intPtr(promptSum)
-	}
-	if completionSeen {
-		trace.CompletionTokens = intPtr(completionSum)
-	}
-	if promptSeen && completionSeen {
-		trace.TotalTokens = intPtr(promptSum + completionSum)
-	} else if totalSeen {
-		trace.TotalTokens = intPtr(maxTotal)
-	}
-	trace.TokenSource = "actual"
-	trace.UsageSourceDetail = "opencode_session_export"
 
 	// 从 session export 中提取实际的工具调用（替换从 stdout/stderr 解析的假工具调用）
 	toolCalls := extractOpenCodeToolCalls(payload)
 	if len(toolCalls) > 0 {
 		trace.ToolCalls = toolCalls
 	}
+	if turns := countOpenCodeAssistantMessages(payload); turns > 0 {
+		trace.InteractionCount = turns
+	}
+	trace.CommandsExecuted = mergeCommands(trace.CommandsExecuted, commandsFromToolCalls(trace.ToolCalls))
+	trace.FilesRead = parseFileReads(trace.CommandsExecuted, trace.Command)
+	trace.FilesWritten = parseFileWrites(trace.CommandsExecuted, trace.WorkspaceDiff)
 }
 
 // extractOpenCodeToolCalls 从 OpenCode session export 中提取实际的工具调用。
@@ -1414,6 +1559,35 @@ func extractOpenCodeToolCalls(payload any) []ToolCall {
 	return calls
 }
 
+func countOpenCodeAssistantMessages(payload any) int {
+	payloadMap, ok := payload.(map[string]any)
+	if !ok {
+		return 0
+	}
+	messages, ok := payloadMap["messages"].([]any)
+	if !ok {
+		return 0
+	}
+	count := 0
+	for _, msg := range messages {
+		msgMap, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		info, _ := msgMap["info"].(map[string]any)
+		role, _ := info["role"].(string)
+		if strings.EqualFold(role, "assistant") {
+			count++
+			continue
+		}
+		role, _ = msgMap["role"].(string)
+		if strings.EqualFold(role, "assistant") {
+			count++
+		}
+	}
+	return count
+}
+
 func collectUsageRecords(output string) []usageRecord {
 	lines := strings.Split(output, "\n")
 	seen := map[string]struct{}{}
@@ -1456,6 +1630,15 @@ func deduplicateUsageRecords(records []usageRecord) []usageRecord {
 	return out
 }
 
+func preferredUsageRecords(value any) []usageRecord {
+	if payload, ok := value.(map[string]any); ok {
+		if usage, ok := payload["usage"].(map[string]any); ok {
+			return extractUsageRecords(usage)
+		}
+	}
+	return extractUsageRecords(value)
+}
+
 func extractUsageRecords(value any) []usageRecord {
 	switch v := value.(type) {
 	case map[string]any:
@@ -1479,9 +1662,12 @@ func extractUsageRecords(value any) []usageRecord {
 }
 
 func usageRecordFromMap(v map[string]any) (usageRecord, bool) {
+	rawInput := firstIntValue(v, "input_tokens", "inputTokens")
 	prompt := firstIntValue(v, "prompt_tokens", "input_tokens", "inputTokens", "promptTokens")
 	completion := firstIntValue(v, "completion_tokens", "output_tokens", "outputTokens", "completionTokens")
 	total := firstIntValue(v, "total_tokens", "totalTokens")
+	cacheRead := firstIntValue(v, "cache_read_input_tokens", "cacheReadInputTokens")
+	cacheCreate := firstIntValue(v, "cache_creation_input_tokens", "cacheCreationInputTokens")
 	if (prompt == nil || completion == nil || total == nil) && v["tokens"] != nil {
 		if nested, ok := v["tokens"].(map[string]any); ok {
 			if prompt == nil {
@@ -1493,13 +1679,18 @@ func usageRecordFromMap(v map[string]any) (usageRecord, bool) {
 			if total == nil {
 				total = firstIntValue(nested, "total", "total_tokens")
 			}
+			if cacheRead == nil {
+				cacheRead = nestedCacheToken(nested, "read")
+			}
+			if cacheCreate == nil {
+				cacheCreate = nestedCacheToken(nested, "write", "create", "creation")
+			}
 		}
 	}
 
-	// 处理缓存token：如果 input_tokens 包含缓存读取的token，需要减去
-	// CodeBuddy 的 input_tokens = 实际输入 + cache_read_input_tokens
-	if prompt != nil {
-		cacheRead := firstIntValue(v, "cache_read_input_tokens", "cacheReadInputTokens")
+	// 处理缓存 token：CodeBuddy/Claude 的 input_tokens 通常包含缓存读取 token，
+	// 净 token 口径需要扣掉 cache_read；OpenCode 的 tokens.input 已经是净值，只记录 cache。
+	if prompt != nil && rawInput != nil {
 		if cacheRead != nil && *cacheRead > 0 && *prompt >= *cacheRead {
 			actualPrompt := *prompt - *cacheRead
 			prompt = &actualPrompt
@@ -1512,7 +1703,15 @@ func usageRecordFromMap(v map[string]any) (usageRecord, bool) {
 	if total == nil && prompt != nil && completion != nil {
 		total = intPtr(*prompt + *completion)
 	}
-	return usageRecord{Prompt: prompt, Completion: completion, Total: total}, true
+	return usageRecord{Prompt: prompt, Completion: completion, Total: total, RawInput: rawInput, CacheRead: cacheRead, CacheCreate: cacheCreate}, true
+}
+
+func nestedCacheToken(tokens map[string]any, keys ...string) *int {
+	cache, ok := tokens["cache"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return firstIntValue(cache, keys...)
 }
 
 func firstIntValue(v map[string]any, keys ...string) *int {

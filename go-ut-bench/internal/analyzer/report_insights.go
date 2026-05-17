@@ -302,6 +302,8 @@ func buildReportInsightPrompt(bundle ReportEvidenceBundle) (string, error) {
 5. 每条 insight 和 evolution item 必须尽量引用 evidence_ids；没有证据只能作为 P3 低置信度项。
 6. target 只能是 skill/prompt/agent_config/environment/evaluator。
 7. 必须回答：先改谁、为什么、改什么、预计影响哪些指标、风险是什么、怎么人工验收。
+8. 不要把少数 subject/language/scenario 的局部失败概括为“全面失败”或“全量失败”；只有聚合指标显示该维度大多数样本失败时，才能使用整体性表述。
+9. evaluation_result/report_summary 是编译、测试、覆盖、变异失败归因的最高优先级事实；trajectory 里的后置脚本、上报、trace 导出失败只能作为 trace/environment 噪声或附加问题，不能覆盖真实 compile_error/test_error/failure_origin。
 
 输出 JSON 格式：
 {

@@ -142,7 +142,7 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 	report.Selection = selection
 
 	if opts.LLMEnabled {
-		llmResult, evidenceCount, evidenceSubjectCount := s.runLLM(ctx, opts, report, analysisDir)
+		llmResult, evidenceCount, evidenceSubjectCount := s.runLLM(ctx, opts, manifest, report, analysisDir)
 		report.LLM = &llmResult
 		report.LLMStatus.Status = firstNonEmpty(llmResult.Status, "degraded")
 		report.LLMStatus.Model = firstNonEmpty(llmResult.Model, opts.LLMModel)
@@ -246,6 +246,9 @@ func (s *Service) analyzeResult(outputRoot string, res contracts.EvaluationResul
 		MutationScore:     res.MutationScore,
 		LatencyMS:         res.LatencyMS,
 		TotalTokens:       res.TotalTokens,
+		RawInputTokens:    res.RawInputTokens,
+		CacheReadTokens:   res.CacheReadInputTokens,
+		CacheCreateTokens: res.CacheCreationInputTokens,
 		TrajectoryPath:    firstNonEmpty(res.TrajectoryPath, gen.TrajectoryPath),
 		RawTracePath:      firstNonEmpty(res.RawTracePath, gen.RawTracePath),
 		WorkspaceDiffPath: firstNonEmpty(res.WorkspaceDiffPath, gen.WorkspaceDiffPath),
@@ -468,7 +471,10 @@ func buildRuleFindings(res contracts.EvaluationResult, subject contracts.Analysi
 
 	// Token 消耗异常：需要区分多种可能原因
 	if subject.TotalTokens != nil && *subject.TotalTokens > 200000 {
-		detail := fmt.Sprintf("总 token 为 %d。", *subject.TotalTokens)
+		detail := fmt.Sprintf("净 token 为 %d。", *subject.TotalTokens)
+		if subject.RawInputTokens != nil || subject.CacheReadTokens != nil || subject.CacheCreateTokens != nil {
+			detail += fmt.Sprintf(" raw_input=%s，cache_read=%s，cache_creation=%s。", intPtrText(subject.RawInputTokens), intPtrText(subject.CacheReadTokens), intPtrText(subject.CacheCreateTokens))
+		}
 		rec := ""
 
 		// 根据 agent 框架和 token 来源判断可能原因
@@ -477,9 +483,9 @@ func buildRuleFindings(res contracts.EvaluationResult, subject contracts.Analysi
 
 		if framework == "opencode" || framework == "codebuddy" {
 			detail += "\n\n可能原因分析："
-			detail += "\n1. 平台 token 计算方式可能导致数值偏高（如包含缓存 token、工具注册开销等）"
-			detail += "\n2. Agent 框架本身的特性（如多次启动、工具注册）"
-			detail += "\n3. 任务复杂度较高，确实需要大量 token"
+			detail += "\n1. 当前异常判断基于净 token，cache token 仅作为解释证据"
+			detail += "\n2. 大量工具输出或构建日志可能被回灌到后续上下文"
+			detail += "\n3. Agent 框架本身的多轮工具调用会放大上下文成本"
 
 			if tokenSource == "actual" || tokenSource == "opencode_session_export" || strings.Contains(tokenSource, "json") {
 				detail += "\n\nToken 来源: " + tokenSource
@@ -505,8 +511,8 @@ func isLikelyToolchainIssue(errMsg string) bool {
 		"command not found", "permission denied",
 		"cannot find", "executable not found",
 		"toolchain", "compiler", "linker",
-		"syntax error near unexpected token",  // Windows 行尾问题
-		"\\r': command not found",             // CRLF 问题
+		"syntax error near unexpected token", // Windows 行尾问题
+		"\\r': command not found",            // CRLF 问题
 	}
 	for _, kw := range keywords {
 		if strings.Contains(lower, kw) {
@@ -536,12 +542,12 @@ func isLikelyEnvironmentIssue(errMsg string) bool {
 	return false
 }
 
-func (s *Service) runLLM(ctx context.Context, opts Options, report *contracts.AnalysisReport, analysisDir string) (contracts.LLMAnalysisResult, int, int) {
+func (s *Service) runLLM(ctx context.Context, opts Options, manifest contracts.GeneratedManifest, report *contracts.AnalysisReport, analysisDir string) (contracts.LLMAnalysisResult, int, int) {
 	if s.llm == nil {
 		return contracts.LLMAnalysisResult{Model: opts.LLMModel, PromptVersion: promptVersion, Status: "skipped", Error: "llm client not configured"}, 0, 0
 	}
 	reportProgress(opts.Progress, "构建证据包")
-	bundle, evidenceMap := buildLLMEvidenceBundle(opts.OutputRoot, report)
+	bundle, evidenceMap := buildLLMEvidenceBundle(opts.OutputRoot, opts.ConfigPath, manifest, report)
 	_ = contracts.WriteJSON(filepath.Join(analysisDir, "llm_evidence_bundle.json"), bundle)
 
 	prompt, err := buildLLMPrompt(bundle)
@@ -578,9 +584,9 @@ func buildLLMPrompt(bundle LLMEvidenceBundle) (string, error) {
 	selectionHint := ""
 	selectedCount := len(bundle.Selection.SelectedSubjects)
 	if selectedCount == 1 {
-		selectionHint = "\n10. 本次是用户定点分析：请围绕 selection.selected_subjects 中的对象解释行为链路、测试质量、trajectory 证据和改进建议，不要把重点转移到未选对象。\n"
+		selectionHint = "\n11. 本次是用户定点分析：请围绕 selection.selected_subjects 中的对象解释行为链路、测试质量、trajectory 证据和改进建议，不要把重点转移到未选对象。\n"
 	} else if selectedCount > 1 || bundle.Selection.CompareMode {
-		selectionHint = "\n10. 本次是用户选择的横向对比：请比较 selection.selected_subjects 中 2-3 个对象的共同问题、差异点、最优/最差表现原因和可迁移策略。不要把重点转移到未选对象。\n"
+		selectionHint = "\n11. 本次是用户选择的横向对比：请比较 selection.selected_subjects 中 2-3 个对象的共同问题、差异点、最优/最差表现原因和可迁移策略。不要把重点转移到未选对象。\n"
 	}
 	return `你是 UTBench 的单元测试 agent 诊断器。请基于 evidence bundle 分析 agent/skill 的弱点，并给出能落地的优化建议。
 
@@ -593,6 +599,7 @@ func buildLLMPrompt(bundle LLMEvidenceBundle) (string, error) {
 6. 不要复述 rule_findings，不要逐条复制规则诊断；只补充规则没有覆盖的归因、跨 agent 对比和优化建议。
 7. findings 最多 5 条，recommendations 最多 5 条；每条 detail 控制在 120 字以内，recommendation/detail/expected_impact/risk 都要简短。
 8. 如果最重要的问题已经在规则里出现，请在 LLM 中合并为更高层的归因，不要重复同名 finding。
+9. **必须利用上下文信息进行归因**：证据包中包含 prompt_context、skill_context、agent_context、success_baseline，这些是归因的关键依据。
 
 关键诊断原则（必须遵守）：
 ⚠️ 不要盲目归咎于 agent！问题可能有多种根源，必须根据证据判断：
@@ -605,11 +612,13 @@ func buildLLMPrompt(bundle LLMEvidenceBundle) (string, error) {
    - Trajectory 缺失但测试通过 → 可能是 trace 导出适配问题
 
 2. **Skill/Prompt 问题** (skill)：
+   - 对比 prompt_context 中的要求与 agent 实际行为，判断是否是 prompt 指令不清晰
+   - 对比 skill_context 中的关键要求与生成测试的质量，判断是否是 skill 设计问题
    - Agent 行为模式一致但结果不佳（如所有样本都缺少某类断言）
    - 测试覆盖了错误的路径（如只测正常路径不测异常路径）
-   - 生成的测试结构不合理（如缺少 setup/teardown）
 
 3. **Agent 行为问题** (agent_config)：
+   - 对比 agent_context 中的约束与 trajectory 行为，判断是否违反约束
    - 明确违反约束（如修改了源码、安装了依赖）
    - 重复读取相同文件或陷入无效循环
    - 忽略 prompt 中的明确指令
@@ -618,16 +627,27 @@ func buildLLMPrompt(bundle LLMEvidenceBundle) (string, error) {
    - 特定样本在多个 agent 上都失败
    - 样本本身有歧义或缺少必要上下文
 
+5. **模型能力问题** (model)：
+   - 对比 success_baseline 中的成功案例特征，判断是否是模型能力不足
+   - 同一 agent/skill 在不同模型上表现差异大 → 模型能力差异
+
+【上下文信息使用指南】
+- prompt_context: 对比 prompt 要求与 agent 实际行为，判断是否是指令问题
+- skill_context: 对比 skill 关键要求与测试质量，判断是否是 skill 设计问题
+- agent_context: 对比框架约束与 trajectory 行为，判断是否是框架限制或违规
+- success_baseline: 对比成功案例特征，判断失败原因是能力问题还是行为问题
+
 【Token 异常分析】
 - opencode/codebuddy 的 token 可能包含缓存、工具注册开销，不能直接与 claudecode 比较
 - Token 高 + trajectory 正常 + 测试通过 → 优先怀疑平台计算问题
 - Token 高 + trajectory 显示重复行为 → 优先怀疑 agent 行为问题
 
 【证据优先级】
-1. 有明确错误信息 → 根据错误内容判断
-2. 有 trajectory → 分析 agent 行为模式
-3. 只有指标 → 结合多个指标交叉验证
-4. 无证据 → 低置信度建议，标注"需要进一步验证"
+1. evaluation_result/report_summary 中的 compile_error、test_error、failure_origin、指标结果是最高优先级事实
+2. 有 trajectory → 分析 agent 行为模式，但后置脚本、上报、trace 导出失败不能覆盖真实编译/测试失败原因
+3. 有明确工具错误信息 → 根据错误内容判断环境或 evaluator 问题
+4. 只有指标 → 结合多个指标交叉验证；不要把少数样本/subject 的局部失败概括为整体全面失败
+5. 无证据 → 低置信度建议，标注"需要进一步验证"
 ` + selectionHint + `
 
 输出 JSON 格式：
