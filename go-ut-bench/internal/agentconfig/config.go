@@ -53,14 +53,16 @@ type SandboxSpec struct {
 }
 
 type SubjectEntry struct {
-	ID        string   `yaml:"id"`
-	Enabled   *bool    `yaml:"enabled"`
-	Kind      string   `yaml:"kind"`
-	Framework string   `yaml:"framework"`
-	Model     string   `yaml:"model"`
-	Skill     string   `yaml:"skill"`
-	Labels    []string `yaml:"labels"`
-	Tags      []string `yaml:"tags"`
+	ID           string   `yaml:"id"`
+	Enabled      *bool    `yaml:"enabled"`
+	Kind         string   `yaml:"kind"`
+	Framework    string   `yaml:"framework"`
+	Model        string   `yaml:"model"`
+	Skill        string   `yaml:"skill"`
+	SkillVersion string   `yaml:"skill_version"`
+	Version      string   `yaml:"version"`
+	Labels       []string `yaml:"labels"`
+	Tags         []string `yaml:"tags"`
 }
 
 type ResolvedSubject struct {
@@ -101,17 +103,31 @@ type fileConfig struct {
 		CPU                      string              `yaml:"cpu"`
 		Memory                   string              `yaml:"memory"`
 	} `yaml:"frameworks"`
-	Skills map[string]struct {
-		Enabled              *bool    `yaml:"enabled"`
-		Version              string   `yaml:"version"`
-		Description          string   `yaml:"description"`
-		InstructionPath      string   `yaml:"instruction_path"`
-		Files                []string `yaml:"files"`
-		InjectMode           string   `yaml:"inject_mode"`
-		CompatibleFrameworks []string `yaml:"compatible_frameworks"`
-		CompatibleLanguages  []string `yaml:"compatible_languages"`
-	} `yaml:"skills"`
-	Subjects []SubjectEntry `yaml:"subjects"`
+	Skills   map[string]skillConfig `yaml:"skills"`
+	Subjects []SubjectEntry         `yaml:"subjects"`
+}
+
+type skillConfig struct {
+	Enabled              *bool                         `yaml:"enabled"`
+	Version              string                        `yaml:"version"`
+	DefaultVersion       string                        `yaml:"default_version"`
+	Description          string                        `yaml:"description"`
+	InstructionPath      string                        `yaml:"instruction_path"`
+	Files                []string                      `yaml:"files"`
+	InjectMode           string                        `yaml:"inject_mode"`
+	CompatibleFrameworks []string                      `yaml:"compatible_frameworks"`
+	CompatibleLanguages  []string                      `yaml:"compatible_languages"`
+	Versions             map[string]skillVersionConfig `yaml:"versions"`
+}
+
+type skillVersionConfig struct {
+	Enabled              *bool    `yaml:"enabled"`
+	Description          string   `yaml:"description"`
+	InstructionPath      string   `yaml:"instruction_path"`
+	Files                []string `yaml:"files"`
+	InjectMode           string   `yaml:"inject_mode"`
+	CompatibleFrameworks []string `yaml:"compatible_frameworks"`
+	CompatibleLanguages  []string `yaml:"compatible_languages"`
 }
 
 func Load(path string, modelNames []string, selected []string) ([]ResolvedSubject, error) {
@@ -281,9 +297,9 @@ func normalizeSandboxSpec(item struct {
 	}
 }
 
-func normalizeSkills(cfg fileConfig, baseDir string) map[string]contracts.SkillSpec {
-	out := map[string]contracts.SkillSpec{
-		NoSkill: {Name: NoSkill, Enabled: true, InjectMode: "none"},
+func normalizeSkills(cfg fileConfig, baseDir string) map[string][]contracts.SkillSpec {
+	out := map[string][]contracts.SkillSpec{
+		NoSkill: {{Name: NoSkill, Enabled: true, InjectMode: "none"}},
 	}
 	for name, item := range cfg.Skills {
 		enabled := true
@@ -293,24 +309,63 @@ func normalizeSkills(cfg fileConfig, baseDir string) map[string]contracts.SkillS
 		if !enabled {
 			continue
 		}
-		instructionPath := resolveRelative(baseDir, item.InstructionPath)
-		files := make([]string, 0, len(item.Files))
-		for _, f := range item.Files {
-			files = append(files, resolveRelative(baseDir, f))
+		defaultVersion := strings.TrimSpace(item.DefaultVersion)
+		if len(item.Versions) == 0 {
+			version := defaultString(item.Version, "1")
+			out[name] = []contracts.SkillSpec{buildSkillSpecVersion(name, version, defaultString(defaultVersion, version), item, skillVersionConfig{}, baseDir)}
+			continue
 		}
-		out[name] = contracts.SkillSpec{
-			Name:                 name,
-			Version:              item.Version,
-			Description:          item.Description,
-			InstructionPath:      instructionPath,
-			Files:                files,
-			InjectMode:           defaultString(item.InjectMode, "prompt_append"),
-			CompatibleFrameworks: item.CompatibleFrameworks,
-			CompatibleLanguages:  item.CompatibleLanguages,
-			Enabled:              true,
+		versionNames := sortedKeys(item.Versions)
+		if defaultVersion == "" {
+			defaultVersion = versionNames[0]
+		}
+		for _, version := range versionNames {
+			ver := item.Versions[version]
+			verEnabled := true
+			if ver.Enabled != nil {
+				verEnabled = *ver.Enabled
+			}
+			if !verEnabled {
+				continue
+			}
+			out[name] = append(out[name], buildSkillSpecVersion(name, version, defaultVersion, item, ver, baseDir))
 		}
 	}
 	return out
+}
+
+func buildSkillSpecVersion(name, version, defaultVersion string, base skillConfig, ver skillVersionConfig, baseDir string) contracts.SkillSpec {
+	description := firstNonEmptyString(ver.Description, base.Description)
+	instructionPath := firstNonEmptyString(ver.InstructionPath, base.InstructionPath)
+	files := ver.Files
+	if len(files) == 0 {
+		files = base.Files
+	}
+	resolvedFiles := make([]string, 0, len(files))
+	for _, f := range files {
+		resolvedFiles = append(resolvedFiles, resolveRelative(baseDir, f))
+	}
+	injectMode := firstNonEmptyString(ver.InjectMode, base.InjectMode)
+	frameworks := ver.CompatibleFrameworks
+	if len(frameworks) == 0 {
+		frameworks = base.CompatibleFrameworks
+	}
+	langs := ver.CompatibleLanguages
+	if len(langs) == 0 {
+		langs = base.CompatibleLanguages
+	}
+	return contracts.SkillSpec{
+		Name:                 name,
+		Version:              version,
+		DefaultVersion:       defaultVersion,
+		Description:          description,
+		InstructionPath:      resolveRelative(baseDir, instructionPath),
+		Files:                resolvedFiles,
+		InjectMode:           defaultString(injectMode, "prompt_append"),
+		CompatibleFrameworks: frameworks,
+		CompatibleLanguages:  langs,
+		Enabled:              true,
+	}
 }
 
 func defaultModelAPISubjects(models []string) []ResolvedSubject {
@@ -332,7 +387,7 @@ func defaultModelAPISubjects(models []string) []ResolvedSubject {
 	return out
 }
 
-func expandCartesian(models []string, frameworks map[string]FrameworkSpec, skills map[string]contracts.SkillSpec) []ResolvedSubject {
+func expandCartesian(models []string, frameworks map[string]FrameworkSpec, skills map[string][]contracts.SkillSpec) []ResolvedSubject {
 	var out []ResolvedSubject
 	frameworkNames := sortedKeys(frameworks)
 	skillNames := sortedSkillKeys(skills)
@@ -349,18 +404,19 @@ func expandCartesian(models []string, frameworks map[string]FrameworkSpec, skill
 				if skillName == NoSkill && fw.DisableNoSkill {
 					continue
 				}
-				skill := skills[skillName]
-				if !isSkillCompatible(skill, fw.Name) {
-					continue
+				for _, skill := range skills[skillName] {
+					if !isSkillCompatible(skill, fw.Name) {
+						continue
+					}
+					out = append(out, buildResolvedSubject(fw, model, skill, nil, nil, ""))
 				}
-				out = append(out, buildResolvedSubject(fw, model, skill, nil, nil, ""))
 			}
 		}
 	}
 	return out
 }
 
-func resolveSubjectEntry(entry SubjectEntry, frameworks map[string]FrameworkSpec, skills map[string]contracts.SkillSpec) (ResolvedSubject, bool, error) {
+func resolveSubjectEntry(entry SubjectEntry, frameworks map[string]FrameworkSpec, skills map[string][]contracts.SkillSpec) (ResolvedSubject, bool, error) {
 	frameworkName := defaultString(entry.Framework, KindModelAPI)
 	model := strings.TrimSpace(entry.Model)
 	if model == "" {
@@ -374,11 +430,37 @@ func resolveSubjectEntry(entry SubjectEntry, frameworks map[string]FrameworkSpec
 	if !ok {
 		return ResolvedSubject{}, false, fmt.Errorf("subject %q references unknown framework %q", entry.ID, frameworkName)
 	}
-	skill, ok := skills[skillName]
-	if !ok {
+	skillVersions, ok := skills[skillName]
+	if !ok || len(skillVersions) == 0 {
 		return ResolvedSubject{}, false, fmt.Errorf("subject %q references unknown skill %q", entry.ID, skillName)
 	}
+	skillVersion := defaultString(entry.SkillVersion, entry.Version)
+	skill, err := resolveSkillVersion(skillName, skillVersion, skillVersions)
+	if err != nil {
+		return ResolvedSubject{}, false, fmt.Errorf("subject %q: %w", entry.ID, err)
+	}
 	return buildResolvedSubject(fw, model, skill, entry.Labels, entry.Tags, entry.ID), true, nil
+}
+
+func resolveSkillVersion(skillName, version string, versions []contracts.SkillSpec) (contracts.SkillSpec, error) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		if len(versions) == 1 {
+			return versions[0], nil
+		}
+		names := make([]string, 0, len(versions))
+		for _, item := range versions {
+			names = append(names, item.Version)
+		}
+		sort.Strings(names)
+		return contracts.SkillSpec{}, fmt.Errorf("skill %q has multiple versions; choose one of: %s", skillName, strings.Join(names, ","))
+	}
+	for _, item := range versions {
+		if item.Version == version {
+			return item, nil
+		}
+	}
+	return contracts.SkillSpec{}, fmt.Errorf("skill %q version %q not found", skillName, version)
 }
 
 func buildResolvedSubject(fw FrameworkSpec, model string, skill contracts.SkillSpec, labels, tags []string, explicitID string) ResolvedSubject {
@@ -387,27 +469,36 @@ func buildResolvedSubject(fw FrameworkSpec, model string, skill contracts.SkillS
 	}
 	id := strings.TrimSpace(explicitID)
 	if id == "" {
-		id = SubjectID(fw.Name, model, skill.Name)
+		id = SubjectID(fw.Name, model, skill.Name, skill.Version)
 	}
 	return ResolvedSubject{
 		Spec: contracts.SubjectSpec{
-			ID:        id,
-			Kind:      fw.Kind,
-			Framework: fw.Name,
-			Model:     model,
-			Skill:     skill.Name,
-			Labels:    labels,
-			Tags:      tags,
+			ID:           id,
+			Kind:         fw.Kind,
+			Framework:    fw.Name,
+			Model:        model,
+			Skill:        skill.Name,
+			SkillVersion: skill.Version,
+			Labels:       labels,
+			Tags:         tags,
 		},
 		Framework: fw,
 		Skill:     skill,
 	}
 }
 
-func SubjectID(framework, model, skill string) string {
+func SubjectID(framework, model, skill string, version ...string) string {
 	framework = defaultString(framework, KindModelAPI)
 	skill = defaultString(skill, NoSkill)
-	return sanitize(framework) + "__" + sanitize(model) + "__" + sanitize(skill)
+	base := sanitize(framework) + "__" + sanitize(model) + "__" + sanitize(skill)
+	if skill == NoSkill || len(version) == 0 || strings.TrimSpace(version[0]) == "" {
+		return base
+	}
+	v := sanitize(version[0])
+	if strings.HasPrefix(v, "v") {
+		return base + "__" + v
+	}
+	return base + "__v" + v
 }
 
 func filterSubjects(subjects []ResolvedSubject, selected []string) ([]ResolvedSubject, error) {
@@ -416,23 +507,58 @@ func filterSubjects(subjects []ResolvedSubject, selected []string) ([]ResolvedSu
 		sort.Slice(subjects, func(i, j int) bool { return subjects[i].Spec.ID < subjects[j].Spec.ID })
 		return subjects, nil
 	}
-	want := map[string]struct{}{}
-	for _, id := range selected {
-		want[id] = struct{}{}
-	}
-	var out []ResolvedSubject
+	index := map[string][]ResolvedSubject{}
 	for _, subject := range subjects {
-		if _, ok := want[subject.Spec.ID]; ok {
-			out = append(out, subject)
-			delete(want, subject.Spec.ID)
+		index[subject.Spec.ID] = append(index[subject.Spec.ID], subject)
+		legacy := SubjectID(subject.Spec.Framework, subject.Spec.Model, subject.Spec.Skill)
+		if legacy != subject.Spec.ID {
+			index[legacy] = append(index[legacy], subject)
 		}
 	}
-	if len(want) > 0 {
-		missing := sortedSet(want)
+	var out []ResolvedSubject
+	seen := map[string]struct{}{}
+	var missing []string
+	for _, id := range selected {
+		matches := index[id]
+		if len(matches) == 0 {
+			missing = append(missing, id)
+			continue
+		}
+		unique := uniqueSubjects(matches)
+		if len(unique) > 1 {
+			versions := make([]string, 0, len(unique))
+			for _, subject := range unique {
+				versions = append(versions, firstNonEmptyString(subject.Spec.SkillVersion, "unversioned"))
+			}
+			sort.Strings(versions)
+			return nil, fmt.Errorf("selected subject %q is ambiguous across skill versions: %s", id, strings.Join(versions, ","))
+		}
+		subject := unique[0]
+		if _, ok := seen[subject.Spec.ID]; ok {
+			continue
+		}
+		seen[subject.Spec.ID] = struct{}{}
+		out = append(out, subject)
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
 		return nil, fmt.Errorf("unknown selected subjects: %s", strings.Join(missing, ","))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Spec.ID < out[j].Spec.ID })
 	return out, nil
+}
+
+func uniqueSubjects(subjects []ResolvedSubject) []ResolvedSubject {
+	seen := map[string]struct{}{}
+	out := make([]ResolvedSubject, 0, len(subjects))
+	for _, subject := range subjects {
+		if _, ok := seen[subject.Spec.ID]; ok {
+			continue
+		}
+		seen[subject.Spec.ID] = struct{}{}
+		out = append(out, subject)
+	}
+	return out
 }
 
 func dedupeSubjects(subjects []ResolvedSubject) []ResolvedSubject {
@@ -557,7 +683,7 @@ func sortedKeys[T any](m map[string]T) []string {
 	return keys
 }
 
-func sortedSkillKeys(m map[string]contracts.SkillSpec) []string {
+func sortedSkillKeys(m map[string][]contracts.SkillSpec) []string {
 	return sortedKeys(m)
 }
 
@@ -576,6 +702,16 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func sanitize(value string) string {

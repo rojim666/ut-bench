@@ -85,6 +85,14 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	// 6. 执行前快照
 	before, _ := snapshotWorkspace(workRoot)
 
+	// 7. 准备 trace 输出目录
+	traceDir := filepath.Join(req.MetaRoot, "agent_traces", subjectID, sample.Language)
+	tracePath := filepath.Join(traceDir, sample.ID+".trace.jsonl")
+	diffPath := filepath.Join(traceDir, sample.ID+".diff.json")
+	if err := os.MkdirAll(traceDir, 0o755); err != nil {
+		return agentError("trace_error", err)
+	}
+
 	// 8. 渲染命令和环境变量
 	templateData := commandTemplateData{
 		Workspace:         workRoot,
@@ -133,9 +141,46 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	environmentSetup, setupErr := runSandboxPreflight(ctx, sandboxRunner, sandboxReq, buildSampleEnvironmentSetupCommands(sample, workRoot))
 	setupWarning := ""
 	if setupErr != nil {
-		// 样本依赖预热只是加速/补缓存步骤，不应阻断 Agent 生成。
-		// 真正决定环境是否可用的是下面的 framework preflight 和后续评测。
-		setupWarning = setupErr.Error()
+		trace := AgentTrace{
+			SubjectID:          subjectID,
+			Framework:          req.Subject.Spec.Framework,
+			Model:              req.Subject.Spec.Model,
+			Skill:              req.Subject.Spec.Skill,
+			SampleID:           sample.ID,
+			Language:           sample.Language,
+			Command:            cmdText,
+			StartedAt:          time.Now().UTC(),
+			FinishedAt:         time.Now().UTC(),
+			EnvironmentSetup:   environmentSetup,
+			SandboxProvider:    sandboxReq.Provider,
+			SandboxImage:       sandboxReq.DockerImage,
+			SandboxFingerprint: sandboxFingerprintForRequest(sandboxReq),
+			TracePath:          tracePath,
+			WorkspaceDiffPath:  diffPath,
+		}
+		_ = writeAgentTrace(tracePath, trace)
+		return AgentGenerateResult{
+			RawResponse: map[string]any{
+				"adapter":             "cli_agent",
+				"subject_id":          subjectID,
+				"framework":           req.Subject.Spec.Framework,
+				"model":               req.Subject.Spec.Model,
+				"skill":               req.Subject.Spec.Skill,
+				"command":             cmdText,
+				"environment_setup":   environmentSetup,
+				"sandbox_provider":    sandboxReq.Provider,
+				"sandbox_image":       sandboxReq.DockerImage,
+				"sandbox_mode":        sandboxReq.Mode,
+				"sandbox_workspace":   workRoot,
+				"sandbox_fingerprint": trace.SandboxFingerprint,
+			},
+			Trace: trace,
+			Error: &contracts.ErrorInfo{
+				Kind:      "sample_env_prepare_error",
+				Message:   setupErr.Error(),
+				Retryable: false,
+			},
+		}
 	}
 
 	// 10. 执行沙箱预检
@@ -156,6 +201,8 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 			SandboxProvider:    sandboxReq.Provider,
 			SandboxImage:       sandboxReq.DockerImage,
 			SandboxFingerprint: sandboxFingerprintForRequest(sandboxReq),
+			TracePath:          tracePath,
+			WorkspaceDiffPath:  diffPath,
 		}
 		return AgentGenerateResult{
 			RawResponse: map[string]any{
@@ -187,6 +234,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	runOutput, runErr := sandboxRunner.Run(ctx, sandboxReq)
 	finished := time.Now()
 	latency := int(finished.Sub(started).Milliseconds())
+	_ = writeRawAgentOutputs(rawTracePath, rawStdoutPath, rawStderrPath, runOutput.Stdout, runOutput.Stderr)
 
 	// 12. 执行后快照 + diff
 	after, _ := snapshotWorkspace(workRoot)
@@ -213,11 +261,21 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		SandboxProvider:    sandboxReq.Provider,
 		SandboxImage:       sandboxReq.DockerImage,
 		SandboxFingerprint: sandboxFingerprintForRequest(sandboxReq),
+		TracePath:          tracePath,
+		WorkspaceDiffPath:  diffPath,
 	}
 
 	// 从 Agent 输出中提取必要的 token、错误和策略校验信息，不再持久化完整 trace。
 	parseAgentOutput(&trace, runOutput.Stdout, runOutput.Stderr)
 	finalizeAgentAccounting(&trace, req.Prompt, "", req.Model)
+
+	// 14. 写入 trace 文件（完整结构化数据）
+	_ = writeAgentTrace(tracePath, trace)
+	_ = contracts.WriteJSON(diffPath, map[string]any{
+		"workspace":  workRoot,
+		"subject_id": subjectID,
+		"changes":    changes,
+	})
 
 	// 15. 构建原始响应
 	rawResponse := map[string]any{
@@ -229,6 +287,8 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		"command":             cmdText,
 		"exit_code":           runOutput.ExitCode,
 		"latency_ms":          latency,
+		"trace_path":          tracePath,
+		"workspace_diff_path": diffPath,
 		"stdout":              trimText(runOutput.Stdout, 4000),
 		"stderr":              trimText(runOutput.Stderr, 4000),
 		"environment_setup":   environmentSetup,
@@ -250,7 +310,21 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		trace.Stderr = trimText(strings.TrimSpace(trace.Stderr+"\nenvironment_setup_warning: "+setupWarning), 8000)
 	}
 
-	// 16. 拦截环境漂移行为
+	// 16. 处理执行错误
+	if runErr != nil {
+		return AgentGenerateResult{
+			RawResponse: rawResponse,
+			Trace:       trace,
+			LatencyMS:   latency,
+			Error: &contracts.ErrorInfo{
+				Kind:      "sandbox_policy_error",
+				Message:   violation,
+				Retryable: false,
+			},
+		}
+	}
+
+	// 17. 拦截环境漂移行为
 	if violation := detectSandboxPolicyViolation(trace.CommandsExecuted, frameworkForbiddenCommandPatterns(framework)); violation != "" {
 		rawResponse["policy_violation"] = violation
 		return AgentGenerateResult{
@@ -265,67 +339,9 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 		}
 	}
 
-	// 17. 查找生成的测试文件。即使 Agent 非零退出或超时，也先尝试回收已经写出的测试文件；
-	// 项目级任务里常见情况是 Agent 把测试写到包目录下的 *_test.go，但没有复制到 generated_test.go。
+	// 18. 查找生成的测试文件
 	generatedPath := findGeneratedTest(workRoot, outputFile, framework.OutputGlobs, changes, sample.Language)
 	if generatedPath == "" {
-		failureDetail := agentFailureDetail(trace)
-		if shouldFallbackCLIAgentToModelAPI(req, trace, failureDetail, runErr) {
-			fallbackReq := req
-			fallbackReq.Prompt = agentPrompt
-			fallback := generateModelAPI(ctx, fallbackReq)
-			rawResponse["fallback_adapter"] = "model_api"
-			rawResponse["fallback_policy"] = "cli_agent_no_test_file_to_model_api"
-			rawResponse["fallback_reason"] = failureDetail
-			rawResponse["fallback_raw_response"] = fallback.RawResponse
-			trace.Stderr = trimText(strings.TrimSpace(trace.Stderr+"\nmodel_api_fallback: "+failureDetail), 8000)
-			trace.PromptTokens = fallback.PromptTokens
-			trace.CompletionTokens = fallback.CompletionTokens
-			trace.TotalTokens = fallback.TotalTokens
-			trace.TokenSource = fallback.TokenSource
-			trace.EstimatedCost = fallback.EstimatedCostUSD
-			trace.CostSource = fallback.CostSource
-			trace.UsageSourceDetail = "cli_agent_model_api_fallback"
-			if fallback.Error == nil && strings.TrimSpace(fallback.Code) != "" {
-				trace.InteractionCount++
-				trace.DurationMS += fallback.LatencyMS
-				rawResponse["token_source"] = trace.TokenSource
-				rawResponse["estimated_cost_usd"] = trace.EstimatedCost
-				rawResponse["cost_source"] = trace.CostSource
-				rawResponse["usage_source_detail"] = trace.UsageSourceDetail
-				return AgentGenerateResult{
-					Code:             fallback.Code,
-					RawResponse:      rawResponse,
-					Trace:            trace,
-					LatencyMS:        latency + fallback.LatencyMS,
-					PromptTokens:     fallback.PromptTokens,
-					CompletionTokens: fallback.CompletionTokens,
-					TotalTokens:      fallback.TotalTokens,
-					TokenSource:      trace.TokenSource,
-					EstimatedCostUSD: trace.EstimatedCost,
-					CostSource:       trace.CostSource,
-					Truncated:        fallback.Truncated,
-				}
-			}
-			if fallback.Error != nil {
-				rawResponse["fallback_error"] = fallback.Error.Message
-				if failureDetail == "" {
-					failureDetail = fallback.Error.Message
-				}
-			}
-		}
-		if runErr != nil {
-			return AgentGenerateResult{
-				RawResponse: rawResponse,
-				Trace:       trace,
-				LatencyMS:   latency,
-				Error: &contracts.ErrorInfo{
-					Kind:      "agent_execution_error",
-					Message:   fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000)),
-					Retryable: false,
-				},
-			}
-		}
 		return AgentGenerateResult{
 			RawResponse: rawResponse,
 			Trace:       trace,
@@ -343,6 +359,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 
 	raw, err := os.ReadFile(generatedPath)
 	if err != nil {
+		_ = writeAgentTrajectory(trajectoryPath, trace, "", err.Error(), runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
 			RawResponse: rawResponse,
 			Trace:       trace,
@@ -360,7 +377,9 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	if trace.SessionExportError != "" {
 		rawResponse["session_export_error"] = trace.SessionExportError
 	}
+	_ = writeAgentTrace(tracePath, trace)
 	if err := validateGeneratedTest(code, sample.Language); err != nil {
+		_ = writeAgentTrajectory(trajectoryPath, trace, generatedPath, err.Error(), runOutput.Stdout, runOutput.Stderr)
 		return AgentGenerateResult{
 			Code:             code,
 			RawResponse:      rawResponse,
@@ -754,17 +773,121 @@ func looksLikeFilePath(s string) bool {
 	return false
 }
 
-// writeAgentTrace 将完整 trace 写入 JSONL 文件。
+// writeAgentTrace 将 Agent trace 写成真正的 JSONL 事件流。
 func writeAgentTrace(path string, trace AgentTrace) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(trace)
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	raw = append(raw, '\n')
-	return os.WriteFile(path, raw, 0o644)
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	emit := func(event string, payload map[string]any) error {
+		payload["schema_version"] = "agent_trace.v0.2.0"
+		payload["event"] = event
+		return enc.Encode(payload)
+	}
+
+	if err := emit("summary", map[string]any{
+		"subject_id":           trace.SubjectID,
+		"framework":            trace.Framework,
+		"model":                trace.Model,
+		"skill":                trace.Skill,
+		"sample_id":            trace.SampleID,
+		"language":             trace.Language,
+		"started_at":           trace.StartedAt,
+		"finished_at":          trace.FinishedAt,
+		"session_id":           trace.SessionID,
+		"session_export_path":  trace.SessionExportPath,
+		"session_export_error": trace.SessionExportError,
+		"raw_trace_path":       trace.RawTracePath,
+		"raw_stdout_path":      trace.RawStdoutPath,
+		"raw_stderr_path":      trace.RawStderrPath,
+		"trajectory_path":      trace.TrajectoryPath,
+		"workspace_diff_path":  trace.WorkspaceDiffPath,
+		"sandbox_provider":     trace.SandboxProvider,
+		"sandbox_image":        trace.SandboxImage,
+		"sandbox_fingerprint":  trace.SandboxFingerprint,
+		"interaction_count":    trace.InteractionCount,
+		"tool_call_count":      len(trace.ToolCalls),
+		"commands_count":       len(trace.CommandsExecuted),
+		"files_read_count":     len(trace.FilesRead),
+		"files_written_count":  len(trace.FilesWritten),
+		"prompt_tokens":        trace.PromptTokens,
+		"completion_tokens":    trace.CompletionTokens,
+		"total_tokens":         trace.TotalTokens,
+		"token_source":         trace.TokenSource,
+		"estimated_cost":       trace.EstimatedCost,
+		"cost_source":          trace.CostSource,
+		"usage_source_detail":  trace.UsageSourceDetail,
+	}); err != nil {
+		return err
+	}
+
+	for i, check := range trace.EnvironmentSetup {
+		if err := emit("environment_setup", preflightTracePayload(i+1, check)); err != nil {
+			return err
+		}
+	}
+	for i, check := range trace.PreflightChecks {
+		if err := emit("preflight_check", preflightTracePayload(i+1, check)); err != nil {
+			return err
+		}
+	}
+	for i, call := range trace.ToolCalls {
+		if err := emit("tool_call", map[string]any{
+			"index":       i + 1,
+			"tool":        call.Tool,
+			"input":       trimText(call.Input, 4000),
+			"output":      trimText(call.Output, 4000),
+			"duration_ms": call.DurationMS,
+			"success":     call.Success,
+		}); err != nil {
+			return err
+		}
+	}
+	for i, command := range trace.CommandsExecuted {
+		if err := emit("command", map[string]any{
+			"index":   i + 1,
+			"command": command,
+		}); err != nil {
+			return err
+		}
+	}
+	for i, file := range trace.FilesRead {
+		if err := emit("file_read", map[string]any{"index": i + 1, "path": file}); err != nil {
+			return err
+		}
+	}
+	for i, file := range trace.FilesWritten {
+		if err := emit("file_written", map[string]any{"index": i + 1, "path": file}); err != nil {
+			return err
+		}
+	}
+
+	return emit("outcome", map[string]any{
+		"exit_code":            trace.ExitCode,
+		"duration_ms":          trace.DurationMS,
+		"workspace_diff":       compactStringList(trace.WorkspaceDiff, 200, 1000),
+		"workspace_diff_count": len(trace.WorkspaceDiff),
+		"stdout_excerpt":       trimText(trace.Stdout, 4000),
+		"stderr_excerpt":       trimText(trace.Stderr, 4000),
+	})
+}
+
+func preflightTracePayload(index int, check PreflightCheck) map[string]any {
+	return map[string]any{
+		"index":       index,
+		"command":     check.Command,
+		"exit_code":   check.ExitCode,
+		"duration_ms": check.DurationMS,
+		"stdout":      trimText(check.Stdout, 4000),
+		"stderr":      trimText(check.Stderr, 4000),
+		"passed":      check.Passed,
+	}
 }
 
 // agentError 构建一个包含错误的 AgentGenerateResult。
@@ -1241,12 +1364,15 @@ func collectOpenCodeSessionExport(
 		return
 	}
 
-	records := extractUsageRecords(payload)
+	records := deduplicateUsageRecords(extractUsageRecords(payload))
 	if len(records) == 0 {
 		return
 	}
 
-	var promptSum, completionSum, totalSum int
+	// OpenCode 的 tokens.total 是累积值（从会话开始到当前消息的总 token），
+	// 不能直接求和；prompt/completion (input/output) 是单次值，可以求和。
+	var promptSum, completionSum int
+	var maxTotal int
 	var promptSeen, completionSeen, totalSeen bool
 	for _, record := range records {
 		if record.Prompt != nil {
@@ -1258,8 +1384,10 @@ func collectOpenCodeSessionExport(
 			completionSeen = true
 		}
 		if record.Total != nil {
-			totalSum += *record.Total
 			totalSeen = true
+			if *record.Total > maxTotal {
+				maxTotal = *record.Total
+			}
 		}
 	}
 	if promptSeen {
@@ -1268,11 +1396,10 @@ func collectOpenCodeSessionExport(
 	if completionSeen {
 		trace.CompletionTokens = intPtr(completionSum)
 	}
-	if totalSeen {
-		trace.TotalTokens = intPtr(totalSum)
-	}
-	if trace.TotalTokens == nil && trace.PromptTokens != nil && trace.CompletionTokens != nil {
-		trace.TotalTokens = intPtr(*trace.PromptTokens + *trace.CompletionTokens)
+	if promptSeen && completionSeen {
+		trace.TotalTokens = intPtr(promptSum + completionSum)
+	} else if totalSeen {
+		trace.TotalTokens = intPtr(maxTotal)
 	}
 	trace.TokenSource = "actual"
 	trace.UsageSourceDetail = "opencode_session_export"
@@ -1301,6 +1428,21 @@ func collectUsageRecords(output string) []usageRecord {
 			seen[key] = struct{}{}
 			out = append(out, record)
 		}
+	}
+	return out
+}
+
+func deduplicateUsageRecords(records []usageRecord) []usageRecord {
+	seen := map[string]struct{}{}
+	var out []usageRecord
+	for _, record := range records {
+		keyBytes, _ := json.Marshal(record)
+		key := string(keyBytes)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, record)
 	}
 	return out
 }

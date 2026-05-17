@@ -50,6 +50,7 @@ func TestBuildDockerEvaluateArgsUsesSourceRunManifest(t *testing.T) {
 		MutationEnabled: true,
 		MutationTimeout: 120,
 		MutationPolicy:  "warn",
+		Workers:         4,
 	}
 	cfg := DockerConfig{EvalImageName: "utbench:latest", ProjectRoot: "/repo"}
 
@@ -63,6 +64,28 @@ func TestBuildDockerEvaluateArgsUsesSourceRunManifest(t *testing.T) {
 	mustContain(t, joined, "--manifest /app/artifacts/runs/source-run/generated/generated_manifest.json")
 	mustContain(t, joined, "--mutation-enabled")
 	mustContain(t, joined, "--mutation-timeout 120")
+	mustContain(t, joined, "--workers 4")
+}
+
+func TestBuildDockerRunArgsAppliesResourceLimits(t *testing.T) {
+	spec := contracts.RunSpec{
+		RunID:     "run-1",
+		Models:    []string{"deepseek"},
+		Languages: []string{"python"},
+	}
+	cfg := DockerConfig{
+		EvalImageName: "utbench:latest",
+		ProjectRoot:   "/repo",
+		EvalMemory:    "4g",
+		EvalCPUs:      "2",
+	}
+
+	args := buildDockerRunArgs(spec, orchestrator.Options{}, cfg)
+	joined := strings.Join(args, " ")
+
+	mustContain(t, joined, "--memory 4g")
+	mustContain(t, joined, "--memory-swap 4g")
+	mustContain(t, joined, "--cpus 2")
 }
 
 func TestBuildDockerRunArgsPassesReuseGeneratedWithDBPath(t *testing.T) {

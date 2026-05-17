@@ -652,10 +652,21 @@ func containsReasoningTagOutsideLiterals(text string) bool {
 // 返回值:
 //   - string: 截断后的文本
 func trimText(v string, max int) string {
-	if len(v) <= max {
+	if max <= 0 || len(v) <= max {
 		return v
 	}
-	return v[:max]
+	used := 0
+	var b strings.Builder
+	b.Grow(max)
+	for _, r := range v {
+		size := len(string(r))
+		if used+size > max {
+			break
+		}
+		b.WriteRune(r)
+		used += size
+	}
+	return b.String()
 }
 
 // coverageTargetsText 返回覆盖率目标说明文本

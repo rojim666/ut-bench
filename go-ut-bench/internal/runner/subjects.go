@@ -20,6 +20,8 @@ import (
 // 新代码应直接使用 AgentTrace。
 type subjectTrace struct {
 	TracePath          string
+	RawTracePath       string
+	TrajectoryPath     string
 	WorkspaceDiffPath  string
 	SandboxProvider    string
 	SandboxFingerprint string
@@ -191,6 +193,8 @@ func (s *Service) generateWithSubject(
 	// 转换为旧的 subjectTrace 格式（向后兼容）
 	trace := subjectTrace{
 		TracePath:          result.Trace.TracePath,
+		RawTracePath:       result.Trace.RawTracePath,
+		TrajectoryPath:     result.Trace.TrajectoryPath,
 		WorkspaceDiffPath:  result.Trace.WorkspaceDiffPath,
 		SandboxProvider:    result.Trace.SandboxProvider,
 		SandboxFingerprint: result.Trace.SandboxFingerprint,
@@ -304,27 +308,38 @@ func injectAgentNativeSkill(workRoot, framework string, skill contracts.SkillSpe
 
 	switch strings.ToLower(framework) {
 	case "codebuddy":
-		return copySkillToNativeDir(workRoot, skill, ".codebuddy", "skills", true)
-	case "opencode":
-		return copySkillToNativeDir(workRoot, skill, ".opencode", "skills", false)
-	case "claudecode", "claude_code", "claude-code":
-		return copySkillToNativeDir(workRoot, skill, ".claude", "skills", true)
-	case "codex", "codex_cli", "codex-cli":
-		dest, err := copySkillToNativeDir(workRoot, skill, ".codex", "skills", true)
+		nativeName := codeBuddyNativeSkillName(skill)
+		dest, err := copySkillToNativeDir(workRoot, skill, ".codebuddy", "skills", true, nativeName)
 		if err != nil {
 			return "", err
 		}
-		return dest, ensureCodexSkillFrontmatter(filepath.Join(dest, "SKILL.md"), skill)
+		return dest, ensureNativeSkillFrontmatter(filepath.Join(dest, "SKILL.md"), nativeName, skill)
+	case "opencode":
+		nativeName := openCodeNativeSkillName(skill)
+		dest, err := copySkillToNativeDir(workRoot, skill, ".opencode", "skills", true, nativeName)
+		if err != nil {
+			return "", err
+		}
+		return dest, ensureNativeSkillFrontmatter(filepath.Join(dest, "SKILL.md"), nativeName, skill)
+	case "claudecode", "claude_code", "claude-code":
+		return copySkillToNativeDir(workRoot, skill, ".claude", "skills", true, safePathName(skill.Name))
+	case "codex", "codex_cli", "codex-cli":
+		dest, err := copySkillToNativeDir(workRoot, skill, ".codex", "skills", true, safePathName(skill.Name))
+		if err != nil {
+			return "", err
+		}
+		return dest, ensureNativeSkillFrontmatter(filepath.Join(dest, "SKILL.md"), safePathName(skill.Name), skill)
 	default:
 		return "", nil
 	}
 }
 
 // copySkillToNativeDir 将 skill 的 instruction_path + files 原样复制到
-// <workRoot>/<topDir>/<subDir>/<skillName>/ 目录。
+// <workRoot>/<topDir>/<subDir>/<nativeName>/ 目录。
 // Agent 启动后通过其原生机制发现并加载这些文件。
-func copySkillToNativeDir(workRoot string, skill contracts.SkillSpec, topDir, subDir string, renameInstructionToSkill bool) (string, error) {
-	destDir := filepath.Join(workRoot, topDir, subDir, safePathName(skill.Name))
+func copySkillToNativeDir(workRoot string, skill contracts.SkillSpec, topDir, subDir string, renameInstructionToSkill bool, nativeName string) (string, error) {
+	nativeName = safeNativeSkillName(defaultString(nativeName, skill.Name))
+	destDir := filepath.Join(workRoot, topDir, subDir, nativeName)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return "", err
 	}
@@ -370,7 +385,7 @@ func samePath(left, right string) bool {
 	return left == right
 }
 
-func ensureCodexSkillFrontmatter(path string, skill contracts.SkillSpec) error {
+func ensureNativeSkillFrontmatter(path, nativeName string, skill contracts.SkillSpec) error {
 	raw, err := os.ReadFile(path)
 	if err != nil || hasYAMLFrontmatter(raw) {
 		return err
@@ -380,12 +395,56 @@ func ensureCodexSkillFrontmatter(path string, skill contracts.SkillSpec) error {
 		description = "UT-Bench skill package"
 	}
 	description = strings.Join(strings.Fields(description), " ")
-	prefix := fmt.Sprintf("---\nname: %s\ndescription: %q\n---\n\n", safePathName(skill.Name), description)
+	prefix := fmt.Sprintf("---\nname: %s\ndescription: %q\n---\n\n", safeNativeSkillName(nativeName), description)
 	return os.WriteFile(path, append([]byte(prefix), raw...), 0o644)
 }
 
 func hasYAMLFrontmatter(raw []byte) bool {
 	return strings.HasPrefix(string(raw), "---\n") || strings.HasPrefix(string(raw), "---\r\n")
+}
+
+func codeBuddyNativeSkillName(skill contracts.SkillSpec) string {
+	if name := skillFrontmatterName(skill.InstructionPath); name != "" {
+		return safeNativeSkillName(name)
+	}
+	return safeNativeSkillName(skill.Name)
+}
+
+func openCodeNativeSkillName(skill contracts.SkillSpec) string {
+	if name := skillFrontmatterName(skill.InstructionPath); name != "" {
+		return safeOpenCodeSkillName(name)
+	}
+	return safeOpenCodeSkillName(skill.Name)
+}
+
+func skillFrontmatterName(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	if !strings.HasPrefix(text, "---\n") {
+		return ""
+	}
+	rest := strings.TrimPrefix(text, "---\n")
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return ""
+	}
+	for _, line := range strings.Split(rest[:end], "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(key) != "name" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		value = strings.Trim(value, `"'`)
+		return value
+	}
+	return ""
 }
 
 func appendSkillInstruction(prompt string, skill contracts.SkillSpec) string {
@@ -417,24 +476,23 @@ func appendSkillInstruction(prompt string, skill contracts.SkillSpec) string {
 
 func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, outputFile, skillDir string, framework string, skillName string, strategy generationStrategySpec) string {
 	var b strings.Builder
+	slashSkill := ""
+	if skillDir != "" && skillName != "" && skillName != agentconfig.NoSkill && usesSlashSkillInvocation(framework) {
+		slashSkill = nativeSkillNameFromDir(skillDir, skillName)
+		b.WriteString("/")
+		b.WriteString(slashSkill)
+		b.WriteString(" ")
+	}
 	b.WriteString(prompt)
 	b.WriteString("\n\nAgent execution contract:\n")
 	b.WriteString("- Work only inside the provided workspace.\n")
-	b.WriteString("- Do not modify the original source behavior.\n")
-	b.WriteString("- Do not install packages or mutate the environment with apt, apk, yum, dnf, pip, npm, yarn, pnpm, go install, or cargo install.\n")
-	b.WriteString("- Use only dependencies already available in the workspace or sandbox image; if a dependency is unavailable, write tests against the accessible project API instead of installing it.\n")
-	if strategy.RequireGeneratedTestFile {
-		b.WriteString("- Generate one complete unit test file.\n")
-		b.WriteString("- Write the final test file to: ")
-		b.WriteString(outputFile)
-		b.WriteString("\n")
-	} else {
-		b.WriteString("- Add or update tests in the project workspace using the project's natural test directory/package.\n")
-		b.WriteString("- You may write multiple test files when the project structure requires it.\n")
-		b.WriteString("- Keep production source behavior unchanged; recordable output path: ")
-		b.WriteString(outputFile)
-		b.WriteString("\n")
-	}
+	b.WriteString("- Treat all original source files as read-only inputs. Do not edit, rename, reformat, move, delete, or overwrite any source file.\n")
+	b.WriteString("- Only create or edit the final generated test file. If validation fails, fix the generated test file instead of changing production/source code.\n")
+	b.WriteString("- Preserve the source package/module/namespace/class/function signatures exactly; never change them to make tests compile.\n")
+	b.WriteString("- Generate one complete unit test file.\n")
+	b.WriteString("- Write the final test file to: ")
+	b.WriteString(outputFile)
+	b.WriteString("\n")
 	b.WriteString("- Target language: ")
 	b.WriteString(sample.Language)
 	b.WriteString("\n- Source file in workspace: ")
@@ -443,12 +501,18 @@ func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, out
 
 	// Skill 调用指令
 	if skillDir != "" && skillName != "" && skillName != agentconfig.NoSkill {
-		// Claude Code 使用斜杠命令调用 skill
 		if strings.EqualFold(framework, "claudecode") || strings.EqualFold(framework, "claude_code") || strings.EqualFold(framework, "claude-code") {
-			b.WriteString("\nIMPORTANT: Use the /")
-			b.WriteString(strings.ReplaceAll(skillName, "-", "_"))
-			b.WriteString(" command to generate tests according to the skill methodology.\n")
-			b.WriteString("The skill provides structured guidelines for test generation.\n")
+			b.WriteString("\nIMPORTANT: This task must run through the Claude Code native skill /")
+			b.WriteString(slashSkill)
+			b.WriteString(". The prompt starts with that slash command; keep following the skill until the final test file is written.\n")
+		} else if strings.EqualFold(framework, "codebuddy") {
+			b.WriteString("\nIMPORTANT: This task must run through the CodeBuddy native skill /")
+			b.WriteString(slashSkill)
+			b.WriteString(". The prompt starts with that slash command; keep following the skill until the final test file is written.\n")
+		} else if strings.EqualFold(framework, "opencode") {
+			b.WriteString("\nIMPORTANT: This task must run through the OpenCode native skill /")
+			b.WriteString(slashSkill)
+			b.WriteString(". The prompt starts with that slash command; keep following the skill until the final test file is written.\n")
 		} else {
 			// 其他框架使用原生 skill 机制或工作区可见的 skill 文件目录。
 			b.WriteString("- Skill files are available at: ")
@@ -460,6 +524,25 @@ func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, out
 		}
 	}
 	return b.String()
+}
+
+func usesSlashSkillInvocation(framework string) bool {
+	return strings.EqualFold(framework, "claudecode") ||
+		strings.EqualFold(framework, "claude_code") ||
+		strings.EqualFold(framework, "claude-code") ||
+		strings.EqualFold(framework, "codebuddy") ||
+		strings.EqualFold(framework, "opencode")
+}
+
+func nativeSkillNameFromDir(skillDir, fallback string) string {
+	skillDir = strings.TrimRight(filepath.ToSlash(strings.TrimSpace(skillDir)), "/")
+	if skillDir == "" {
+		return safeNativeSkillName(fallback)
+	}
+	if idx := strings.LastIndex(skillDir, "/"); idx >= 0 {
+		skillDir = skillDir[idx+1:]
+	}
+	return safeNativeSkillName(defaultString(skillDir, fallback))
 }
 
 func renderTemplateText(name, content string, data commandTemplateData) (string, error) {
@@ -710,15 +793,25 @@ func snapshotWorkspace(root string) (map[string]string, error) {
 			return err
 		}
 		if d.IsDir() {
+			if path != root {
+				rel, relErr := filepath.Rel(root, path)
+				if relErr == nil && shouldSkipWorkspaceSnapshotDir(rel) {
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
+		if isAgentRuntimeWorkspacePath(rel) {
+			return nil
+		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return nil
 		}
 		sum := sha256.Sum256(raw)
-		out[filepath.ToSlash(rel)] = hex.EncodeToString(sum[:])
+		out[rel] = hex.EncodeToString(sum[:])
 		return nil
 	})
 	return out, err
@@ -727,12 +820,57 @@ func snapshotWorkspace(root string) (map[string]string, error) {
 func diffSnapshots(before, after map[string]string) []string {
 	var out []string
 	for path, hash := range after {
+		if isAgentRuntimeWorkspacePath(path) {
+			continue
+		}
 		if before[path] != hash {
 			out = append(out, path)
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+func shouldSkipWorkspaceSnapshotDir(path string) bool {
+	path = strings.Trim(strings.TrimPrefix(filepath.ToSlash(path), "./"), "/")
+	if path == "" {
+		return false
+	}
+	if isAgentRuntimeWorkspacePath(path + "/") {
+		return true
+	}
+	base := filepath.Base(path)
+	switch base {
+	case ".git", "node_modules", "__pycache__", "venv", ".venv", "target", "build":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAgentRuntimeWorkspacePath(path string) bool {
+	path = strings.Trim(strings.TrimPrefix(filepath.ToSlash(path), "./"), "/")
+	if path == "" {
+		return false
+	}
+	prefixes := []string{
+		".claude/",
+		".codebuddy/",
+		".opencode/",
+		".pytest_cache/",
+		".utbench/",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	switch path {
+	case "go.mod", "go.sum", "test_runner":
+		return true
+	default:
+		return false
+	}
 }
 
 func findGeneratedTest(workRoot, preferred string, globs, changes []string, language string) string {
@@ -825,6 +963,45 @@ func copyDir(src, dst string) error {
 
 func safePathName(raw string) string {
 	return sanitizeIdentifier(raw)
+}
+
+func safeNativeSkillName(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	var b strings.Builder
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune('_')
+	}
+	out := strings.Trim(b.String(), "_-")
+	if out == "" {
+		return "skill"
+	}
+	return out
+}
+
+func safeOpenCodeSkillName(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteRune('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "skill"
+	}
+	return out
 }
 
 func uniqueSortedStrings(values []string) []string {

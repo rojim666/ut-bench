@@ -117,6 +117,8 @@ func (s *Service) Evaluate(ctx context.Context, spec contracts.RunSpec, manifest
 		c.ResponsePath = toSlashCrossPlatform(c.ResponsePath)
 		c.MetadataPath = toSlashCrossPlatform(c.MetadataPath)
 		c.TracePath = toSlashCrossPlatform(c.TracePath)
+		c.RawTracePath = toSlashCrossPlatform(c.RawTracePath)
+		c.TrajectoryPath = toSlashCrossPlatform(c.TrajectoryPath)
 		c.WorkspaceDiffPath = toSlashCrossPlatform(c.WorkspaceDiffPath)
 	}
 
@@ -367,6 +369,8 @@ func (s *Service) evaluateOne(ctx context.Context, spec contracts.RunSpec, item 
 		CostSource:               item.CostSource,
 		Truncated:                item.Truncated,
 		TracePath:                item.TracePath,
+		RawTracePath:             item.RawTracePath,
+		TrajectoryPath:           item.TrajectoryPath,
 		WorkspaceDiffPath:        item.WorkspaceDiffPath,
 		SandboxProvider:          item.SandboxProvider,
 		SandboxFingerprint:       item.SandboxFingerprint,

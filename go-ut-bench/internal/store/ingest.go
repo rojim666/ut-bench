@@ -359,8 +359,8 @@ func (s *SQLiteStore) ingestEvaluationTx(ctx context.Context, tx *sql.Tx, path s
 		return fmt.Errorf("upsert evaluation env: %w", err)
 	}
 	policyID := stableID("score_policy", "default-v2")
-	policyJSON := fmt.Sprintf(`{"compile":%.2f,"test":%.2f,"coverage":%.2f,"mutation":%.2f,"excludes_score_eligible_false":true}`,
-		contracts.DefaultWeights.Compile, contracts.DefaultWeights.Test, contracts.DefaultWeights.Coverage, contracts.DefaultWeights.Mutation)
+	policyJSON := fmt.Sprintf(`{"formula":"scene_c","coverage":%.2f,"assertion":%.2f,"mutation":%.2f,"assert_sat":%.1f,"excludes_score_eligible_false":true}`,
+		contracts.DefaultWeights.Coverage, contracts.DefaultWeights.Assertion, contracts.DefaultWeights.Mutation, contracts.DefaultWeights.AssertSat)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO score_policies(score_policy_id, name, policy_json, created_at_utc)
 		VALUES(?, ?, ?, ?)

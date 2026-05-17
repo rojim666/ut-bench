@@ -6,7 +6,9 @@ import (
 	"archive/zip"
 	"context"
 	"database/sql"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,7 @@ import (
 	"time"
 
 	"go-ut-bench/internal/agentconfig"
+	"go-ut-bench/internal/analyzer"
 	"go-ut-bench/internal/contracts"
 	"go-ut-bench/internal/dataset"
 	"go-ut-bench/internal/obs"
@@ -51,11 +54,13 @@ type Server struct {
 	httpServer *http.Server       // 用于优雅关闭
 
 	// 缓存层：避免重复读磁盘/解析YAML
-	automation    *AutomationScheduler
-	cacheMu       sync.RWMutex
-	catalogCache  *catalogCacheEntry
-	runsCache     *runsCacheEntry
-	envCheckCache *envCheckCacheEntry
+	automation     *AutomationScheduler
+	cacheMu        sync.RWMutex
+	catalogCache   *catalogCacheEntry
+	runsCache      *runsCacheEntry
+	envCheckCache  *envCheckCacheEntry
+	analysisJobs   map[string]*analysisJob
+	analysisJobsMu sync.RWMutex
 }
 
 type catalogCacheEntry struct {
@@ -92,12 +97,13 @@ func NewServer(mgr *RunManager, bld *BuildManager, configPath, outputRoot, dbPat
 	}
 
 	s := &Server{
-		mgr:        mgr,
-		bld:        bld,
-		configPath: configPath,
-		outputRoot: outputRoot,
-		dockerCfg:  cfg,
-		db:         db,
+		mgr:          mgr,
+		bld:          bld,
+		configPath:   configPath,
+		outputRoot:   outputRoot,
+		dockerCfg:    cfg,
+		db:           db,
+		analysisJobs: map[string]*analysisJob{},
 	}
 	s.automation = NewAutomationScheduler(s)
 	s.mux = http.NewServeMux()
@@ -237,6 +243,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/agents/install-cli", s.handleAgentInstallCLI)
 	s.mux.HandleFunc("/api/agents/frameworks", s.handleAgentFrameworks)
 	s.mux.HandleFunc("/api/agents/skills", s.handleAgentSkills)
+	s.mux.HandleFunc("/api/agents/skills/", s.handleAgentSkillsSub)
 	s.mux.HandleFunc("/api/agents/skills/upload", s.handleAgentSkillsUpload)
 	s.mux.HandleFunc("/api/agents/skills/command", s.handleAgentSkillsCommand)
 	s.mux.HandleFunc("/api/agents/skills/scan", s.handleAgentSkillsScan)
@@ -250,6 +257,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/db/overview", s.handleDBOverview)
 	s.mux.HandleFunc("/api/db/runs", s.handleDBRuns)
 	s.mux.HandleFunc("/api/db/results", s.handleDBResults)
+	s.mux.HandleFunc("/api/db/skill-version-comparison", s.handleDBSkillVersionComparison)
 	s.mux.HandleFunc("/api/db/artifacts", s.handleDBArtifacts)
 	s.mux.HandleFunc("/api/db/facets", s.handleDBFacets)
 	s.mux.HandleFunc("/api/db/ingest-run", s.handleDBIngestRun)
@@ -712,6 +720,25 @@ func (s *Server) handleDBResults(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rows)
 }
 
+func (s *Server) handleDBSkillVersionComparison(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	rows, err := db.SkillVersionComparison(r.Context(), q.Get("skill"), q.Get("framework"), q.Get("model"))
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
 func (s *Server) handleDBArtifacts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1002,8 +1029,21 @@ type frameworkInfo struct {
 }
 
 type skillInfo struct {
-	Name                 string   `json:"name"`
-	Version              string   `json:"version,omitempty"`
+	Name                 string             `json:"name"`
+	Version              string             `json:"version,omitempty"`
+	DefaultVersion       string             `json:"default_version,omitempty"`
+	Description          string             `json:"description,omitempty"`
+	InstructionPath      string             `json:"instruction_path,omitempty"`
+	Files                []string           `json:"files,omitempty"`
+	InjectMode           string             `json:"inject_mode,omitempty"`
+	CompatibleFrameworks []string           `json:"compatible_frameworks,omitempty"`
+	CompatibleLanguages  []string           `json:"compatible_languages,omitempty"`
+	Versions             []skillVersionInfo `json:"versions,omitempty"`
+}
+
+type skillVersionInfo struct {
+	Version              string   `json:"version"`
+	Default              bool     `json:"default"`
 	Description          string   `json:"description,omitempty"`
 	InstructionPath      string   `json:"instruction_path,omitempty"`
 	Files                []string `json:"files,omitempty"`
@@ -1013,14 +1053,15 @@ type skillInfo struct {
 }
 
 type subjectInfo struct {
-	ID          string   `json:"id"`
-	Kind        string   `json:"kind"`
-	Framework   string   `json:"framework"`
-	Model       string   `json:"model"`
-	Skill       string   `json:"skill"`
-	SandboxMode string   `json:"sandbox_mode,omitempty"`
-	Labels      []string `json:"labels,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
+	ID           string   `json:"id"`
+	Kind         string   `json:"kind"`
+	Framework    string   `json:"framework"`
+	Model        string   `json:"model"`
+	Skill        string   `json:"skill"`
+	SkillVersion string   `json:"skill_version,omitempty"`
+	SandboxMode  string   `json:"sandbox_mode,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
 }
 
 type configResponse struct {
@@ -1145,7 +1186,7 @@ func (s *Server) loadWebCatalog() (webCatalog, error) {
 	}
 	fmt.Printf("[web] agents config loaded: %d subjects, models=%v\n", len(resolved), modelNames)
 	frameworkSeen := map[string]frameworkInfo{}
-	skillSeen := map[string]skillInfo{}
+	skillSeen := map[string]*skillInfo{}
 	subjects := make([]subjectInfo, 0, len(resolved))
 	for _, item := range resolved {
 		if item.Framework.Name != "" {
@@ -1166,26 +1207,48 @@ func (s *Server) loadWebCatalog() (webCatalog, error) {
 			}
 		}
 		if item.Skill.Name != "" {
-			skillSeen[item.Skill.Name] = skillInfo{
-				Name:                 item.Skill.Name,
+			info := skillSeen[item.Skill.Name]
+			if info == nil {
+				info = &skillInfo{
+					Name:                 item.Skill.Name,
+					Version:              item.Skill.Version,
+					DefaultVersion:       item.Skill.DefaultVersion,
+					Description:          item.Skill.Description,
+					InstructionPath:      item.Skill.InstructionPath,
+					Files:                append([]string{}, item.Skill.Files...),
+					InjectMode:           item.Skill.InjectMode,
+					CompatibleFrameworks: append([]string{}, item.Skill.CompatibleFrameworks...),
+					CompatibleLanguages:  append([]string{}, item.Skill.CompatibleLanguages...),
+				}
+				skillSeen[item.Skill.Name] = info
+			}
+			if info.DefaultVersion == "" {
+				info.DefaultVersion = item.Skill.DefaultVersion
+			}
+			if info.Version == "" || item.Skill.Version == info.DefaultVersion {
+				info.Version = item.Skill.Version
+			}
+			info.Versions = appendSkillVersionInfo(info.Versions, skillVersionInfo{
 				Version:              item.Skill.Version,
+				Default:              item.Skill.Version != "" && item.Skill.Version == item.Skill.DefaultVersion,
 				Description:          item.Skill.Description,
 				InstructionPath:      item.Skill.InstructionPath,
 				Files:                append([]string{}, item.Skill.Files...),
 				InjectMode:           item.Skill.InjectMode,
 				CompatibleFrameworks: append([]string{}, item.Skill.CompatibleFrameworks...),
 				CompatibleLanguages:  append([]string{}, item.Skill.CompatibleLanguages...),
-			}
+			})
 		}
 		subjects = append(subjects, subjectInfo{
-			ID:          item.Spec.ID,
-			Kind:        item.Spec.Kind,
-			Framework:   item.Spec.Framework,
-			Model:       item.Spec.Model,
-			Skill:       item.Spec.Skill,
-			SandboxMode: item.Framework.SandboxMode,
-			Labels:      append([]string{}, item.Spec.Labels...),
-			Tags:        append([]string{}, item.Spec.Tags...),
+			ID:           item.Spec.ID,
+			Kind:         item.Spec.Kind,
+			Framework:    item.Spec.Framework,
+			Model:        item.Spec.Model,
+			Skill:        item.Spec.Skill,
+			SkillVersion: item.Spec.SkillVersion,
+			SandboxMode:  item.Framework.SandboxMode,
+			Labels:       append([]string{}, item.Spec.Labels...),
+			Tags:         append([]string{}, item.Spec.Tags...),
 		})
 	}
 	catalog.frameworks = make([]frameworkInfo, 0, len(frameworkSeen))
@@ -1195,12 +1258,28 @@ func (s *Server) loadWebCatalog() (webCatalog, error) {
 	sort.Slice(catalog.frameworks, func(i, j int) bool { return catalog.frameworks[i].Name < catalog.frameworks[j].Name })
 	catalog.skills = make([]skillInfo, 0, len(skillSeen))
 	for _, v := range skillSeen {
-		catalog.skills = append(catalog.skills, v)
+		sort.Slice(v.Versions, func(i, j int) bool { return v.Versions[i].Version < v.Versions[j].Version })
+		catalog.skills = append(catalog.skills, *v)
 	}
 	sort.Slice(catalog.skills, func(i, j int) bool { return catalog.skills[i].Name < catalog.skills[j].Name })
 	sort.Slice(subjects, func(i, j int) bool { return subjects[i].ID < subjects[j].ID })
 	catalog.subjects = subjects
 	return catalog, nil
+}
+
+func appendSkillVersionInfo(items []skillVersionInfo, item skillVersionInfo) []skillVersionInfo {
+	if strings.TrimSpace(item.Version) == "" {
+		return items
+	}
+	for i := range items {
+		if items[i].Version == item.Version {
+			if item.Default {
+				items[i].Default = true
+			}
+			return items
+		}
+	}
+	return append(items, item)
 }
 
 func deriveModelsFromSubjects(subjectIDs []string, subjects []subjectInfo) []string {
@@ -1534,6 +1613,25 @@ type runAgentSkillCommandRequest struct {
 	Command   string `json:"command"`
 }
 
+type createSkillVersionDraftRequest struct {
+	SourceRunID     string `json:"source_run_id"`
+	BaseVersion     string `json:"base_version"`
+	EvolutionItemID string `json:"evolution_item_id"`
+	Version         string `json:"version"`
+}
+
+type skillVersionManifest struct {
+	SkillName             string    `json:"skill_name"`
+	Version               string    `json:"version"`
+	BaseVersion           string    `json:"base_version,omitempty"`
+	SourceRunID           string    `json:"source_run_id,omitempty"`
+	SourceEvolutionItemID string    `json:"source_evolution_item_id,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
+	Status                string    `json:"status"`
+	Files                 []string  `json:"files"`
+	ContentSHA256         string    `json:"content_sha256"`
+}
+
 func (s *Server) handleAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1590,6 +1688,99 @@ func (s *Server) handleAgentSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"installed": installed,
 		"errors":    errors,
+	})
+}
+
+func (s *Server) handleAgentSkillsSub(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/agents/skills/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[1] == "versions" && parts[2] == "drafts" {
+		s.handleAgentSkillVersionDraft(w, r, parts[0])
+		return
+	}
+	errJSON(w, http.StatusNotFound, "unknown skill endpoint")
+}
+
+func (s *Server) handleAgentSkillVersionDraft(w http.ResponseWriter, r *http.Request, skillName string) {
+	if r.Method != http.MethodPost {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	skillName = sanitizeAgentSkillName(skillName)
+	if skillName == "" || skillName == agentconfig.NoSkill {
+		errJSON(w, http.StatusBadRequest, "valid skill name is required")
+		return
+	}
+	var req createSkillVersionDraftRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	agentsConfigPath := strings.TrimSpace(s.mgr.agentsConfigPath)
+	if agentsConfigPath == "" {
+		errJSON(w, http.StatusBadRequest, "agents config path is not configured")
+		return
+	}
+	version := strings.TrimSpace(req.Version)
+	if version == "" {
+		version = defaultSkillDraftVersion(req.SourceRunID)
+	}
+	version = sanitizeSkillVersion(version)
+	if version == "" {
+		errJSON(w, http.StatusBadRequest, "valid version is required")
+		return
+	}
+	baseVersion := strings.TrimSpace(req.BaseVersion)
+	content, sourceDetail := s.buildSkillDraftContent(skillName, baseVersion, req.SourceRunID, req.EvolutionItemID)
+	baseDir := filepath.Dir(agentsConfigPath)
+	draftDir := filepath.Join(baseDir, "skills", skillName, "versions", version)
+	if _, err := os.Stat(draftDir); err == nil {
+		errJSON(w, http.StatusConflict, "skill version draft already exists: "+version)
+		return
+	}
+	if err := os.MkdirAll(draftDir, 0o755); err != nil {
+		errJSON(w, http.StatusInternalServerError, "create draft dir: "+err.Error())
+		return
+	}
+	instructionPath := filepath.Join(draftDir, "SKILL.md")
+	if err := os.WriteFile(instructionPath, []byte(content), 0o644); err != nil {
+		errJSON(w, http.StatusInternalServerError, "write draft skill: "+err.Error())
+		return
+	}
+	sum := sha256.Sum256([]byte(content))
+	manifest := skillVersionManifest{
+		SkillName:             skillName,
+		Version:               version,
+		BaseVersion:           baseVersion,
+		SourceRunID:           strings.TrimSpace(req.SourceRunID),
+		SourceEvolutionItemID: strings.TrimSpace(req.EvolutionItemID),
+		CreatedAt:             time.Now().UTC(),
+		Status:                "draft",
+		Files:                 []string{"SKILL.md"},
+		ContentSHA256:         hex.EncodeToString(sum[:]),
+	}
+	manifestPath := filepath.Join(draftDir, "skill_version_manifest.json")
+	if err := contracts.WriteJSON(manifestPath, manifest); err != nil {
+		errJSON(w, http.StatusInternalServerError, "write draft manifest: "+err.Error())
+		return
+	}
+	relInstruction, _ := filepath.Rel(baseDir, instructionPath)
+	if err := appendSkillVersionDraftToYAML(agentsConfigPath, skillName, version, baseVersion, filepath.ToSlash(relInstruction), sourceDetail); err != nil {
+		errJSON(w, http.StatusInternalServerError, "update agents config: "+err.Error())
+		return
+	}
+	s.cacheMu.Lock()
+	s.catalogCache = nil
+	s.cacheMu.Unlock()
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"skill_name":     skillName,
+		"version":        version,
+		"base_version":   baseVersion,
+		"draft_dir":      draftDir,
+		"instruction":    instructionPath,
+		"manifest":       manifestPath,
+		"content_sha256": manifest.ContentSHA256,
+		"status":         "draft",
 	})
 }
 
@@ -1835,6 +2026,195 @@ func (s *Server) handleAgentSkillsScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"packages": pkgs, "skill_root": skillRoot})
+}
+
+func (s *Server) buildSkillDraftContent(skillName, baseVersion, sourceRunID, evolutionItemID string) (string, string) {
+	var baseContent string
+	var sourceDetail string
+	if catalog, err := s.loadWebCatalogCached(); err == nil {
+		for _, skill := range catalog.skills {
+			if skill.Name != skillName {
+				continue
+			}
+			for _, version := range skill.Versions {
+				if baseVersion != "" && version.Version != baseVersion {
+					continue
+				}
+				if baseVersion == "" && !version.Default {
+					continue
+				}
+				if raw, err := os.ReadFile(version.InstructionPath); err == nil {
+					baseContent = string(raw)
+				}
+				baseVersion = version.Version
+				break
+			}
+			if baseContent == "" && skill.InstructionPath != "" {
+				if raw, err := os.ReadFile(skill.InstructionPath); err == nil {
+					baseContent = string(raw)
+				}
+			}
+			break
+		}
+	}
+	evolutionText := ""
+	if sourceRunID != "" {
+		analysisPath := filepath.Join(s.outputRoot, "runs", sourceRunID, "analysis", "analysis_report.json")
+		var report contracts.AnalysisReport
+		if err := readJSONFile(analysisPath, &report); err == nil && report.EvolutionPlan != nil {
+			for _, item := range report.EvolutionPlan.Items {
+				if evolutionItemID != "" && item.ID != evolutionItemID {
+					continue
+				}
+				if item.Target != "skill" && evolutionItemID == "" {
+					continue
+				}
+				evolutionText = fmt.Sprintf("来源 run: %s\n来源建议: %s\n原因: %s\n预计影响: %s\n风险: %s\n人工验收: %s\n",
+					sourceRunID, item.Title, item.Reason, strings.Join(item.ExpectedMetrics, ", "), strings.Join(item.Risks, "；"), strings.Join(item.ManualVerification, "；"))
+				sourceDetail = item.Title
+				break
+			}
+		}
+	}
+	if sourceDetail == "" {
+		sourceDetail = "自进化候选版本"
+	}
+	if strings.TrimSpace(baseContent) == "" {
+		baseContent = "# " + skillName + "\n\n请基于目标语言和被测代码生成高质量、可运行、可评测的单元测试。\n"
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(baseContent, "\r\n"))
+	b.WriteString("\n\n## 自进化草稿说明\n\n")
+	if baseVersion != "" {
+		b.WriteString("- 基线版本: " + baseVersion + "\n")
+	}
+	if evolutionText != "" {
+		for _, line := range strings.Split(strings.TrimSpace(evolutionText), "\n") {
+			b.WriteString("- " + line + "\n")
+		}
+	} else if sourceRunID != "" {
+		b.WriteString("- 来源 run: " + sourceRunID + "\n")
+	}
+	b.WriteString("- 状态: draft，需人工审查后再用于正式评测。\n")
+	return b.String(), sourceDetail
+}
+
+func defaultSkillDraftVersion(sourceRunID string) string {
+	stamp := time.Now().UTC().Format("200601021504")
+	sourceRunID = sanitizeSkillVersion(sourceRunID)
+	if sourceRunID != "" {
+		if len(sourceRunID) > 18 {
+			sourceRunID = sourceRunID[:18]
+		}
+		return "v" + stamp + "-" + sourceRunID
+	}
+	return "v" + stamp
+}
+
+func sanitizeSkillVersion(version string) string {
+	version = strings.TrimSpace(version)
+	var b strings.Builder
+	for _, r := range version {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		}
+	}
+	return strings.Trim(b.String(), "-_.")
+}
+
+func appendSkillVersionDraftToYAML(path, skillName, version, baseVersion, instructionPath, description string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("cannot read agents config: %w", err)
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return fmt.Errorf("cannot parse agents config: %w", err)
+	}
+	doc := ensureYAMLDocument(&root)
+	skills := ensureMappingChild(doc, "skills")
+	skillNode := mappingChild(skills, skillName)
+	if skillNode == nil || skillNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("skill %q not found", skillName)
+	}
+	defaultVersion := scalarValue(mappingChild(skillNode, "default_version"))
+	if defaultVersion == "" {
+		defaultVersion = scalarValue(mappingChild(skillNode, "version"))
+	}
+	if defaultVersion == "" {
+		defaultVersion = firstNonEmptyString(baseVersion, "v1")
+	}
+	setMappingChild(skillNode, "default_version", scalarNode(defaultVersion))
+	versions := ensureMappingChild(skillNode, "versions")
+	if mappingChild(versions, defaultVersion) == nil {
+		versions.Content = append(versions.Content, scalarNode(defaultVersion), legacySkillVersionNode(skillNode))
+	}
+	if mappingChild(versions, version) != nil {
+		return fmt.Errorf("skill version %q already exists", version)
+	}
+	versions.Content = append(versions.Content, scalarNode(version), mappingNode(
+		"description", scalarNode(strings.TrimSpace(description)),
+		"instruction_path", scalarNode("./"+strings.TrimPrefix(filepath.ToSlash(instructionPath), "./")),
+		"files", stringSeqNode([]string{"./" + strings.TrimPrefix(filepath.ToSlash(filepath.Dir(instructionPath)), "./") + "/"}),
+	))
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		return fmt.Errorf("cannot encode agents config: %w", err)
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return fmt.Errorf("cannot write agents config: %w", err)
+	}
+	return nil
+}
+
+func legacySkillVersionNode(skillNode *yaml.Node) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	for _, key := range []string{"description", "instruction_path", "files", "inject_mode", "compatible_frameworks", "compatible_languages"} {
+		if child := mappingChild(skillNode, key); child != nil {
+			node.Content = append(node.Content, scalarNode(key), cloneYAMLNode(child))
+		}
+	}
+	return node
+}
+
+func cloneYAMLNode(node *yaml.Node) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	cp := *node
+	cp.Content = make([]*yaml.Node, len(node.Content))
+	for i, child := range node.Content {
+		cp.Content[i] = cloneYAMLNode(child)
+	}
+	return &cp
+}
+
+func scalarValue(node *yaml.Node) string {
+	if node == nil {
+		return ""
+	}
+	return strings.TrimSpace(node.Value)
+}
+
+func setMappingChild(parent *yaml.Node, key string, value *yaml.Node) {
+	if parent == nil || parent.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			parent.Content[i+1] = value
+			return
+		}
+	}
+	parent.Content = append(parent.Content, scalarNode(key), value)
+}
+
+func readJSONFile(path string, out any) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
 }
 
 // skillMeta 描述从 SKILL.md 提取的 skill 元信息。
@@ -2593,11 +2973,28 @@ func (s *Server) handleRunSub(w http.ResponseWriter, r *http.Request) {
 		sub = parts[1]
 	}
 
+	if sub == "analysis/jobs" || strings.HasPrefix(sub, "analysis/jobs/") {
+		s.handleRunAnalysisJob(w, r, runID, strings.TrimPrefix(sub, "analysis/jobs"))
+		return
+	}
+	if sub == "analysis/chat" || strings.HasPrefix(sub, "analysis/chat/") {
+		s.handleRunAnalysisChat(w, r, runID, strings.TrimPrefix(sub, "analysis/chat"))
+		return
+	}
+	if sub == "analysis/subjects" {
+		s.handleRunAnalysisSubjects(w, r, runID)
+		return
+	}
+
 	switch sub {
 	case "events":
 		s.handleRunEvents(w, r, runID)
 	case "report":
 		s.handleRunReport(w, r, runID)
+	case "analysis":
+		s.handleRunAnalysis(w, r, runID)
+	case "optimization-plan":
+		s.handleRunOptimizationPlan(w, r, runID)
 	case "report-html":
 		s.handleRunReportHTML(w, r, runID)
 	case "rerun":
@@ -3166,6 +3563,133 @@ func (s *Server) handleRunReport(w http.ResponseWriter, r *http.Request, runID s
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
+}
+
+type runAnalysisRequest struct {
+	RuleEnabled        bool                                `json:"rule_enabled"`
+	LLMEnabled         bool                                `json:"llm_enabled"`
+	LLMModel           string                              `json:"llm_model"`
+	Force              bool                                `json:"force"`
+	SkipReportInsights bool                                `json:"skip_report_insights"`
+	SelectedSubjects   []contracts.AnalysisSubjectSelector `json:"selected_subjects"`
+	CompareMode        bool                                `json:"compare_mode"`
+}
+
+func (s *Server) handleRunAnalysis(w http.ResponseWriter, r *http.Request, runID string) {
+	switch r.Method {
+	case http.MethodGet:
+		analysisPath := filepath.Join(s.outputRoot, "runs", runID, "analysis", "analysis_report.json")
+		data, err := os.ReadFile(analysisPath)
+		if err != nil {
+			errJSON(w, http.StatusNotFound, "analysis not available yet")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(data)
+	case http.MethodPost:
+		var req runAnalysisRequest
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		report, err := analyzer.NewService().Analyze(r.Context(), analyzer.Options{
+			RunID:              runID,
+			OutputRoot:         s.outputRoot,
+			ConfigPath:         s.configPath,
+			RuleEnabled:        req.RuleEnabled,
+			LLMEnabled:         req.LLMEnabled,
+			LLMModel:           req.LLMModel,
+			Force:              req.Force,
+			SkipReportInsights: req.SkipReportInsights,
+			SelectedSubjects:   req.SelectedSubjects,
+			CompareMode:        req.CompareMode,
+		})
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	default:
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleRunAnalysisSubjects(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	analysisPath := filepath.Join(s.outputRoot, "runs", runID, "analysis", "analysis_report.json")
+	if data, err := os.ReadFile(analysisPath); err == nil {
+		var report contracts.AnalysisReport
+		if json.Unmarshal(data, &report) == nil {
+			writeJSON(w, http.StatusOK, report.Subjects)
+			return
+		}
+	}
+	evalPath := filepath.Join(s.outputRoot, "runs", runID, "evaluation", "evaluation_result.json")
+	var eval contracts.EvaluationResultSet
+	data, err := os.ReadFile(evalPath)
+	if err != nil || json.Unmarshal(data, &eval) != nil {
+		errJSON(w, http.StatusNotFound, "evaluation not available yet")
+		return
+	}
+	subjects := make([]contracts.AnalysisSubject, 0, len(eval.Results))
+	for _, res := range eval.Results {
+		subjects = append(subjects, contracts.AnalysisSubject{
+			SubjectID:      firstNonEmptyString(res.SubjectID, res.Model),
+			Model:          res.Model,
+			AgentFramework: res.AgentFramework,
+			AgentModel:     res.AgentModel,
+			SkillName:      res.SkillName,
+			Language:       res.Language,
+			SampleID:       res.SampleID,
+			CompilePass:    res.CompilePass,
+			TestPass:       res.TestPass,
+			LineCoverage:   res.LineCoverage,
+			MutationScore:  res.MutationScore,
+		})
+	}
+	writeJSON(w, http.StatusOK, subjects)
+}
+
+func (s *Server) handleRunOptimizationPlan(w http.ResponseWriter, r *http.Request, runID string) {
+	switch r.Method {
+	case http.MethodGet:
+		planPath := filepath.Join(s.outputRoot, "runs", runID, "analysis", "optimization_plan.json")
+		data, err := os.ReadFile(planPath)
+		if err != nil {
+			errJSON(w, http.StatusNotFound, "optimization plan not available yet")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(data)
+	case http.MethodPost:
+		var req runAnalysisRequest
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		plan, err := analyzer.NewService().OptimizePlan(r.Context(), analyzer.OptimizeOptions{
+			RunID:      runID,
+			OutputRoot: s.outputRoot,
+			ConfigPath: s.configPath,
+			LLMEnabled: req.LLMEnabled,
+			LLMModel:   req.LLMModel,
+			Force:      req.Force,
+		})
+		if err != nil {
+			status := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "analysis_report.json not available") {
+				status = http.StatusNotFound
+			}
+			errJSON(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+	default:
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (s *Server) handleRunReportHTML(w http.ResponseWriter, r *http.Request, runID string) {

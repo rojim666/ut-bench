@@ -48,6 +48,11 @@ func buildDimensions(rows []contracts.EvaluationResult, modelDetails map[string]
 			modelID = detail.ModelID
 			provider = detail.Provider
 		}
+		compilePassRate := rate(agg.compilePass, agg.count)
+		avgTestPassRate := rate(agg.sampleTestPass, agg.count)
+		avgLineCoverage := avg(agg.lineSum, agg.lineCnt)
+		avgMutationScore := avg(agg.mutationSum, agg.mutationCnt)
+		avgAssertionDensity := avgFloat(agg.assertionDensitySum, agg.assertionDensityCnt)
 		byModel = append(byModel, contracts.ModelDim{
 			Model:                 agg.key,
 			SubjectID:             agg.subjectID,
@@ -59,17 +64,18 @@ func buildDimensions(rows []contracts.EvaluationResult, modelDetails map[string]
 			ModelID:               modelID,
 			Provider:              provider,
 			TotalSamples:          agg.count,
-			CompilePassRate:       rate(agg.compilePass, agg.count),
-			AvgTestPassRate:       rate(agg.sampleTestPass, agg.count),
+			CompilePassRate:       compilePassRate,
+			AvgTestPassRate:       avgTestPassRate,
 			AvgTestCasePassRate:   rate(agg.testPassTotal, agg.testTotal),
-			AvgLineCoverage:       avg(agg.lineSum, agg.lineCnt),
+			AvgLineCoverage:       avgLineCoverage,
 			AvgBranchCoverage:     avg(agg.branchSum, agg.branchCnt),
-			AvgMutationScore:      avg(agg.mutationSum, agg.mutationCnt),
+			AvgMutationScore:      avgMutationScore,
+			CompositeScore:        calculateCompositeScore(compilePassRate, avgTestPassRate, avgLineCoverage, avgAssertionDensity, avgMutationScore),
 			AvgLatencyMS:          avgFloat(agg.latencySum, agg.latencyCnt),
 			AvgPromptTokens:       avgFloat(agg.promptTokensSum, agg.promptTokenCnt),
 			AvgCompletionTokens:   avgFloat(agg.completionTokensSum, agg.completionTokenCnt),
 			AvgTotalTokens:        avgFloat(agg.totalTokensSum, agg.totalTokenCnt),
-			AvgAssertionDensity:   avgFloat(agg.assertionDensitySum, agg.assertionDensityCnt),
+			AvgAssertionDensity:   avgAssertionDensity,
 			ActualTokenSamples:    agg.actualTokenSamples,
 			EstimatedTokenSamples: agg.estimatedTokenSamples,
 			PartialTokenSamples:   agg.partialTokenSamples,

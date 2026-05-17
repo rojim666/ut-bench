@@ -23,6 +23,7 @@ frameworks:
         preflight:
             python:
                 - command -v opencode
+                - python3 -m pytest --version
             go:
                 - command -v opencode
                 - command -v go
@@ -117,6 +118,7 @@ frameworks:
         preflight:
             python:
                 - command -v codebuddy
+                - python3 -m pytest --version
             go:
                 - command -v codebuddy
                 - command -v go
@@ -196,6 +198,7 @@ frameworks:
         preflight:
             python:
                 - command -v claude
+                - python3 -m pytest --version
             go:
                 - command -v claude
                 - command -v go

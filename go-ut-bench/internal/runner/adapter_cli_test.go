@@ -2,7 +2,7 @@ package runner
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,8 +151,8 @@ func TestCollectOpenCodeSessionExportUsesOpenCodeMessageTokensSchema(t *testing.
 	if trace.CompletionTokens == nil || *trace.CompletionTokens != 1582 {
 		t.Fatalf("completion tokens = %v, want 1582", trace.CompletionTokens)
 	}
-	if trace.TotalTokens == nil || *trace.TotalTokens != 72304 {
-		t.Fatalf("total tokens = %v, want 72304", trace.TotalTokens)
+	if trace.TotalTokens == nil || *trace.TotalTokens != 3956 {
+		t.Fatalf("total tokens = %v, want 3956 (prompt+completion, not cumulative sum)", trace.TotalTokens)
 	}
 }
 
@@ -429,5 +429,303 @@ func TestParseUsageAndSessionWithClaudeCodeJSONL(t *testing.T) {
 	tools := parseClaudeCodeToolCalls(stdout, "")
 	if len(tools) != 1 || tools[0].Tool != "bash" {
 		t.Fatalf("unexpected tools: %+v", tools)
+	}
+}
+
+func TestBuildTrajectoryFromStreamJSON(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will inspect the file."},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/workspace/foo.py"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"def add(a,b): return a+b"}]}}`,
+		`{"type":"result","usage":{"input_tokens":1200,"output_tokens":300,"total_tokens":1500}}`,
+	}, "\n")
+	trace := AgentTrace{
+		SubjectID:      "claudecode__m__skill",
+		Framework:      "claudecode",
+		Model:          "m",
+		Skill:          "skill",
+		SampleID:       "sample",
+		Language:       "python",
+		RawTracePath:   "raw.jsonl",
+		RawStdoutPath:  "stdout.log",
+		RawStderrPath:  "stderr.log",
+		TrajectoryPath: "trajectory.json",
+	}
+	traj := buildAgentTrajectory(trace, "generated_test.py", "", stdout, "")
+
+	if traj.RawTracePath != "raw.jsonl" {
+		t.Fatalf("raw trace path = %q", traj.RawTracePath)
+	}
+	if len(traj.Steps) < 4 {
+		t.Fatalf("steps len = %d, want at least 4: %+v", len(traj.Steps), traj.Steps)
+	}
+	if traj.Steps[1].Kind != "tool_call" || traj.Steps[1].Tool != "Read" || traj.Steps[1].ToolCallID != "toolu_1" {
+		t.Fatalf("tool call step unexpected: %+v", traj.Steps[1])
+	}
+	foundResult := false
+	for _, step := range traj.Steps {
+		if step.Kind == "tool_result" && step.ToolCallID == "toolu_1" {
+			foundResult = true
+			break
+		}
+	}
+	if !foundResult {
+		t.Fatalf("expected tool_result for toolu_1 in steps: %+v", traj.Steps)
+	}
+}
+
+func TestBuildTrajectoryCompactsRawEventsAndParsesExitCode(t *testing.T) {
+	longText := strings.Repeat("long trace content ", 800)
+	stdout := strings.Join([]string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"I will inspect the source and generate tests. ` + longText + `"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"javac -cp . Source.java generated_test.java 2>&1","huge":"` + longText + `"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bash","content":"javac: not found\nExit Code: 127","is_error":false}]}}`,
+	}, "\n")
+	trace := AgentTrace{
+		SubjectID: "claudecode__m__skill",
+		Framework: "claudecode",
+		Model:     "m",
+		Skill:     "skill",
+		SampleID:  "sample",
+		Language:  "java",
+	}
+
+	traj := buildAgentTrajectory(trace, "generated_test.java", "", stdout, "")
+	raw, err := json.Marshal(traj)
+	if err != nil {
+		t.Fatalf("marshal trajectory: %v", err)
+	}
+	var decoded AgentTrajectory
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal trajectory: %v", err)
+	}
+
+	foundThinking := false
+	foundFailedBash := false
+	for _, step := range decoded.Steps {
+		if step.Kind == "thinking" {
+			foundThinking = true
+			if len(step.Text) > 4500 {
+				t.Fatalf("thinking text was not compacted: len=%d", len(step.Text))
+			}
+		}
+		if step.Kind == "tool_result" && step.ToolCallID == "toolu_bash" {
+			foundFailedBash = true
+			if step.ExitCode == nil || *step.ExitCode != 127 {
+				t.Fatalf("exit_code = %v, want 127", step.ExitCode)
+			}
+			if step.Success == nil || *step.Success {
+				t.Fatalf("success = %v, want false for non-zero exit", step.Success)
+			}
+		}
+		if step.RawEvent != nil {
+			if b, err := json.Marshal(step.RawEvent); err == nil && len(b) > 20000 {
+				t.Fatalf("raw_event too large: %d bytes", len(b))
+			}
+		}
+	}
+	if !foundThinking {
+		t.Fatalf("expected thinking step in %+v", decoded.Steps)
+	}
+	if !foundFailedBash {
+		t.Fatalf("expected failed bash tool_result in %+v", decoded.Steps)
+	}
+}
+
+func TestWriteAgentTraceJSONLEvents(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.trace.jsonl")
+	trace := AgentTrace{
+		SubjectID:        "claudecode__m__skill",
+		Framework:        "claudecode",
+		Model:            "m",
+		Skill:            "skill",
+		SampleID:         "sample",
+		Language:         "java",
+		InteractionCount: 3,
+		ToolCalls: []ToolCall{
+			{Tool: "Bash", Input: "go test ./...", Output: "ok", Success: true},
+		},
+		CommandsExecuted: []string{"go test ./..."},
+		FilesRead:        []string{"src/main.go"},
+		FilesWritten:     []string{"src/main_test.go"},
+		RawTracePath:     "raw.jsonl",
+		TrajectoryPath:   "trajectory.json",
+		ExitCode:         0,
+		Stdout:           strings.Repeat("stdout ", 900),
+	}
+	for i := 0; i < 260; i++ {
+		trace.WorkspaceDiff = append(trace.WorkspaceDiff, "vendor/generated/path/file.go")
+	}
+	if err := writeAgentTrace(path, trace); err != nil {
+		t.Fatalf("write agent trace: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read agent trace: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) < 5 {
+		t.Fatalf("trace lines = %d, want at least 5: %s", len(lines), string(raw))
+	}
+	events := make([]string, 0, len(lines))
+	for _, line := range lines {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("invalid jsonl line %q: %v", line, err)
+		}
+		events = append(events, event["event"].(string))
+		if event["event"] == "outcome" {
+			if stdout, _ := event["stdout_excerpt"].(string); len(stdout) > 4500 {
+				t.Fatalf("stdout excerpt too large: %d", len(stdout))
+			}
+			if diff, ok := event["workspace_diff"].([]any); !ok || len(diff) > 201 {
+				t.Fatalf("workspace diff was not compacted: %T len=%d", event["workspace_diff"], len(diff))
+			}
+			if count, _ := event["workspace_diff_count"].(float64); int(count) != len(trace.WorkspaceDiff) {
+				t.Fatalf("workspace_diff_count = %v, want %d", event["workspace_diff_count"], len(trace.WorkspaceDiff))
+			}
+		}
+	}
+	for _, want := range []string{"summary", "tool_call", "command", "file_read", "file_written", "outcome"} {
+		found := false
+		for _, got := range events {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing event %q in %v", want, events)
+		}
+	}
+}
+
+func TestBuildTrajectorySupplementsParsedToolCalls(t *testing.T) {
+	trace := AgentTrace{
+		SubjectID: "opencode__m__no_skill",
+		Framework: "opencode",
+		Model:     "m",
+		Skill:     "no_skill",
+		SampleID:  "sample",
+		Language:  "go",
+		ToolCalls: []ToolCall{
+			{Tool: "bash", Input: "go test ./...", Output: "ok", Success: true},
+		},
+	}
+	stdout := "INFO run completed"
+
+	traj := buildAgentTrajectory(trace, "generated_test.go", "", stdout, "")
+	found := false
+	for _, step := range traj.Steps {
+		if step.Kind == "tool_call" && step.Source == "parsed_log" && step.Tool == "bash" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected parsed tool call supplement in %+v", traj.Steps)
+	}
+}
+
+func TestDiffSnapshotsFiltersAgentRuntimeNoise(t *testing.T) {
+	before := map[string]string{
+		"boundary_000.java": "source",
+	}
+	after := map[string]string{
+		"boundary_000.java":              "source",
+		"generated_test.java":            "test",
+		".claude/projects/session.jsonl": "claude",
+		".codebuddy/plugins/marketplaces/codebuddy-plugins-official/README.md": "plugin",
+		".codebuddy/local_storage/entry.info":                                  "storage",
+		".pytest_cache/v/cache/nodeids":                                        "pytest",
+		".utbench/xdg-config/opencode/node_modules/pkg/index.js":               "node",
+		".utbench/xdg-data/opencode/opencode.db":                               "db",
+		"go.mod":                                                               "module",
+		"test_runner":                                                          "runner",
+	}
+
+	got := diffSnapshots(before, after)
+	if len(got) != 1 || got[0] != "generated_test.java" {
+		t.Fatalf("diffSnapshots = %#v, want only generated_test.java", got)
+	}
+}
+
+func TestParseOpenCodeSessionTrajectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session_export.json")
+	raw := `{
+	  "info": {"id": "ses_test"},
+	  "messages": [
+	    {"role":"assistant","content":[{"type":"text","text":"Reading source"},{"type":"tool_use","id":"call_1","name":"read","input":{"path":"foo.py"}}]},
+	    {"role":"tool","content":[{"type":"tool_result","tool_use_id":"call_1","content":"source"}]}
+	  ]
+	}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write session export: %v", err)
+	}
+
+	steps := parseOpenCodeSessionTrajectory(path)
+	if len(steps) < 3 {
+		t.Fatalf("steps len = %d, want at least 3: %+v", len(steps), steps)
+	}
+	if steps[1].Kind != "tool_call" || steps[1].Tool != "read" {
+		t.Fatalf("tool call step unexpected: %+v", steps[1])
+	}
+	if steps[2].Kind != "tool_result" || steps[2].ToolCallID != "call_1" {
+		t.Fatalf("tool result step unexpected: %+v", steps[2])
+	}
+}
+
+func TestParseOpenCodeSessionTrajectoryPartsSchema(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session_export.json")
+	raw := `{
+	  "info": {"id": "ses_test"},
+	  "messages": [
+	    {
+	      "info": {"role": "assistant", "id": "msg_1"},
+	      "parts": [
+	        {"type": "step-start"},
+	        {"type": "reasoning", "text": "Need to write and verify the generated test."},
+	        {"type": "tool", "tool": "write", "callID": "call_write", "state": {
+	          "status": "completed",
+	          "input": {"filePath": "/workspace/generated_test.java", "content": "class T {}"},
+	          "output": "Wrote file successfully.",
+	          "time": {"start": 1000, "end": 1025}
+	        }},
+	        {"type": "text", "text": "Done"}
+	      ]
+	    },
+	    {
+	      "info": {"role": "assistant", "id": "msg_2"},
+	      "parts": [
+	        {"type": "tool", "tool": "read", "callID": "call_read", "state": {
+	          "status": "completed",
+	          "input": {"filePath": "/workspace/generated_test.java"},
+	          "output": "class T {}"
+	        }}
+	      ]
+	    }
+	  ]
+	}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write session export: %v", err)
+	}
+
+	steps := parseOpenCodeSessionTrajectory(path)
+	if len(steps) != 6 {
+		t.Fatalf("steps len = %d, want 6: %+v", len(steps), steps)
+	}
+	if steps[0].Kind != "thinking" || !strings.Contains(steps[0].Text, "write and verify") {
+		t.Fatalf("thinking step unexpected: %+v", steps[0])
+	}
+	if steps[1].Kind != "tool_call" || steps[1].Tool != "write" || steps[1].ToolCallID != "call_write" {
+		t.Fatalf("write call step unexpected: %+v", steps[1])
+	}
+	if steps[2].Kind != "tool_result" || steps[2].Tool != "write" || steps[2].Success == nil || !*steps[2].Success || steps[2].DurationMS != 25 {
+		t.Fatalf("write result step unexpected: %+v", steps[2])
+	}
+	if steps[3].Kind != "message" || steps[4].Tool != "read" || steps[5].Kind != "tool_result" {
+		t.Fatalf("tail steps unexpected: %+v", steps)
 	}
 }
