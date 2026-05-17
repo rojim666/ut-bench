@@ -1285,12 +1285,15 @@ func collectOpenCodeSessionExport(
 		return
 	}
 
-	records := extractUsageRecords(payload)
+	records := deduplicateUsageRecords(extractUsageRecords(payload))
 	if len(records) == 0 {
 		return
 	}
 
-	var promptSum, completionSum, totalSum int
+	// OpenCode 的 tokens.total 是累积值（从会话开始到当前消息的总 token），
+	// 不能直接求和；prompt/completion (input/output) 是单次值，可以求和。
+	var promptSum, completionSum int
+	var maxTotal int
 	var promptSeen, completionSeen, totalSeen bool
 	for _, record := range records {
 		if record.Prompt != nil {
@@ -1302,8 +1305,10 @@ func collectOpenCodeSessionExport(
 			completionSeen = true
 		}
 		if record.Total != nil {
-			totalSum += *record.Total
 			totalSeen = true
+			if *record.Total > maxTotal {
+				maxTotal = *record.Total
+			}
 		}
 	}
 	if promptSeen {
@@ -1312,11 +1317,10 @@ func collectOpenCodeSessionExport(
 	if completionSeen {
 		trace.CompletionTokens = intPtr(completionSum)
 	}
-	if totalSeen {
-		trace.TotalTokens = intPtr(totalSum)
-	}
-	if trace.TotalTokens == nil && trace.PromptTokens != nil && trace.CompletionTokens != nil {
-		trace.TotalTokens = intPtr(*trace.PromptTokens + *trace.CompletionTokens)
+	if promptSeen && completionSeen {
+		trace.TotalTokens = intPtr(promptSum + completionSum)
+	} else if totalSeen {
+		trace.TotalTokens = intPtr(maxTotal)
 	}
 	trace.TokenSource = "actual"
 	trace.UsageSourceDetail = "opencode_session_export"
@@ -1345,6 +1349,21 @@ func collectUsageRecords(output string) []usageRecord {
 			seen[key] = struct{}{}
 			out = append(out, record)
 		}
+	}
+	return out
+}
+
+func deduplicateUsageRecords(records []usageRecord) []usageRecord {
+	seen := map[string]struct{}{}
+	var out []usageRecord
+	for _, record := range records {
+		keyBytes, _ := json.Marshal(record)
+		key := string(keyBytes)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, record)
 	}
 	return out
 }

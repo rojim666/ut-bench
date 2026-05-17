@@ -1,8 +1,8 @@
 models:
     MiMo-V2.5:
         config:
-            anthropic_endpoint: https://api.xiaomimimo.com/anthropic
-            api_endpoint: https://api.xiaomimimo.com/v1
+            anthropic_endpoint: https://token-plan-cn.xiaomimimo.com/anthropic
+            api_endpoint: https://token-plan-cn.xiaomimimo.com/v1
             api_key_env: MIMO_V25_API_KEY
             model: mimo-v2.5
             parameters:

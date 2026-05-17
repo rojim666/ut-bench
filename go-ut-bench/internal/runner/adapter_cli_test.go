@@ -148,8 +148,8 @@ func TestCollectOpenCodeSessionExportUsesOpenCodeMessageTokensSchema(t *testing.
 	if trace.CompletionTokens == nil || *trace.CompletionTokens != 1582 {
 		t.Fatalf("completion tokens = %v, want 1582", trace.CompletionTokens)
 	}
-	if trace.TotalTokens == nil || *trace.TotalTokens != 72304 {
-		t.Fatalf("total tokens = %v, want 72304", trace.TotalTokens)
+	if trace.TotalTokens == nil || *trace.TotalTokens != 3956 {
+		t.Fatalf("total tokens = %v, want 3956 (prompt+completion, not cumulative sum)", trace.TotalTokens)
 	}
 }
 
