@@ -5,6 +5,7 @@ package web
 import (
 	"archive/zip"
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -206,7 +207,7 @@ func (s *Server) Close() error {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -226,6 +227,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/environment/install", s.handleEnvironmentInstall)
 	s.mux.HandleFunc("/api/runs", s.handleRuns)
 	s.mux.HandleFunc("/api/runs/", s.handleRunSub)
+	s.mux.HandleFunc("/api/generated-sets", s.handleGeneratedSets)
+	s.mux.HandleFunc("/api/generated-sets/", s.handleGeneratedSetSub)
 	s.mux.HandleFunc("/api/assets/runs", s.handleAssets)
 	s.mux.HandleFunc("/api/models", s.handleModels)
 	s.mux.HandleFunc("/api/models/test-all", s.handleTestAllModels)
@@ -337,6 +340,339 @@ func (s *Server) handleDBOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, overview)
+}
+
+type generatedSetPromoteRequest struct {
+	RunID              string `json:"run_id"`
+	SourceManifestPath string `json:"source_manifest_path"`
+	Name               string `json:"name"`
+	Note               string `json:"note"`
+	Status             string `json:"status"`
+}
+
+type generatedSetUpdateRequest struct {
+	Name   string `json:"name"`
+	Note   string `json:"note"`
+	Status string `json:"status"`
+}
+
+type generatedSetEvaluateRequest struct {
+	RunID           string `json:"run_id"`
+	UseDocker       *bool  `json:"use_docker"`
+	Workers         int    `json:"workers"`
+	MutationEnabled *bool  `json:"mutation_enabled"`
+	MutationTimeout int    `json:"mutation_timeout"`
+	MutationPolicy  string `json:"mutation_policy"`
+	ReuseEvaluation bool   `json:"reuse_evaluation"`
+	Ingest          *bool  `json:"ingest"`
+}
+
+func (s *Server) handleGeneratedSets(w http.ResponseWriter, r *http.Request) {
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := db.ListGeneratedSets(r.Context(), r.URL.Query().Get("status"), parseLimit(r, 100))
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, rows)
+	case http.MethodPost:
+		var req generatedSetPromoteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			errJSON(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		manifestPath := strings.TrimSpace(req.SourceManifestPath)
+		if manifestPath == "" && strings.TrimSpace(req.RunID) != "" {
+			manifestPath = filepath.Join(s.outputRoot, "runs", strings.TrimSpace(req.RunID), "generated", "generated_manifest.json")
+		}
+		if manifestPath == "" {
+			errJSON(w, http.StatusBadRequest, "run_id or source_manifest_path is required")
+			return
+		}
+		if _, err := os.Stat(s.resolveWebPath(manifestPath)); err != nil {
+			errJSON(w, http.StatusNotFound, "generated manifest not found: "+manifestPath)
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" && strings.TrimSpace(req.RunID) != "" {
+			if label := s.loadRunLabel(strings.TrimSpace(req.RunID)); label != "" {
+				name = label
+			}
+		}
+		set, err := db.PromoteGeneratedSetFromManifest(r.Context(), store.PromoteGeneratedSetOptions{
+			Name:               name,
+			Note:               req.Note,
+			Status:             req.Status,
+			SourceRunID:        strings.TrimSpace(req.RunID),
+			SourceManifestPath: manifestPath,
+		})
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		set, err = s.ensureGeneratedSetDockerManifest(r.Context(), db, set)
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, set)
+	default:
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleGeneratedSetSub(w http.ResponseWriter, r *http.Request) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/generated-sets/"), "/")
+	if path == "" {
+		errJSON(w, http.StatusNotFound, "generated set id is required")
+		return
+	}
+	parts := strings.Split(path, "/")
+	id := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	switch {
+	case action == "" && r.Method == http.MethodGet:
+		set, err := db.GetGeneratedSet(r.Context(), id)
+		if errors.Is(err, sql.ErrNoRows) {
+			errJSON(w, http.StatusNotFound, "generated set not found")
+			return
+		}
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		samples, err := db.ListGeneratedSetSamples(r.Context(), id, parseLimit(r, 500))
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"set": set, "samples": samples})
+	case action == "" && r.Method == http.MethodPatch:
+		var req generatedSetUpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			errJSON(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		set, err := db.UpdateGeneratedSet(r.Context(), id, store.UpdateGeneratedSetOptions{
+			Name:   req.Name,
+			Note:   req.Note,
+			Status: req.Status,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			errJSON(w, http.StatusNotFound, "generated set not found")
+			return
+		}
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, set)
+	case action == "samples" && r.Method == http.MethodGet:
+		samples, err := db.ListGeneratedSetSamples(r.Context(), id, parseLimit(r, 500))
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, samples)
+	case action == "evaluate" && r.Method == http.MethodPost:
+		s.handleGeneratedSetEvaluate(w, r, db, id)
+	default:
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleGeneratedSetEvaluate(w http.ResponseWriter, r *http.Request, db *store.SQLiteStore, id string) {
+	var req generatedSetEvaluateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		errJSON(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	set, err := db.GetGeneratedSet(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		errJSON(w, http.StatusNotFound, "generated set not found")
+		return
+	}
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	useDocker := req.UseDocker == nil || *req.UseDocker
+	if useDocker && !isDockerReady(s.dockerCfg) {
+		errJSON(w, http.StatusConflict, "Docker image is not ready; generated set evaluation requires Docker by default")
+		return
+	}
+	if useDocker {
+		set, err = s.ensureGeneratedSetDockerManifest(r.Context(), db, set)
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	hostManifestPath := s.resolveWebPath(set.ManifestPath)
+	manifest, err := contracts.ReadGeneratedManifest(hostManifestPath)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "read generated set manifest: "+err.Error())
+		return
+	}
+	runID := strings.TrimSpace(req.RunID)
+	if runID == "" {
+		runID = contracts.NewRunID()
+	}
+	spec := manifest.Spec
+	spec.RunID = runID
+	spec.CreatedAtUTC = time.Now().UTC()
+	spec.OutputRoot = s.outputRoot
+	spec.DatasetRoot = s.mgr.datasetRoot
+	spec.ConfigPath = s.configPath
+	spec.DBPath = s.mgr.dbPath
+	if req.Workers > 0 {
+		spec.Workers = req.Workers
+	}
+	models, languages := generatedSetManifestDims(manifest.Cases)
+	if len(spec.Models) == 0 {
+		spec.Models = models
+	}
+	if len(spec.Languages) == 0 {
+		spec.Languages = languages
+	}
+	if req.MutationEnabled == nil {
+		spec.MutationEnabled = true
+	} else {
+		spec.MutationEnabled = *req.MutationEnabled
+	}
+	if req.MutationTimeout > 0 {
+		spec.MutationTimeout = req.MutationTimeout
+	} else if spec.MutationTimeout == 0 {
+		spec.MutationTimeout = 1800
+	}
+	if strings.TrimSpace(req.MutationPolicy) != "" {
+		spec.MutationPolicy = req.MutationPolicy
+	} else if spec.MutationPolicy == "" {
+		spec.MutationPolicy = "warn"
+	}
+	spec.ReuseGenerated = false
+	spec.ReuseEvaluation = req.ReuseEvaluation
+
+	manifestPath := hostManifestPath
+	if useDocker && strings.TrimSpace(set.DockerManifestPath) != "" {
+		manifestPath = s.resolveWebPath(set.DockerManifestPath)
+	}
+	ingest := true
+	if req.Ingest != nil {
+		ingest = *req.Ingest
+	}
+	entry := s.mgr.Submit(spec, orchestrator.Options{
+		Phase:        "evaluate",
+		SourceRunID:  runID,
+		ManifestPath: manifestPath,
+		Ingest:       ingest,
+		DBPath:       s.mgr.dbPath,
+	}, useDocker)
+	s.cacheMu.Lock()
+	s.runsCache = nil
+	s.cacheMu.Unlock()
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"run_id":           entry.RunID,
+		"status":           string(entry.Status),
+		"generated_set_id": id,
+		"manifest_path":    manifestPath,
+		"use_docker":       useDocker,
+	})
+}
+
+func (s *Server) ensureGeneratedSetDockerManifest(ctx context.Context, db *store.SQLiteStore, set store.GeneratedSetItem) (store.GeneratedSetItem, error) {
+	hostManifestPath := s.resolveWebPath(set.ManifestPath)
+	if strings.TrimSpace(hostManifestPath) == "" {
+		return set, fmt.Errorf("generated set manifest path is empty")
+	}
+	manifest, err := contracts.ReadGeneratedManifest(hostManifestPath)
+	if err != nil {
+		return set, err
+	}
+	outputDir := s.resolveWebPath(set.OutputDir)
+	if strings.TrimSpace(outputDir) == "" {
+		outputDir = filepath.Dir(hostManifestPath)
+	}
+	dockerPath := s.resolveWebPath(set.DockerManifestPath)
+	if strings.TrimSpace(dockerPath) == "" {
+		dockerPath = filepath.Join(outputDir, "generated_manifest.docker.json")
+	}
+	spec := manifest.Spec
+	spec.OutputRoot = s.outputRoot
+	spec.DatasetRoot = s.mgr.datasetRoot
+	spec.ConfigPath = s.configPath
+	if spec.DBPath == "" {
+		spec.DBPath = s.mgr.dbPath
+	}
+	if _, err := s.mgr.writeDockerGeneratedManifest(spec, hostManifestPath, dockerPath); err != nil {
+		return set, err
+	}
+	return db.UpdateGeneratedSet(ctx, set.GeneratedSetID, store.UpdateGeneratedSetOptions{
+		Name:               set.Name,
+		Note:               set.Note,
+		Status:             set.Status,
+		ManifestPath:       set.ManifestPath,
+		DockerManifestPath: dockerPath,
+	})
+}
+
+func (s *Server) resolveWebPath(path string) string {
+	raw := strings.TrimSpace(path)
+	if raw == "" {
+		return ""
+	}
+	p := filepath.FromSlash(raw)
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidate := filepath.Join(cwd, p)
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate
+		}
+	}
+	return p
+}
+
+func generatedSetManifestDims(cases []contracts.GeneratedCase) ([]string, []string) {
+	modelSet := map[string]struct{}{}
+	languageSet := map[string]struct{}{}
+	for _, c := range cases {
+		if strings.TrimSpace(c.Model) != "" {
+			modelSet[c.Model] = struct{}{}
+		}
+		if strings.TrimSpace(c.Language) != "" {
+			languageSet[c.Language] = struct{}{}
+		}
+	}
+	models := make([]string, 0, len(modelSet))
+	for value := range modelSet {
+		models = append(models, value)
+	}
+	languages := make([]string, 0, len(languageSet))
+	for value := range languageSet {
+		languages = append(languages, value)
+	}
+	sort.Strings(models)
+	sort.Strings(languages)
+	return models, languages
 }
 
 func (s *Server) handleDBRuns(w http.ResponseWriter, r *http.Request) {

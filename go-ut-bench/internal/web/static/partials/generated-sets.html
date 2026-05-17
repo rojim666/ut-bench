@@ -1,0 +1,151 @@
+      <!-- GENERATED SETS -->
+      <div x-show="page === 'generated-sets'" class="max-w-none animate-fadeUp space-y-4">
+        <div class="form-section">
+          <div class="flex flex-wrap items-start gap-4">
+            <div class="min-w-0 flex-1">
+              <div class="section-title">生成集管理</div>
+              <div class="text-[12px]" style="color:var(--fg-muted)">管理模型生成的测试样本，保留备注、代码文件路径和可复评 manifest。</div>
+            </div>
+            <div class="flex flex-wrap gap-2 items-center">
+              <select x-model="generatedSetStatusFilter" @change="loadGeneratedSets()" class="input-base w-32 text-[12px]">
+                <option value="">全部状态</option>
+                <option value="candidate">候选</option>
+                <option value="accepted">已确认</option>
+                <option value="archived">归档</option>
+              </select>
+              <button @click="loadGeneratedSets()" class="btn-ghost text-[12px]">刷新</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-5 gap-4">
+          <div class="xl:col-span-2 form-section p-0 overflow-hidden">
+            <div class="px-4 py-3 border-b flex items-center justify-between" style="border-color:var(--border)">
+              <span class="text-[13px] font-medium">生成集</span>
+              <span class="text-[11px]" style="color:var(--fg-muted)" x-text="filteredGeneratedSets.length + ' 个'"></span>
+            </div>
+            <div class="max-h-[620px] overflow-y-auto">
+              <template x-for="set in filteredGeneratedSets" :key="set.generated_set_id">
+                <button @click="openGeneratedSet(set.generated_set_id)" class="w-full text-left px-4 py-3 border-b hover-surface transition-colors"
+                        :style="selectedGeneratedSet?.generated_set_id === set.generated_set_id ? 'background:var(--bg-overlay)' : 'border-color:var(--border)'">
+                  <div class="flex items-start gap-3">
+                    <div class="min-w-0 flex-1">
+                      <div class="flex items-center gap-2">
+                        <span class="font-medium text-[13px] truncate" style="color:var(--fg)" x-text="set.name || set.generated_set_id"></span>
+                        <span class="tag-pill" x-text="generatedSetStatusText(set.status)"></span>
+                      </div>
+                      <div class="font-mono text-[11px] truncate mt-1" style="color:var(--fg-muted)" x-text="set.source_run_id"></div>
+                      <div class="text-[11px] mt-1" style="color:var(--fg-subtle)">
+                        <span x-text="set.language_summary || '—'"></span>
+                        <span> · </span>
+                        <span x-text="set.model_summary || '—'"></span>
+                      </div>
+                    </div>
+                    <div class="text-right shrink-0">
+                      <div class="text-[18px] font-semibold" style="color:var(--accent)" x-text="set.accepted_count || 0"></div>
+                      <div class="text-[10px]" style="color:var(--fg-muted)" x-text="'/' + (set.sample_count || 0)"></div>
+                    </div>
+                  </div>
+                </button>
+              </template>
+              <div x-show="!generatedSetsLoading && !filteredGeneratedSets.length" class="py-12 text-center text-[13px]" style="color:var(--fg-muted)">
+                还没有生成集。进入某个任务详情，点击“保存为生成集”。
+              </div>
+              <div x-show="generatedSetsLoading" class="py-8 text-center text-[13px]" style="color:var(--fg-muted)">加载中...</div>
+            </div>
+          </div>
+
+          <div class="xl:col-span-3 space-y-4">
+            <div x-show="!selectedGeneratedSet" class="form-section py-16 text-center">
+              <div class="text-[13px]" style="color:var(--fg-muted)">选择左侧生成集查看样本和复评入口。</div>
+            </div>
+
+            <template x-if="selectedGeneratedSet">
+              <div class="space-y-4">
+                <div class="form-section">
+                  <div class="flex flex-wrap items-start gap-3 mb-4">
+                    <div class="min-w-0 flex-1">
+                      <div class="label-text">名称</div>
+                      <input x-model="selectedGeneratedSet.name" class="input-base w-full" placeholder="生成集名称">
+                    </div>
+                    <div class="w-36">
+                      <div class="label-text">状态</div>
+                      <select x-model="selectedGeneratedSet.status" class="input-base w-full">
+                        <option value="candidate">候选</option>
+                        <option value="accepted">已确认</option>
+                        <option value="archived">归档</option>
+                      </select>
+                    </div>
+                    <div class="flex gap-2 pt-6">
+                      <button @click="updateGeneratedSet()" :disabled="generatedSetSaving" class="btn-ghost text-[12px]">
+                        <span x-text="generatedSetSaving ? '保存中...' : '保存备注'"></span>
+                      </button>
+                      <button @click="evaluateGeneratedSet(selectedGeneratedSet)" :disabled="generatedSetEvaluating === selectedGeneratedSet.generated_set_id" class="btn-primary text-[12px]">
+                        <span x-text="generatedSetEvaluating === selectedGeneratedSet.generated_set_id ? '启动中...' : '复用生成并评测'"></span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                    <div class="kpi-card">
+                      <div class="kpi-value kpi-total" x-text="selectedGeneratedSet.sample_count || 0"></div>
+                      <div class="kpi-label">总样本</div>
+                    </div>
+                    <div class="kpi-card">
+                      <div class="kpi-value kpi-completed" x-text="selectedGeneratedSet.accepted_count || 0"></div>
+                      <div class="kpi-label">可复用</div>
+                    </div>
+                    <div class="kpi-card">
+                      <div class="kpi-value kpi-running" x-text="selectedGeneratedSet.success_count || 0"></div>
+                      <div class="kpi-label">生成成功</div>
+                    </div>
+                    <div class="kpi-card">
+                      <div class="kpi-value kpi-total" x-text="selectedGeneratedSet.total_tokens || '—'"></div>
+                      <div class="kpi-label">Tokens</div>
+                    </div>
+                  </div>
+
+                  <div class="label-text">备注</div>
+                  <textarea x-model="selectedGeneratedSet.note" class="input-base w-full h-20 resize-y" placeholder="记录这批生成样本的质量、用途、筛选策略或复评建议"></textarea>
+
+                  <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-4 text-[12px]">
+                    <div class="min-w-0">
+                      <div class="label-text">生成集 Manifest</div>
+                      <code class="block font-mono truncate" style="color:var(--fg-muted)" x-text="selectedGeneratedSet.manifest_path || '—'"></code>
+                    </div>
+                    <div class="min-w-0">
+                      <div class="label-text">Docker Manifest</div>
+                      <code class="block font-mono truncate" style="color:var(--fg-muted)" x-text="selectedGeneratedSet.docker_manifest_path || '—'"></code>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="form-section p-0 overflow-hidden">
+                  <div class="px-4 py-3 border-b flex items-center justify-between" style="border-color:var(--border)">
+                    <span class="text-[13px] font-medium">样本与代码文件</span>
+                    <span class="text-[11px]" style="color:var(--fg-muted)" x-text="generatedSetSamples.length + ' 条'"></span>
+                  </div>
+                  <div class="overflow-x-auto max-h-[520px]">
+                    <table class="data-table">
+                      <thead><tr><th>状态</th><th>语言</th><th>模型</th><th>样本</th><th>生成代码文件</th><th>SHA256</th></tr></thead>
+                      <tbody>
+                        <template x-for="sample in generatedSetSamples" :key="sample.generated_case_id">
+                          <tr>
+                            <td><span class="tag-pill" x-text="sample.status === 'accepted' ? '可复用' : '排除'"></span></td>
+                            <td x-text="sample.language"></td>
+                            <td class="font-mono text-[11px]" x-text="sample.model"></td>
+                            <td class="font-mono text-[11px]" x-text="sample.sample_id"></td>
+                            <td class="font-mono text-[11px] max-w-[320px] truncate" :title="sample.generated_test_path" x-text="sample.generated_test_path || '—'"></td>
+                            <td class="font-mono text-[11px]" x-text="sample.generated_test_sha256 ? sample.generated_test_sha256.slice(0, 12) + '...' : '—'"></td>
+                          </tr>
+                        </template>
+                        <tr x-show="!generatedSetSamples.length"><td colspan="6" class="text-center py-8" style="color:var(--fg-muted)">暂无样本</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>

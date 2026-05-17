@@ -254,7 +254,7 @@ func buildSampleEnvironmentSetupCommands(sample contracts.SampleRef, workRoot st
 		}
 	case "java":
 		if fileExists(filepath.Join(workRoot, "pom.xml")) {
-			commands = append(commands, "mvn -q -DskipTests dependency:go-offline || echo 'mvn dependency:go-offline failed; continuing without full Maven cache'")
+			commands = append(commands, "if command -v mvn >/dev/null 2>&1; then if command -v timeout >/dev/null 2>&1; then timeout 180s mvn -q -DskipTests dependency:go-offline || echo 'mvn dependency:go-offline failed or timed out; continuing without full Maven cache'; else echo 'timeout not found; skipping Maven cache warmup'; fi; else echo 'mvn not found; skipping Maven cache warmup'; fi")
 		}
 	}
 	return uniqueSortedStrings(commands)

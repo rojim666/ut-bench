@@ -218,6 +218,28 @@ func TestJavaRepoLevelPOMRewrite(t *testing.T) {
 	if strings.Count(again, "<artifactId>junit-jupiter</artifactId>") != 1 {
 		t.Fatalf("JUnit dependency duplicated:\n%s", again)
 	}
+
+	withArgLine := ensureMavenProperty(`<project>
+  <modelVersion>4.0.0</modelVersion>
+  <build><plugins>
+    <plugin>
+      <artifactId>maven-surefire-plugin</artifactId>
+      <configuration>
+        <argLine>-Xss640k</argLine>
+      </configuration>
+    </plugin>
+  </plugins></build>
+</project>`, "argLine", "")
+	withArgLine = ensureSurefireArgLinePreservesJacoco(withArgLine)
+	if !strings.Contains(withArgLine, "<argLine></argLine>") {
+		t.Fatalf("default argLine property was not inserted:\n%s", withArgLine)
+	}
+	if !strings.Contains(withArgLine, "<argLine>${argLine} -Xss640k</argLine>") {
+		t.Fatalf("Surefire argLine does not preserve JaCoCo argLine:\n%s", withArgLine)
+	}
+	if strings.Count(ensureSurefireArgLinePreservesJacoco(withArgLine), "${argLine}") != strings.Count(withArgLine, "${argLine}") {
+		t.Fatalf("Surefire argLine rewrite is not idempotent:\n%s", withArgLine)
+	}
 }
 
 func TestJavaPitestTargetClassAttemptsFallbackToPackage(t *testing.T) {
@@ -295,6 +317,42 @@ func TestJavaRepoLevelSkipsVersionedTestJavaSourceRoots(t *testing.T) {
 	}
 }
 
+func TestJavaAssertionDensityReadsRepoLevelRelativeTestPath(t *testing.T) {
+	workdir := t.TempDir()
+	testRel := "src/test/java11/org/jsoup/helper/HttpClientExecutorTest.java"
+	testPath := filepath.Join(workdir, filepath.FromSlash(testRel))
+	if err := os.MkdirAll(filepath.Dir(testPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := `package org.jsoup.helper;
+
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class HttpClientExecutorTest {
+  @Test
+  void executes() {
+    assertEquals("ok", "ok");
+    assertTrue(true);
+  }
+}
+`
+	if err := os.WriteFile(testPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	assertions, tests, density := (&JavaEvaluator{}).EstimateAssertionDensity(workdir, testRel)
+	if assertions != 2 {
+		t.Fatalf("assertions = %d, want 2", assertions)
+	}
+	if tests != 1 {
+		t.Fatalf("tests = %d, want 1", tests)
+	}
+	if density != 2 {
+		t.Fatalf("density = %v, want 2", density)
+	}
+}
+
 func TestJavaMavenArgsSkipRepoQualityGates(t *testing.T) {
 	args := javaMavenArgsForModule("module-a", "test-compile")
 	joined := strings.Join(args, " ")
@@ -317,6 +375,53 @@ func TestJavaMavenArgsSkipRepoQualityGates(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("maven args missing %q:\n%s", want, joined)
 		}
+	}
+}
+
+func TestJavaMavenArgsUseContainerRepoForDockerBackend(t *testing.T) {
+	old := GetEvalBackend()
+	SetEvalBackend(NewDockerBackend("utbench:test"))
+	defer SetEvalBackend(old)
+
+	workdir := t.TempDir()
+	args := javaMavenArgsForModule("module-a", "test-compile")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-Dmaven.repo.local=/utbench-cache/m2") {
+		t.Fatalf("docker maven args should use container repo path:\n%s", joined)
+	}
+	hostRepo := javaMavenHostLocalRepo(workdir)
+	if strings.TrimSpace(hostRepo) == "" || !strings.Contains(filepath.ToSlash(hostRepo), ".m2-cache/repository") {
+		t.Fatalf("unexpected host maven repo path: %s", hostRepo)
+	}
+}
+
+func TestRelaxJavaRepoLevelStrictWarningsRemovesErrorProneArg(t *testing.T) {
+	pom := `<project>
+  <build>
+    <plugins>
+      <plugin>
+        <configuration>
+          <failOnWarning>true</failOnWarning>
+          <compilerArgs>
+            <arg>-Xplugin:ErrorProne
+              -Xep:NotJavadoc:OFF
+            </arg>
+            <arg>-parameters</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>`
+	updated := relaxJavaRepoLevelStrictWarnings(pom)
+	if strings.Contains(updated, "ErrorProne") || strings.Contains(updated, "-Xplugin") {
+		t.Fatalf("ErrorProne compiler arg was not removed:\n%s", updated)
+	}
+	if !strings.Contains(updated, "<failOnWarning>false</failOnWarning>") {
+		t.Fatalf("failOnWarning was not relaxed:\n%s", updated)
+	}
+	if !strings.Contains(updated, "<arg>-parameters</arg>") {
+		t.Fatalf("unrelated compiler arg should be preserved:\n%s", updated)
 	}
 }
 

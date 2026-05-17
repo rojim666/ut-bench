@@ -25,6 +25,7 @@ const javaRepoLevelSurefirePlugin = `      <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.2.5</version>
         <configuration>
+          <argLine>${argLine}</argLine>
           <failIfNoSpecifiedTests>false</failIfNoSpecifiedTests>
           <failIfNoTests>false</failIfNoTests>
         </configuration>
@@ -62,6 +63,8 @@ var (
 	javaRepoMainSourceRootRe = regexp.MustCompile(`(^|/)src/main/java[^/]*/`)
 	javaRepoTestSourceRootRe = regexp.MustCompile(`(^|/)src/test/java[^/]*/`)
 )
+
+const javaRepoLevelCompileTimeoutSeconds = 1200
 
 func prepareJavaRepoLevelWorkspace(testPath, samplePath string) (workdir, testRel, moduleDir, className, testClassName, errMsg string) {
 	meta := loadRepoLevelMeta(samplePath)
@@ -192,8 +195,10 @@ func rewriteJavaRepoLevelPOM(path string, ensureJUnit bool) error {
 		updated = disableJavaRepoLevelPlugin(updated, artifactID)
 	}
 	if ensureJUnit {
+		updated = ensureMavenProperty(updated, "argLine", "")
 		updated = ensureJUnitJupiterDependency(updated)
 		updated = ensureJavaRepoLevelBuildPlugin(updated, "maven-surefire-plugin", javaRepoLevelSurefirePlugin)
+		updated = ensureSurefireArgLinePreservesJacoco(updated)
 		updated = ensureJavaRepoLevelBuildPlugin(updated, "pitest-maven", javaRepoLevelPitestPlugin)
 	}
 	if updated == string(raw) {
@@ -252,8 +257,10 @@ func disableCentralPublishingExtension(pom string) string {
 func relaxJavaRepoLevelStrictWarnings(pom string) string {
 	failOnWarningRe := regexp.MustCompile(`(?s)<failOnWarning>\s*true\s*</failOnWarning>`)
 	failOnWarningsRe := regexp.MustCompile(`(?s)<failOnWarnings>\s*true\s*</failOnWarnings>`)
+	errorProneArgRe := regexp.MustCompile(`(?s)\s*<arg>\s*-Xplugin:ErrorProne.*?</arg>`)
 	pom = failOnWarningRe.ReplaceAllString(pom, "<failOnWarning>false</failOnWarning>")
 	pom = failOnWarningsRe.ReplaceAllString(pom, "<failOnWarnings>false</failOnWarnings>")
+	pom = errorProneArgRe.ReplaceAllString(pom, "")
 	return pom
 }
 
@@ -323,6 +330,88 @@ func ensureJavaRepoLevelBuildPlugin(pom, artifactID, pluginXML string) string {
 		return pom[:idx] + build + pom[idx:]
 	}
 	return pom + "\n" + build
+}
+
+func ensureMavenProperty(pom, name, value string) string {
+	propRe := regexp.MustCompile(`(?s)<` + regexp.QuoteMeta(name) + `\s*>.*?</` + regexp.QuoteMeta(name) + `>`)
+	prop := fmt.Sprintf("    <%s>%s</%s>\n", name, value, name)
+	if start := strings.Index(pom, "<properties>"); start >= 0 {
+		endRel := strings.Index(pom[start:], "</properties>")
+		if endRel >= 0 {
+			end := start + endRel
+			if propRe.MatchString(pom[start : end+len("</properties>")]) {
+				return pom
+			}
+			return pom[:end] + prop + pom[end:]
+		}
+	}
+	props := "  <properties>\n" + prop + "  </properties>\n\n"
+	if idx := strings.Index(pom, "</modelVersion>"); idx >= 0 {
+		idx += len("</modelVersion>")
+		return pom[:idx] + "\n" + props + pom[idx:]
+	}
+	if idx := strings.LastIndex(pom, "</project>"); idx >= 0 {
+		return pom[:idx] + props + pom[idx:]
+	}
+	return pom + "\n" + props
+}
+
+func ensureSurefireArgLinePreservesJacoco(pom string) string {
+	const pluginStart = "<plugin>"
+	const pluginEnd = "</plugin>"
+	artifactRe := regexp.MustCompile(`(?s)<artifactId>\s*maven-surefire-plugin\s*</artifactId>`)
+	var b strings.Builder
+	cursor := 0
+	for {
+		startRel := strings.Index(pom[cursor:], pluginStart)
+		if startRel < 0 {
+			b.WriteString(pom[cursor:])
+			break
+		}
+		start := cursor + startRel
+		endRel := strings.Index(pom[start:], pluginEnd)
+		if endRel < 0 {
+			b.WriteString(pom[cursor:])
+			break
+		}
+		end := start + endRel + len(pluginEnd)
+		b.WriteString(pom[cursor:start])
+		block := pom[start:end]
+		if artifactRe.MatchString(block) {
+			block = ensureSurefirePluginArgLine(block)
+		}
+		b.WriteString(block)
+		cursor = end
+	}
+	return b.String()
+}
+
+func ensureSurefirePluginArgLine(pluginBlock string) string {
+	argLineRe := regexp.MustCompile(`(?s)<argLine>\s*(.*?)\s*</argLine>`)
+	if loc := argLineRe.FindStringSubmatchIndex(pluginBlock); loc != nil {
+		value := strings.TrimSpace(pluginBlock[loc[2]:loc[3]])
+		if strings.Contains(value, "${argLine}") || strings.Contains(value, "@{argLine}") {
+			return pluginBlock
+		}
+		updated := "<argLine>${argLine}"
+		if value != "" {
+			updated += " " + value
+		}
+		updated += "</argLine>"
+		return pluginBlock[:loc[0]] + updated + pluginBlock[loc[1]:]
+	}
+	if idx := strings.Index(pluginBlock, "<configuration>"); idx >= 0 {
+		idx += len("<configuration>")
+		return pluginBlock[:idx] + "\n          <argLine>${argLine}</argLine>" + pluginBlock[idx:]
+	}
+	config := `        <configuration>
+          <argLine>${argLine}</argLine>
+        </configuration>
+`
+	if idx := strings.Index(pluginBlock, "</plugin>"); idx >= 0 {
+		return pluginBlock[:idx] + config + pluginBlock[idx:]
+	}
+	return pluginBlock
 }
 
 func ensurePitestJUnit5PluginDependency(pom string) string {
@@ -516,11 +605,18 @@ func findNearestJavaBuildRoot(path string) (string, bool) {
 }
 
 func javaMavenArgsForModule(moduleDir string, args ...string) []string {
+	return javaMavenArgsForModuleWithRepo(moduleDir, javaMavenLocalRepo(), args...)
+}
+
+func javaMavenArgsForModuleWithRepo(moduleDir, repo string, args ...string) []string {
+	if strings.TrimSpace(repo) == "" {
+		repo = javaMavenLocalRepo()
+	}
 	out := []string{
 		"-q",
 		"-B",
 		"--no-transfer-progress",
-		"-Dmaven.repo.local=" + javaMavenLocalRepo(),
+		"-Dmaven.repo.local=" + repo,
 		"-Dmaven.artifact.threads=1",
 		"-Denforcer.skip=true",
 		"-Dspotless.check.skip=true",
@@ -555,21 +651,32 @@ func javaMavenLocalRepo() string {
 	if repo := strings.TrimSpace(os.Getenv("UTBENCH_MAVEN_REPO_LOCAL")); repo != "" {
 		return repo
 	}
+	if GetEvalBackend().Name() == "docker" {
+		return "/utbench-cache/m2"
+	}
 	return filepath.Join(os.TempDir(), "utbench-m2-repository")
 }
 
+func javaMavenHostLocalRepo(workdir string) string {
+	if GetEvalBackend().Name() == "docker" {
+		return dockerMavenCacheDir()
+	}
+	return javaMavenLocalRepo()
+}
+
 func runJavaMavenCommand(ctx context.Context, workdir, moduleDir string, args ...string) ([]byte, error) {
-	repo := javaMavenLocalRepo()
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	repoArg := javaMavenLocalRepo()
+	hostRepo := javaMavenHostLocalRepo(workdir)
+	if err := os.MkdirAll(hostRepo, 0o755); err != nil {
 		return nil, err
 	}
 	javaMavenMu.Lock()
 	defer javaMavenMu.Unlock()
-	return runCommandWithProcessGroupKill(ctx, "mvn", javaMavenArgsForModule(moduleDir, args...), workdir, nil)
+	return runCommandWithProcessGroupKill(ctx, "mvn", javaMavenArgsForModuleWithRepo(moduleDir, repoArg, args...), workdir, nil)
 }
 
 func javaCompileCheckRepoLevel(workdir, moduleDir string) (bool, string) {
-	compileTimeout := defaultTestTimeoutSeconds * 3
+	compileTimeout := javaRepoLevelCompileTimeoutSeconds
 	runCtx, cancel := context.WithTimeout(context.Background(), time.Duration(compileTimeout)*time.Second)
 	defer cancel()
 	output, err := runJavaMavenCommand(runCtx, workdir, moduleDir, "-DskipTests", "test-compile")

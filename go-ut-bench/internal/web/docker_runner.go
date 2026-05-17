@@ -371,7 +371,7 @@ func wrapDockerSourceCommand(args []string, cfg DockerConfig) []string {
 	if imageIdx < 0 || imageIdx == len(args)-1 {
 		return args
 	}
-	// Dockerfile ENTRYPOINT 已设置为 ["./utbench"]，命令从子命令开始即可
+	// Dockerfile ENTRYPOINT 使用 /app/utbench，命令从子命令开始即可。
 	out := append([]string{}, args[:imageIdx]...)
 	out = append(out, cfg.EffectiveEvalImage())
 	out = append(out, args[imageIdx+1:]...)

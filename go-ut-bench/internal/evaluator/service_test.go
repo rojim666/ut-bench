@@ -205,6 +205,30 @@ func TestClassifyFailureOriginKeepsPureMutationToolErrorExcluded(t *testing.T) {
 	}
 }
 
+func TestClassifyFailureOriginMarksGenerationPrepareErrorAsEnvironment(t *testing.T) {
+	row := contracts.EvaluationResult{
+		CompilePass:  false,
+		CompileError: "generation failed (sample_env_prepare_error): sandbox preflight failed for \"mvn -q -DskipTests dependency:go-offline\": agent command timed out after 600s",
+	}
+
+	origin, reason := classifyFailureOrigin(row)
+	if origin != "environment" || reason == "" {
+		t.Fatalf("expected sample environment prepare failure to be environment origin, got origin=%q reason=%q", origin, reason)
+	}
+}
+
+func TestClassifyFailureOriginKeepsSandboxPolicyAsModel(t *testing.T) {
+	row := contracts.EvaluationResult{
+		CompilePass:  false,
+		CompileError: "generation failed (sandbox_policy_error): sandbox policy violation: attempted forbidden environment mutation command \"pip install --user timeout\"",
+	}
+
+	origin, reason := classifyFailureOrigin(row)
+	if origin != "model" || reason != "" {
+		t.Fatalf("expected agent policy violation to remain model origin, got origin=%q reason=%q", origin, reason)
+	}
+}
+
 func TestClassifyFailureOriginTreatsGoMutestingNoResultsAsTool(t *testing.T) {
 	testPass := true
 	rate := 1.0

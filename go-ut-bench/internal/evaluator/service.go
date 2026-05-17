@@ -386,7 +386,11 @@ func (s *Service) evaluateOne(ctx context.Context, spec contracts.RunSpec, item 
 	if !item.Success {
 		row.CompilePass = false
 		if item.Error != nil {
-			row.CompileError = "generation failed: " + item.Error.Message
+			if item.Error.Kind != "" {
+				row.CompileError = "generation failed (" + item.Error.Kind + "): " + item.Error.Message
+			} else {
+				row.CompileError = "generation failed: " + item.Error.Message
+			}
 		} else {
 			row.CompileError = "generation failed"
 		}
@@ -729,7 +733,10 @@ func isEnvironmentFailureMessage(msg string) bool {
 		strings.Contains(msg, "could not resolve dependencies") ||
 		strings.Contains(msg, "failed to read artifact descriptor") ||
 		strings.Contains(msg, "one of its dependencies could not be resolved") ||
-		strings.Contains(msg, "could not find artifact") {
+		strings.Contains(msg, "could not find artifact") ||
+		strings.Contains(msg, "sample_env_prepare_error") ||
+		strings.Contains(msg, "sandbox_preflight_error") ||
+		strings.Contains(msg, "sandbox preflight failed") {
 		return true
 	}
 	return strings.Contains(msg, "permission denied") ||

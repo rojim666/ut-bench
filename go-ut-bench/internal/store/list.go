@@ -203,6 +203,14 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+func nonEmptyFile(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Size() > 0
+}
+
 // ────────────────────────────────────────────────────────────────
 // 数据库管理 List 方法
 // ────────────────────────────────────────────────────────────────

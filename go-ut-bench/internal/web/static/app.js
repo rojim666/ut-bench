@@ -5,6 +5,7 @@
       { id:'dashboard', icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>', label:'总览' },
       { id:'new-run',   icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>', label:'新建任务' },
       { id:'runs',      icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>', label:'任务列表' },
+      { id:'generated-sets', icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z"/><path d="M4 7v5c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/><path d="M4 12v5c0 1.7 3.6 3 8 3s8-1.3 8-3v-5"/></svg>', label:'生成集' },
       { id:'automations', icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M4 4l3 3"/><path d="M20 4l-3 3"/></svg>', label:'定时任务' },
       { id:'agents',    icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12h6"/><path d="M12 9v6"/></svg>', label:'Agent 接入' },
       { id:'database',  icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>', label:'数据库' },
@@ -16,6 +17,13 @@
     runsLoading: false,
     runFilter: '',
     statusFilter: '',
+    generatedSets: [],
+    generatedSetsLoading: false,
+    generatedSetStatusFilter: '',
+    generatedSetSaving: false,
+    generatedSetEvaluating: '',
+    selectedGeneratedSet: null,
+    generatedSetSamples: [],
     // 评测资产（磁盘扫描视图，区别于内存中的 runs / DB 入库的 db*）
     assets: [],
     assetsLoading: false,
@@ -139,7 +147,7 @@
       run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill'}], languages:[], class:'self_contained', scenario:'', project:'', level:'',
       max_samples:10, workers:4, mode:'full', phase:'full', source_run_id:'', manifest_path:'', evaluation_path:'',
       dry_run:false, reuse_generated:true, reuse_evaluation:false, mutation_enabled:true,
-      mutation_timeout:360, mutation_policy:'warn', ingest:true, use_docker:true,
+      mutation_timeout:1800, mutation_policy:'warn', ingest:true, use_docker:true,
     },
     env: null,
     envChecking: false,
@@ -226,6 +234,7 @@
       await this.loadModels()
       await this.loadEnv()
       await this.loadRuns()
+      await this.loadGeneratedSets()
       await this.loadDatabase()
       await this.loadAutomations()
       this._startTimers()
@@ -257,6 +266,7 @@
       this._stopTimers()
       this._timerRuns = setInterval(() => {
         if (this.page === 'dashboard' || this.page === 'runs' || this.page === 'run-detail') this.loadRuns()
+        if (this.page === 'generated-sets') this.loadGeneratedSets()
       }, 4000)
       this._timerDb = setInterval(() => {
         if (this.page === 'database') this.loadDatabase()
@@ -826,6 +836,133 @@
       } finally {
         this.dbLoading = false
       }
+    },
+
+    get filteredGeneratedSets() {
+      const status = this.generatedSetStatusFilter || ''
+      return (this.generatedSets || []).filter(s => !status || s.status === status)
+    },
+
+    async loadGeneratedSets() {
+      this.generatedSetsLoading = true
+      try {
+        const q = new URLSearchParams()
+        if (this.generatedSetStatusFilter) q.set('status', this.generatedSetStatusFilter)
+        q.set('limit', '100')
+        const r = await fetch('/api/generated-sets?' + q.toString(), { cache: 'no-store' })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.generatedSets = Array.isArray(data) ? data : []
+        if (this.selectedGeneratedSet?.generated_set_id) {
+          const fresh = this.generatedSets.find(s => s.generated_set_id === this.selectedGeneratedSet.generated_set_id)
+          if (fresh) this.selectedGeneratedSet = { ...this.selectedGeneratedSet, ...fresh }
+        }
+      } catch(e) {
+        this.showToast('加载生成集失败：' + (e.message || String(e)), 'err')
+      } finally {
+        this.generatedSetsLoading = false
+      }
+    },
+
+    async openGeneratedSet(id) {
+      if (!id) return
+      try {
+        const r = await fetch('/api/generated-sets/' + encodeURIComponent(id), { cache: 'no-store' })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.selectedGeneratedSet = data.set || null
+        this.generatedSetSamples = Array.isArray(data.samples) ? data.samples : []
+        this.goto('generated-sets')
+      } catch(e) {
+        this.showToast('打开生成集失败：' + (e.message || String(e)), 'err', 6000)
+      }
+    },
+
+    async promoteRunToGeneratedSet(runID) {
+      if (!runID || this.generatedSetSaving) return
+      const defaultName = this.currentRun?.label || `生成集 ${runID}`
+      const name = prompt('生成集名称：', defaultName)
+      if (name === null) return
+      const note = prompt('生成集备注：', `来源 run: ${runID}`)
+      if (note === null) return
+      this.generatedSetSaving = true
+      try {
+        const r = await fetch('/api/generated-sets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ run_id: runID, name: name.trim() || defaultName, note: note.trim(), status: 'candidate' }),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.showToast(`已保存生成集：${data.accepted_count || 0}/${data.sample_count || 0} 可复用`, 'ok', 6000)
+        await this.loadGeneratedSets()
+        await this.openGeneratedSet(data.generated_set_id)
+      } catch(e) {
+        this.showToast('保存生成集失败：' + (e.message || String(e)), 'err', 6000)
+      } finally {
+        this.generatedSetSaving = false
+      }
+    },
+
+    async updateGeneratedSet() {
+      const set = this.selectedGeneratedSet
+      if (!set?.generated_set_id || this.generatedSetSaving) return
+      this.generatedSetSaving = true
+      try {
+        const r = await fetch('/api/generated-sets/' + encodeURIComponent(set.generated_set_id), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: set.name || '', note: set.note || '', status: set.status || 'candidate' }),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.selectedGeneratedSet = data
+        this.showToast('生成集备注已保存', 'ok')
+        await this.loadGeneratedSets()
+      } catch(e) {
+        this.showToast('保存生成集失败：' + (e.message || String(e)), 'err')
+      } finally {
+        this.generatedSetSaving = false
+      }
+    },
+
+    async evaluateGeneratedSet(set = this.selectedGeneratedSet) {
+      if (!set?.generated_set_id || this.generatedSetEvaluating) return
+      if ((set.accepted_count || 0) <= 0) {
+        this.showToast('这个生成集没有可复用的成功生成样本', 'warn', 5000)
+        return
+      }
+      if (!confirm(`从生成集「${set.name || set.generated_set_id}」启动复评？将复用已生成测试代码，只运行评测和报告。`)) return
+      this.generatedSetEvaluating = set.generated_set_id
+      try {
+        const r = await fetch('/api/generated-sets/' + encodeURIComponent(set.generated_set_id) + '/evaluate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            use_docker: true,
+            workers: this.form.workers || 4,
+            mutation_enabled: true,
+            mutation_timeout: this.form.mutation_timeout || 1800,
+            mutation_policy: this.form.mutation_policy || 'warn',
+            reuse_evaluation: false,
+            ingest: true,
+          }),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.showToast('生成集复评已启动：' + data.run_id, 'ok', 6000)
+        await this.loadRuns()
+        await this.openRun(data.run_id)
+      } catch(e) {
+        this.showToast('启动生成集复评失败：' + (e.message || String(e)), 'err', 6000)
+      } finally {
+        this.generatedSetEvaluating = ''
+      }
+    },
+
+    generatedSetStatusText(status) {
+      const map = { candidate:'候选', accepted:'已确认', archived:'归档' }
+      return map[status] || status || '候选'
     },
 
     async loadAutomations() {
@@ -2187,13 +2324,14 @@
       if (id === 'agents') { this.loadAPIKeys(); this.loadModels(); this.loadEnv() }
       if (id === 'automations') this.loadAutomations()
       if (id === 'database') this.loadDBTabData()
+      if (id === 'generated-sets') this.loadGeneratedSets()
       if (id === 'environment') {
         if (!this.environment) this.loadEnvironment()
         this.loadAPIKeys()
       }
     },
     get pageTitle() {
-      const map = { dashboard:'总览', 'new-run':'新建任务', runs:'任务列表', automations:'定时任务', agents:'Agent 接入', database:'数据库', 'run-detail':'任务详情', environment:'环境检查', models:'模型管理' }
+      const map = { dashboard:'总览', 'new-run':'新建任务', runs:'任务列表', 'generated-sets':'生成集', automations:'定时任务', agents:'Agent 接入', database:'数据库', 'run-detail':'任务详情', environment:'环境检查', models:'模型管理' }
       return map[this.page] ?? ''
     },
 

@@ -131,44 +131,11 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	// `cat: /workspace/utbench_agent_prompt.md: No such file or directory` 与
 	// `failed to fulfil mount request` 等假失败。
 	environmentSetup, setupErr := runSandboxPreflight(ctx, sandboxRunner, sandboxReq, buildSampleEnvironmentSetupCommands(sample, workRoot))
+	setupWarning := ""
 	if setupErr != nil {
-		trace := AgentTrace{
-			SubjectID:          subjectID,
-			Framework:          req.Subject.Spec.Framework,
-			Model:              req.Subject.Spec.Model,
-			Skill:              req.Subject.Spec.Skill,
-			SampleID:           sample.ID,
-			Language:           sample.Language,
-			Command:            cmdText,
-			StartedAt:          time.Now().UTC(),
-			FinishedAt:         time.Now().UTC(),
-			EnvironmentSetup:   environmentSetup,
-			SandboxProvider:    sandboxReq.Provider,
-			SandboxImage:       sandboxReq.DockerImage,
-			SandboxFingerprint: sandboxFingerprintForRequest(sandboxReq),
-		}
-		return AgentGenerateResult{
-			RawResponse: map[string]any{
-				"adapter":             "cli_agent",
-				"subject_id":          subjectID,
-				"framework":           req.Subject.Spec.Framework,
-				"model":               req.Subject.Spec.Model,
-				"skill":               req.Subject.Spec.Skill,
-				"command":             cmdText,
-				"environment_setup":   environmentSetup,
-				"sandbox_provider":    sandboxReq.Provider,
-				"sandbox_image":       sandboxReq.DockerImage,
-				"sandbox_mode":        sandboxReq.Mode,
-				"sandbox_workspace":   workRoot,
-				"sandbox_fingerprint": trace.SandboxFingerprint,
-			},
-			Trace: trace,
-			Error: &contracts.ErrorInfo{
-				Kind:      "sample_env_prepare_error",
-				Message:   setupErr.Error(),
-				Retryable: false,
-			},
-		}
+		// 样本依赖预热只是加速/补缓存步骤，不应阻断 Agent 生成。
+		// 真正决定环境是否可用的是下面的 framework preflight 和后续评测。
+		setupWarning = setupErr.Error()
 	}
 
 	// 10. 执行沙箱预检
@@ -277,6 +244,10 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	}
 	if trace.SessionExportError != "" {
 		rawResponse["session_export_error"] = trace.SessionExportError
+	}
+	if setupWarning != "" {
+		rawResponse["environment_setup_warning"] = setupWarning
+		trace.Stderr = trimText(strings.TrimSpace(trace.Stderr+"\nenvironment_setup_warning: "+setupWarning), 8000)
 	}
 
 	// 16. 拦截环境漂移行为

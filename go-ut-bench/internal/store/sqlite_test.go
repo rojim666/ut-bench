@@ -212,6 +212,106 @@ func TestIngestManifestAndOverview(t *testing.T) {
 	}
 }
 
+func TestPromoteGeneratedSetFromManifest(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "utbench.db")
+	runDir := filepath.Join(tmp, "artifacts", "runs", "run_set")
+	srcPath := filepath.Join(tmp, "datasets", "python", "sample.py")
+	testPath := filepath.Join(runDir, "generated", "tests", "deepseek", "python", "sample_test.py")
+	failedMetadataPath := filepath.Join(runDir, "generated", "metadata", "deepseek", "python", "failed.json")
+	writeTestFile(t, srcPath, "def add(a, b):\n    return a + b\n")
+	writeTestFile(t, testPath, "from sample import add\n")
+	writeTestFile(t, failedMetadataPath, `{"success":false}`)
+
+	tokens := 42
+	manifest := contracts.GeneratedManifest{
+		SchemaVersion:   contracts.SchemaVersion,
+		RunID:           "run_set",
+		CreatedAtUTC:    time.Now().UTC(),
+		PromptStrategy:  "structured-v1",
+		PromptVersionID: "prompt-v1",
+		Spec: contracts.RunSpec{
+			RunID:          "run_set",
+			Models:         []string{"deepseek"},
+			Languages:      []string{"python"},
+			DatasetClasses: []string{"self_contained"},
+			OutputRoot:     filepath.Join(tmp, "artifacts"),
+		},
+		Cases: []contracts.GeneratedCase{
+			{
+				Model:             "deepseek",
+				Language:          "python",
+				SampleID:          "sample_ok",
+				SamplePath:        srcPath,
+				GeneratedTestPath: testPath,
+				TotalTokens:       &tokens,
+				GeneratedAtUTC:    time.Now().UTC(),
+				Success:           true,
+			},
+			{
+				Model:          "deepseek",
+				Language:       "python",
+				SampleID:       "sample_failed",
+				SamplePath:     srcPath,
+				MetadataPath:   failedMetadataPath,
+				GeneratedAtUTC: time.Now().UTC(),
+				Success:        false,
+			},
+		},
+	}
+	manifestPath := filepath.Join(runDir, "generated", "generated_manifest.json")
+	if err := contracts.WriteJSON(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	set, err := s.PromoteGeneratedSetFromManifest(ctx, PromoteGeneratedSetOptions{
+		Name:               "smoke set",
+		Note:               "usable generation set",
+		SourceManifestPath: manifestPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.SampleCount != 2 || set.AcceptedCount != 1 || set.SuccessCount != 1 || set.FailureCount != 1 {
+		t.Fatalf("unexpected generated set counts: %+v", set)
+	}
+	if set.TotalTokens == nil || *set.TotalTokens != 42 {
+		t.Fatalf("unexpected token summary: %+v", set.TotalTokens)
+	}
+	samples, err := s.ListGeneratedSetSamples(ctx, set.GeneratedSetID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("expected 2 generated set samples, got %d", len(samples))
+	}
+	if samples[0].GeneratedTestPath == "" && samples[1].GeneratedTestPath == "" {
+		t.Fatalf("expected generated test path to be indexed: %+v", samples)
+	}
+	curated, err := contracts.ReadGeneratedManifest(set.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(curated.Cases) != 1 || curated.Cases[0].SampleID != "sample_ok" {
+		t.Fatalf("unexpected curated manifest cases: %+v", curated.Cases)
+	}
+	if curated.Cases[0].GeneratedTestPath == testPath {
+		t.Fatalf("expected curated manifest to point at copied generated test, got source path %s", curated.Cases[0].GeneratedTestPath)
+	}
+	if _, err := os.Stat(curated.Cases[0].GeneratedTestPath); err != nil {
+		t.Fatalf("expected copied generated test file to exist: %v", err)
+	}
+}
+
 func TestFindReusableGeneratedAssetByIdentityAllowsImageDigestChange(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
@@ -290,6 +390,31 @@ func TestFindReusableGeneratedAssetByIdentityAllowsImageDigestChange(t *testing.
 		t.Fatal(err)
 	}
 	if _, err := s.IngestManifestFile(ctx, manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	emptyRunDir := filepath.Join(tmp, "artifacts", "runs", "run_empty")
+	emptyTestPath := filepath.Join(emptyRunDir, "generated", "tests", "opencode__deepseek__no_skill", "go", "color.test.go")
+	emptyPromptPath := filepath.Join(emptyRunDir, "generated", "prompts", "rendered", "opencode__deepseek__no_skill", "go", "color.prompt.txt")
+	emptyResponsePath := filepath.Join(emptyRunDir, "generated", "metadata", "color.response.json")
+	emptyMetadataPath := filepath.Join(emptyRunDir, "generated", "metadata", "color.metadata.json")
+	writeTestFile(t, emptyTestPath, "")
+	writeTestFile(t, emptyPromptPath, "Write tests for color.go")
+	writeTestFile(t, emptyResponsePath, `{"content":""}`)
+	writeTestFile(t, emptyMetadataPath, `{"success":true}`)
+	emptyManifest := manifest
+	emptyManifest.RunID = "run_empty"
+	emptyManifest.Spec.RunID = "run_empty"
+	emptyManifest.CreatedAtUTC = time.Now().UTC().Add(time.Hour)
+	emptyManifest.Cases[0].GeneratedTestPath = emptyTestPath
+	emptyManifest.Cases[0].PromptPath = emptyPromptPath
+	emptyManifest.Cases[0].ResponsePath = emptyResponsePath
+	emptyManifest.Cases[0].MetadataPath = emptyMetadataPath
+	emptyManifest.Cases[0].GeneratedAtUTC = emptyManifest.CreatedAtUTC
+	emptyManifestPath := filepath.Join(emptyRunDir, "generated", "generated_manifest.json")
+	if err := contracts.WriteJSON(emptyManifestPath, emptyManifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.IngestManifestFile(ctx, emptyManifestPath); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := s.FindReusableGeneratedAsset(ctx, "generation_new_digest"); err != nil || ok {

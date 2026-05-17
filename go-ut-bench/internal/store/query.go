@@ -435,7 +435,7 @@ func (s *SQLiteStore) SelectEvaluationResultSet(ctx context.Context, runID strin
 }
 
 func (s *SQLiteStore) FindReusableGeneratedCase(ctx context.Context, model, language, sampleID, sourceSHA256, promptVersionID string) (ReusableGeneratedCase, bool, error) {
-	row := s.db.QueryRowContext(ctx, `
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT gc.generated_case_id, gc.run_id, gc.model, gc.language, gc.sample_id,
 		       COALESCE(test_art.path, ''), COALESCE(resp_art.path, ''), COALESCE(meta_art.path, ''),
 		       COALESCE(pr.prompt_version_id, ''), COALESCE(pr.prompt_mode, ''),
@@ -455,31 +455,32 @@ func (s *SQLiteStore) FindReusableGeneratedCase(ctx context.Context, model, lang
 		  AND COALESCE(pr.prompt_version_id, '') = ?
 		  AND COALESCE(test_art.deleted_at_utc, '') = ''
 		ORDER BY gc.generated_at_utc DESC
-		LIMIT 1`, model, language, sampleID, sourceSHA256, promptVersionID)
-	var out ReusableGeneratedCase
-	var promptTokens, completionTokens, totalTokens sql.NullInt64
-	if err := row.Scan(
-		&out.GeneratedCaseID, &out.RunID, &out.Model, &out.Language, &out.SampleID,
-		&out.GeneratedTestPath, &out.ResponsePath, &out.MetadataPath,
-		&out.PromptVersionID, &out.PromptMode,
-		&out.LatencyMS, &promptTokens, &completionTokens, &totalTokens,
-		&out.GeneratedAtUTC, &out.GeneratedTestArtifact,
-	); err != nil {
-		if err == sql.ErrNoRows {
-			return ReusableGeneratedCase{}, false, nil
-		}
+		LIMIT 20`, model, language, sampleID, sourceSHA256, promptVersionID)
+	if err != nil {
 		return ReusableGeneratedCase{}, false, err
 	}
-	out.GeneratedTestPath = resolveStoredPath(out.GeneratedTestPath)
-	out.ResponsePath = resolveStoredPath(out.ResponsePath)
-	out.MetadataPath = resolveStoredPath(out.MetadataPath)
-	out.PromptTokens = nullableSQLInt(promptTokens)
-	out.CompletionTokens = nullableSQLInt(completionTokens)
-	out.TotalTokens = nullableSQLInt(totalTokens)
-	if !fileExists(out.GeneratedTestPath) {
-		return ReusableGeneratedCase{}, false, nil
+	defer rows.Close()
+	for rows.Next() {
+		var out ReusableGeneratedCase
+		var promptTokens, completionTokens, totalTokens sql.NullInt64
+		if err := rows.Scan(
+			&out.GeneratedCaseID, &out.RunID, &out.Model, &out.Language, &out.SampleID,
+			&out.GeneratedTestPath, &out.ResponsePath, &out.MetadataPath,
+			&out.PromptVersionID, &out.PromptMode,
+			&out.LatencyMS, &promptTokens, &completionTokens, &totalTokens,
+			&out.GeneratedAtUTC, &out.GeneratedTestArtifact,
+		); err != nil {
+			return ReusableGeneratedCase{}, false, err
+		}
+		if ok := normalizeReusableGeneratedCase(&out, promptTokens, completionTokens, totalTokens, sql.NullFloat64{}); !ok {
+			continue
+		}
+		return out, true, nil
 	}
-	return out, true, nil
+	if err := rows.Err(); err != nil {
+		return ReusableGeneratedCase{}, false, err
+	}
+	return ReusableGeneratedCase{}, false, nil
 }
 
 func (s *SQLiteStore) FindReusableGeneratedAsset(ctx context.Context, generationKey string) (ReusableGeneratedCase, bool, error) {
@@ -487,7 +488,7 @@ func (s *SQLiteStore) FindReusableGeneratedAsset(ctx context.Context, generation
 	if generationKey == "" {
 		return ReusableGeneratedCase{}, false, nil
 	}
-	row := s.db.QueryRowContext(ctx, `
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT gc.generated_case_id, gc.run_id, gc.model, gc.language, gc.sample_id,
 		       COALESCE(test_art.path, ''), COALESCE(test_art.sha256, ''),
 		       COALESCE(resp_art.path, ''), COALESCE(meta_art.path, ''),
@@ -506,44 +507,36 @@ func (s *SQLiteStore) FindReusableGeneratedAsset(ctx context.Context, generation
 		  AND gc.generation_key = ?
 		  AND COALESCE(test_art.deleted_at_utc, '') = ''
 		ORDER BY gc.generated_at_utc DESC
-		LIMIT 1`, generationKey)
-	var out ReusableGeneratedCase
-	var promptTokens, completionTokens, totalTokens sql.NullInt64
-	var estimatedCost sql.NullFloat64
-	if err := row.Scan(
-		&out.GeneratedCaseID, &out.RunID, &out.Model, &out.Language, &out.SampleID,
-		&out.GeneratedTestPath, &out.GeneratedTestSHA256,
-		&out.ResponsePath, &out.MetadataPath,
-		&out.TracePath, &out.WorkspaceDiffPath,
-		&out.SandboxFingerprint, &out.LatencyMS,
-		&promptTokens, &completionTokens, &totalTokens,
-		&out.TokenSource, &estimatedCost, &out.CostSource,
-		&out.GeneratedAtUTC, &out.GeneratedTestArtifact,
-	); err != nil {
-		if err == sql.ErrNoRows {
-			return ReusableGeneratedCase{}, false, nil
-		}
+		LIMIT 20`, generationKey)
+	if err != nil {
 		return ReusableGeneratedCase{}, false, err
 	}
-	out.GeneratedTestPath = resolveStoredPath(out.GeneratedTestPath)
-	out.ResponsePath = resolveStoredPath(out.ResponsePath)
-	out.MetadataPath = resolveStoredPath(out.MetadataPath)
-	out.TracePath = resolveStoredPath(out.TracePath)
-	out.WorkspaceDiffPath = resolveStoredPath(out.WorkspaceDiffPath)
-	out.PromptTokens = nullableSQLInt(promptTokens)
-	out.CompletionTokens = nullableSQLInt(completionTokens)
-	out.TotalTokens = nullableSQLInt(totalTokens)
-	out.EstimatedCostUSD = nullableSQLFloat(estimatedCost)
-	if !fileExists(out.GeneratedTestPath) {
-		return ReusableGeneratedCase{}, false, nil
-	}
-	if out.GeneratedTestSHA256 != "" {
-		sha, _, err := fileSHA256(out.GeneratedTestPath)
-		if err != nil || sha != out.GeneratedTestSHA256 {
-			return ReusableGeneratedCase{}, false, nil
+	defer rows.Close()
+	for rows.Next() {
+		var out ReusableGeneratedCase
+		var promptTokens, completionTokens, totalTokens sql.NullInt64
+		var estimatedCost sql.NullFloat64
+		if err := rows.Scan(
+			&out.GeneratedCaseID, &out.RunID, &out.Model, &out.Language, &out.SampleID,
+			&out.GeneratedTestPath, &out.GeneratedTestSHA256,
+			&out.ResponsePath, &out.MetadataPath,
+			&out.TracePath, &out.WorkspaceDiffPath,
+			&out.SandboxFingerprint, &out.LatencyMS,
+			&promptTokens, &completionTokens, &totalTokens,
+			&out.TokenSource, &estimatedCost, &out.CostSource,
+			&out.GeneratedAtUTC, &out.GeneratedTestArtifact,
+		); err != nil {
+			return ReusableGeneratedCase{}, false, err
 		}
+		if ok := normalizeReusableGeneratedCase(&out, promptTokens, completionTokens, totalTokens, estimatedCost); !ok {
+			continue
+		}
+		return out, true, nil
 	}
-	return out, true, nil
+	if err := rows.Err(); err != nil {
+		return ReusableGeneratedCase{}, false, err
+	}
+	return ReusableGeneratedCase{}, false, nil
 }
 
 func (s *SQLiteStore) FindReusableGeneratedAssetByIdentity(
@@ -566,7 +559,7 @@ func (s *SQLiteStore) FindReusableGeneratedAssetByIdentity(
 	if subjectID == "" || language == "" || sampleUID == "" || promptVersionID == "" {
 		return ReusableGeneratedCase{}, false, nil
 	}
-	row := s.db.QueryRowContext(ctx, `
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT gc.generated_case_id, gc.run_id, gc.model, gc.language, gc.sample_id,
 		       COALESCE(test_art.path, ''), COALESCE(test_art.sha256, ''),
 		       COALESCE(resp_art.path, ''), COALESCE(meta_art.path, ''),
@@ -595,7 +588,7 @@ func (s *SQLiteStore) FindReusableGeneratedAssetByIdentity(
 		  AND COALESCE(gc.generation_env_fingerprint, '') = ?
 		  AND COALESCE(test_art.deleted_at_utc, '') = ''
 		ORDER BY gc.generated_at_utc DESC
-		LIMIT 1`,
+		LIMIT 20`,
 		subjectID,
 		language,
 		sampleUID,
@@ -607,24 +600,38 @@ func (s *SQLiteStore) FindReusableGeneratedAssetByIdentity(
 		strings.TrimSpace(dependencyFingerprint),
 		strings.TrimSpace(generationEnvFingerprint),
 	)
-	var out ReusableGeneratedCase
-	var promptTokens, completionTokens, totalTokens sql.NullInt64
-	var estimatedCost sql.NullFloat64
-	if err := row.Scan(
-		&out.GeneratedCaseID, &out.RunID, &out.Model, &out.Language, &out.SampleID,
-		&out.GeneratedTestPath, &out.GeneratedTestSHA256,
-		&out.ResponsePath, &out.MetadataPath,
-		&out.TracePath, &out.WorkspaceDiffPath,
-		&out.SandboxFingerprint, &out.LatencyMS,
-		&promptTokens, &completionTokens, &totalTokens,
-		&out.TokenSource, &estimatedCost, &out.CostSource,
-		&out.GeneratedAtUTC, &out.GeneratedTestArtifact,
-	); err != nil {
-		if err == sql.ErrNoRows {
-			return ReusableGeneratedCase{}, false, nil
-		}
+	if err != nil {
 		return ReusableGeneratedCase{}, false, err
 	}
+	defer rows.Close()
+	for rows.Next() {
+		var out ReusableGeneratedCase
+		var promptTokens, completionTokens, totalTokens sql.NullInt64
+		var estimatedCost sql.NullFloat64
+		if err := rows.Scan(
+			&out.GeneratedCaseID, &out.RunID, &out.Model, &out.Language, &out.SampleID,
+			&out.GeneratedTestPath, &out.GeneratedTestSHA256,
+			&out.ResponsePath, &out.MetadataPath,
+			&out.TracePath, &out.WorkspaceDiffPath,
+			&out.SandboxFingerprint, &out.LatencyMS,
+			&promptTokens, &completionTokens, &totalTokens,
+			&out.TokenSource, &estimatedCost, &out.CostSource,
+			&out.GeneratedAtUTC, &out.GeneratedTestArtifact,
+		); err != nil {
+			return ReusableGeneratedCase{}, false, err
+		}
+		if ok := normalizeReusableGeneratedCase(&out, promptTokens, completionTokens, totalTokens, estimatedCost); !ok {
+			continue
+		}
+		return out, true, nil
+	}
+	if err := rows.Err(); err != nil {
+		return ReusableGeneratedCase{}, false, err
+	}
+	return ReusableGeneratedCase{}, false, nil
+}
+
+func normalizeReusableGeneratedCase(out *ReusableGeneratedCase, promptTokens, completionTokens, totalTokens sql.NullInt64, estimatedCost sql.NullFloat64) bool {
 	out.GeneratedTestPath = resolveStoredPath(out.GeneratedTestPath)
 	out.ResponsePath = resolveStoredPath(out.ResponsePath)
 	out.MetadataPath = resolveStoredPath(out.MetadataPath)
@@ -634,16 +641,16 @@ func (s *SQLiteStore) FindReusableGeneratedAssetByIdentity(
 	out.CompletionTokens = nullableSQLInt(completionTokens)
 	out.TotalTokens = nullableSQLInt(totalTokens)
 	out.EstimatedCostUSD = nullableSQLFloat(estimatedCost)
-	if !fileExists(out.GeneratedTestPath) {
-		return ReusableGeneratedCase{}, false, nil
+	if !nonEmptyFile(out.GeneratedTestPath) {
+		return false
 	}
 	if out.GeneratedTestSHA256 != "" {
 		sha, _, err := fileSHA256(out.GeneratedTestPath)
 		if err != nil || sha != out.GeneratedTestSHA256 {
-			return ReusableGeneratedCase{}, false, nil
+			return false
 		}
 	}
-	return out, true, nil
+	return true
 }
 
 func (s *SQLiteStore) FindReusableEvaluationAsset(ctx context.Context, evaluationKey string) (ReusableEvaluationResult, bool, error) {

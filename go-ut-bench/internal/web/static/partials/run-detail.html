@@ -52,6 +52,9 @@
                 <button x-show="currentRun.status === 'completed' || currentRun.status === 'failed' || currentRun.status === 'canceled'" @click="ingestRunToDB(currentRun.run_id)" :disabled="dbIngesting" class="btn-ghost" style="color:var(--green)" title="补录该任务到数据库">
                   <span x-text="dbIngesting ? '入库中...' : '入库'"></span>
                 </button>
+                <button x-show="currentRun.status === 'completed' || currentRun.status === 'failed' || currentRun.status === 'canceled'" @click="promoteRunToGeneratedSet(currentRun.run_id)" :disabled="generatedSetSaving" class="btn-ghost" style="color:var(--accent)" title="保存本轮模型生成的测试代码，后续可直接复用评测">
+                  <span x-text="generatedSetSaving ? '保存中...' : '保存为生成集'"></span>
+                </button>
                 <button x-show="currentRun.status === 'completed' || currentRun.status === 'failed' || currentRun.status === 'canceled'" @click="rerunRun(currentRun.run_id)" class="btn-ghost" style="color:var(--yellow)" title="以相同配置再跑一次">重跑</button>
                 <button @click="renameRun(currentRun.run_id, currentRun.label)" class="btn-ghost" style="color:var(--fg-muted)" title="设置备注名">备注</button>
                 <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="deleteRun(currentRun.run_id)" class="btn-ghost" style="color:var(--red)" title="删除该任务及所有产物">删除</button>

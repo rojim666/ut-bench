@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"go-ut-bench/internal/contracts"
 )
@@ -75,11 +74,7 @@ func (e *JavaEvaluator) ParseTestCounts(testOutput string) (*int, *int) {
 }
 
 func (e *JavaEvaluator) EstimateAssertionDensity(workdir, testPath string) (int, int, float64) {
-	if strings.Contains(filepath.ToSlash(testPath), "/src/test/") {
-		raw, err := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(testPath)))
-		if err != nil {
-			return 0, 0, 0
-		}
+	if raw, err := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(testPath))); err == nil {
 		return estimateJavaAssertionDensity(string(raw))
 	}
 	fullPath := filepath.Join(workdir, "src", "test", "java", testPath)

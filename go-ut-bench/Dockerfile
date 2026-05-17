@@ -283,5 +283,5 @@ RUN go build -o utbench ./cmd/utbench/
 
 RUN mkdir -p /app/artifacts /app/storage
 
-ENTRYPOINT ["./utbench"]
+ENTRYPOINT ["/app/utbench"]
 CMD ["--help"]

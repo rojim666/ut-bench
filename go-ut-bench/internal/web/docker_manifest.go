@@ -11,6 +11,11 @@ import (
 
 func (m *RunManager) prepareDockerGeneratedManifest(spec contracts.RunSpec) (string, error) {
 	source := filepath.Join(spec.OutputRoot, "runs", spec.RunID, "generated", "generated_manifest.json")
+	target := filepath.Join(spec.OutputRoot, "runs", spec.RunID, "generated", "generated_manifest.docker.json")
+	return m.writeDockerGeneratedManifest(spec, source, target)
+}
+
+func (m *RunManager) writeDockerGeneratedManifest(spec contracts.RunSpec, source, target string) (string, error) {
 	manifest, err := contracts.ReadGeneratedManifest(source)
 	if err != nil {
 		return "", err
@@ -42,7 +47,6 @@ func (m *RunManager) prepareDockerGeneratedManifest(spec contracts.RunSpec) (str
 		c.FileModule.GeneratedTestPath = mapper(c.FileModule.GeneratedTestPath)
 	}
 
-	target := filepath.Join(spec.OutputRoot, "runs", spec.RunID, "generated", "generated_manifest.docker.json")
 	if err := contracts.WriteJSON(target, manifest); err != nil {
 		return "", fmt.Errorf("write docker manifest: %w", err)
 	}

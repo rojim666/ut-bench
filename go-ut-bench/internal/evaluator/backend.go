@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
-	"sort"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -65,37 +66,13 @@ func (b *DockerBackend) RunCommand(ctx context.Context, workdir string, command 
 	if len(command) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
-	args := []string{"run", "--rm"}
-	if b.NetworkDisabled {
-		args = append(args, "--network", "none")
+	if err := ensureDockerSharedCacheDirs(); err != nil {
+		return nil, err
 	}
-	if b.CPU != "" {
-		args = append(args, "--cpus", b.CPU)
-	}
-	if b.Memory != "" {
-		args = append(args, "--memory", b.Memory)
-	}
+	args := b.dockerRunArgs(workdir, command, env)
 	// 注入环境变量
-	keys := make([]string, 0, len(env))
-	for _, e := range env {
-		if idx := strings.IndexByte(e, '='); idx > 0 {
-			keys = append(keys, e[:idx])
-		}
-	}
-	sort.Strings(keys)
-	for _, e := range env {
-		args = append(args, "-e", e)
-	}
 	// 挂载工作目录
-	args = append(args, "-v", workdir+":/work", "-w", "/work")
-	image := strings.TrimSpace(b.Image)
-	if image == "" {
-		image = "utbench:latest"
-	}
-	args = append(args, image)
 	// 将 command 拼接为 shell 命令
-	shellCmd := shellJoinEval(command)
-	args = append(args, "/bin/sh", "-c", shellCmd)
 
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "docker", args...)
@@ -109,6 +86,48 @@ func (b *DockerBackend) RunCommand(ctx context.Context, workdir string, command 
 		return output, fmt.Errorf("docker eval command timed out: %w", ctx.Err())
 	}
 	return output, err
+}
+
+func (b *DockerBackend) dockerRunArgs(workdir string, command []string, env []string) []string {
+	args := []string{"run", "--rm"}
+	if b.NetworkDisabled {
+		args = append(args, "--network", "none")
+	}
+	if b.CPU != "" {
+		args = append(args, "--cpus", b.CPU)
+	}
+	if b.Memory != "" {
+		args = append(args, "--memory", b.Memory)
+	}
+	for _, e := range env {
+		args = append(args, "-e", e)
+	}
+	if cacheDir := dockerMavenCacheDir(); cacheDir != "" {
+		args = append(args, "-v", cacheDir+":/utbench-cache/m2")
+	}
+	args = append(args, "-v", workdir+":/work", "-w", "/work", "--entrypoint", "/bin/sh")
+	image := strings.TrimSpace(b.Image)
+	if image == "" {
+		image = "utbench:latest"
+	}
+	return append(args, image, "-c", shellJoinEval(command))
+}
+
+func ensureDockerSharedCacheDirs() error {
+	if cacheDir := dockerMavenCacheDir(); cacheDir != "" {
+		return os.MkdirAll(cacheDir, 0o755)
+	}
+	return nil
+}
+
+func dockerMavenCacheDir() string {
+	if cacheDir := strings.TrimSpace(os.Getenv("UTBENCH_DOCKER_MAVEN_CACHE")); cacheDir != "" {
+		return cacheDir
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return filepath.Join(cwd, ".m2-cache", "repository")
+	}
+	return filepath.Join(os.TempDir(), "utbench-m2-repository")
 }
 
 func shellJoinEval(args []string) string {
