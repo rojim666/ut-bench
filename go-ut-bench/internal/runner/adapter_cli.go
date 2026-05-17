@@ -1324,6 +1324,94 @@ func collectOpenCodeSessionExport(
 	}
 	trace.TokenSource = "actual"
 	trace.UsageSourceDetail = "opencode_session_export"
+
+	// 从 session export 中提取实际的工具调用（替换从 stdout/stderr 解析的假工具调用）
+	toolCalls := extractOpenCodeToolCalls(payload)
+	if len(toolCalls) > 0 {
+		trace.ToolCalls = toolCalls
+	}
+}
+
+// extractOpenCodeToolCalls 从 OpenCode session export 中提取实际的工具调用。
+// session export 的 messages 数组中，每个 message 包含 parts 数组，
+// 其中 type="tool" 的 part 表示实际的工具调用。
+func extractOpenCodeToolCalls(payload any) []ToolCall {
+	var calls []ToolCall
+	seen := map[string]struct{}{}
+
+	payloadMap, ok := payload.(map[string]any)
+	if !ok {
+		return calls
+	}
+
+	messages, ok := payloadMap["messages"].([]any)
+	if !ok {
+		return calls
+	}
+
+	for _, msg := range messages {
+		msgMap, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		parts, ok := msgMap["parts"].([]any)
+		if !ok {
+			continue
+		}
+
+		for _, part := range parts {
+			partMap, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			// 只处理 type="tool" 的部分（实际的工具调用）
+			partType, _ := partMap["type"].(string)
+			if partType != "tool" {
+				continue
+			}
+
+			tool, _ := partMap["tool"].(string)
+			if tool == "" {
+				continue
+			}
+
+			// 提取输入信息
+			input := ""
+			if state, ok := partMap["state"].(map[string]any); ok {
+				if inputMap, ok := state["input"].(map[string]any); ok {
+					if b, err := json.Marshal(inputMap); err == nil {
+						input = trimText(string(b), 500)
+					}
+				}
+			}
+
+			// 使用 tool + callID 作为去重键
+			callID, _ := partMap["callID"].(string)
+			key := tool + "|" + callID
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+
+			// 检查是否成功完成
+			success := true
+			if state, ok := partMap["state"].(map[string]any); ok {
+				if status, ok := state["status"].(string); ok {
+					success = status == "completed"
+				}
+			}
+
+			calls = append(calls, ToolCall{
+				Tool:    tool,
+				Input:   input,
+				Success: success,
+			})
+		}
+	}
+
+	return calls
 }
 
 func collectUsageRecords(output string) []usageRecord {
@@ -1407,6 +1495,17 @@ func usageRecordFromMap(v map[string]any) (usageRecord, bool) {
 			}
 		}
 	}
+
+	// 处理缓存token：如果 input_tokens 包含缓存读取的token，需要减去
+	// CodeBuddy 的 input_tokens = 实际输入 + cache_read_input_tokens
+	if prompt != nil {
+		cacheRead := firstIntValue(v, "cache_read_input_tokens", "cacheReadInputTokens")
+		if cacheRead != nil && *cacheRead > 0 && *prompt >= *cacheRead {
+			actualPrompt := *prompt - *cacheRead
+			prompt = &actualPrompt
+		}
+	}
+
 	if prompt == nil && completion == nil && total == nil {
 		return usageRecord{}, false
 	}
