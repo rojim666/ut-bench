@@ -22,6 +22,7 @@ type Options struct {
 	RunID            string
 	OutputRoot       string
 	ConfigPath       string
+	RuleEnabled      bool
 	LLMEnabled       bool
 	LLMModel         string
 	Force            bool
@@ -82,7 +83,6 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 		return nil, fmt.Errorf("read evaluation result: %w", err)
 	}
 
-	reportProgress(opts.Progress, "规则分析")
 	manifestPath := filepath.Join(runDir, "generated", "generated_manifest.json")
 	var manifest contracts.GeneratedManifest
 	_ = readJSON(manifestPath, &manifest)
@@ -108,17 +108,24 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 		},
 	}
 
+	if opts.RuleEnabled {
+		reportProgress(opts.Progress, "规则分析")
+	}
 	var findings []contracts.AnalysisFinding
 	for _, res := range eval.Results {
 		gen := generatedByKey[resultKey(res.SubjectID, res.Model, res.Language, res.SampleID)]
 		subject, subjectFindings := s.analyzeResult(opts.OutputRoot, res, gen)
 		report.Subjects = append(report.Subjects, subject)
-		findings = append(findings, subjectFindings...)
+		if opts.RuleEnabled {
+			findings = append(findings, subjectFindings...)
+		}
 		accumulateTraceQuality(&report.TraceQuality, subject)
 	}
 	report.TraceQuality.TotalSubjects = len(report.Subjects)
-	report.Findings = append(report.Findings, findings...)
-	report.Recommendations = buildRecommendations(report.Findings, report.Subjects)
+	if opts.RuleEnabled {
+		report.Findings = append(report.Findings, findings...)
+		report.Recommendations = buildRecommendations(report.Findings, report.Subjects)
+	}
 	report.Summary = buildSummary(report)
 
 	selection, err := validateAnalysisSelection(report.Subjects, opts.SelectedSubjects, opts.CompareMode)

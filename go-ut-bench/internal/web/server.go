@@ -2783,6 +2783,7 @@ func (s *Server) handleRunReport(w http.ResponseWriter, r *http.Request, runID s
 }
 
 type runAnalysisRequest struct {
+	RuleEnabled      bool                                `json:"rule_enabled"`
 	LLMEnabled       bool                                `json:"llm_enabled"`
 	LLMModel         string                              `json:"llm_model"`
 	Force            bool                                `json:"force"`
@@ -2811,6 +2812,7 @@ func (s *Server) handleRunAnalysis(w http.ResponseWriter, r *http.Request, runID
 			RunID:            runID,
 			OutputRoot:       s.outputRoot,
 			ConfigPath:       s.configPath,
+			RuleEnabled:      req.RuleEnabled,
 			LLMEnabled:       req.LLMEnabled,
 			LLMModel:         req.LLMModel,
 			Force:            req.Force,

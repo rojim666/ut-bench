@@ -189,7 +189,7 @@
     analysisGenerating: false,
     optimizationLoading: false,
     optimizationGenerating: false,
-    analysisOptions: { llm_enabled: true, llm_model: '', force: true },
+    analysisOptions: { rule_enabled: false, llm_enabled: true, llm_model: '', force: true },
     analysisFilters: { source: '', severity: '', category: '', subject: '' },
     analysisSubjectOptions: [],
     analysisSelection: [],
@@ -3412,6 +3412,7 @@
       this.analysisJob = { status: 'queued', phase: '排队中', selected_count: this.analysisSelection.length, elapsed_ms: 0 }
       try {
         const body = {
+          rule_enabled: !!this.analysisOptions.rule_enabled,
           llm_enabled: !!this.analysisOptions.llm_enabled,
           llm_model: this.analysisOptions.llm_model || '',
           force,

@@ -475,8 +475,12 @@
                 </div>
                 <div class="flex flex-wrap items-end gap-3">
                   <label class="inline-flex items-center gap-2 text-[12px]" style="color:var(--fg-muted)">
+                    <input type="checkbox" x-model="analysisOptions.rule_enabled">
+                    <span>规则诊断</span>
+                  </label>
+                  <label class="inline-flex items-center gap-2 text-[12px]" style="color:var(--fg-muted)">
                     <input type="checkbox" x-model="analysisOptions.llm_enabled">
-                    <span>启用 LLM 诊断</span>
+                    <span>LLM 诊断</span>
                   </label>
                   <label class="text-[12px]" style="color:var(--fg-muted)">
                     <div class="mb-1">诊断模型</div>

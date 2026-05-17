@@ -241,7 +241,7 @@ func TestAnalyzeRulesAndLLMWritesEvidenceArtifacts(t *testing.T) {
 	}
 
 	svc := NewServiceWithLLM(fakeLLM{})
-	report, err := svc.Analyze(context.Background(), Options{RunID: runID, OutputRoot: root, LLMEnabled: true, Force: true})
+	report, err := svc.Analyze(context.Background(), Options{RunID: runID, OutputRoot: root, RuleEnabled: true, LLMEnabled: true, Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestAnalyzeWithoutLLMStillWritesRules(t *testing.T) {
 	if err := contracts.WriteJSON(filepath.Join(runDir, "evaluation", "evaluation_result.json"), eval); err != nil {
 		t.Fatal(err)
 	}
-	report, err := NewService().Analyze(context.Background(), Options{RunID: runID, OutputRoot: root, LLMEnabled: false, Force: true})
+	report, err := NewService().Analyze(context.Background(), Options{RunID: runID, OutputRoot: root, RuleEnabled: true, LLMEnabled: false, Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestAnalyzeHighlightsSourceModificationAsFailureCause(t *testing.T) {
 	if err := contracts.WriteJSON(filepath.Join(runDir, "evaluation", "evaluation_result.json"), eval); err != nil {
 		t.Fatal(err)
 	}
-	report, err := NewService().Analyze(context.Background(), Options{RunID: runID, OutputRoot: root, Force: true})
+	report, err := NewService().Analyze(context.Background(), Options{RunID: runID, OutputRoot: root, RuleEnabled: true, Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestAnalyzeGroupsRepeatedTraceRootCause(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	report, err := NewService().Analyze(context.Background(), Options{RunID: runID, OutputRoot: root, Force: true})
+	report, err := NewService().Analyze(context.Background(), Options{RunID: runID, OutputRoot: root, RuleEnabled: true, Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
