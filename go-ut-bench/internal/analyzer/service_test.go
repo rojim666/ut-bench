@@ -56,6 +56,114 @@ func (c *captureLLM) Analyze(ctx context.Context, req LLMRequest) (contracts.LLM
 	}, nil
 }
 
+func TestClassifyWorkspaceChange(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourcePath string
+		changes    []string
+		wantSource bool
+		wantPaths  []string
+		wantTest   bool
+		wantNoise  int
+	}{
+		{
+			name:       "source file change detected",
+			sourcePath: "datasets/go/sample.go",
+			changes:    []string{"sample.go"},
+			wantSource: true,
+			wantPaths:  []string{"sample.go"},
+		},
+		{
+			name:       "test file change detected",
+			sourcePath: "datasets/go/sample.go",
+			changes:    []string{"generated_test.go"},
+			wantTest:   true,
+		},
+		{
+			name:       "test file with _test suffix detected",
+			sourcePath: "datasets/go/sample.go",
+			changes:    []string{"sample_test.go"},
+			wantTest:   true,
+		},
+		{
+			name:       "test file with test_ prefix not misclassified as source",
+			sourcePath: "datasets/python/sample.py",
+			changes:    []string{"test_sample.py"},
+			wantTest:   true,
+		},
+		{
+			name:       "java test file detected",
+			sourcePath: "datasets/java/Sample.java",
+			changes:    []string{"SampleTest.java"},
+			wantTest:   true,
+		},
+		{
+			name:       "source and test both changed",
+			sourcePath: "datasets/go/sample.go",
+			changes:    []string{"sample.go", "generated_test.go"},
+			wantSource: true,
+			wantPaths:  []string{"sample.go"},
+			wantTest:   true,
+		},
+		{
+			name:       "runtime noise excluded",
+			sourcePath: "datasets/python/sample.py",
+			changes:    []string{".pytest_cache/v/cache/lastfailed", "__pycache__/sample.cpython-311.pyc"},
+			wantNoise:  2,
+		},
+		{
+			name:       "source with path prefix matched",
+			sourcePath: "datasets/go/pkg/sample.go",
+			changes:    []string{"pkg/sample.go"},
+			wantSource: true,
+			wantPaths:  []string{"pkg/sample.go"},
+		},
+		{
+			name:       "case insensitive source match",
+			sourcePath: "datasets/go/Sample.go",
+			changes:    []string{"sample.go"},
+			wantSource: true,
+			wantPaths:  []string{"sample.go"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			subject := contracts.AnalysisSubject{SourcePath: tt.sourcePath}
+			for _, c := range tt.changes {
+				classifyWorkspaceChange(&subject, c)
+			}
+			if subject.ModifiedSource != tt.wantSource {
+				t.Errorf("ModifiedSource = %v, want %v", subject.ModifiedSource, tt.wantSource)
+			}
+			if tt.wantPaths != nil {
+				got := strings.Join(subject.ModifiedSourcePaths, ",")
+				want := strings.Join(tt.wantPaths, ",")
+				if got != want {
+					t.Errorf("ModifiedSourcePaths = %q, want %q", got, want)
+				}
+			}
+			if subject.HasTestWrite != tt.wantTest {
+				t.Errorf("HasTestWrite = %v, want %v", subject.HasTestWrite, tt.wantTest)
+			}
+			if subject.RuntimeNoiseCount != tt.wantNoise {
+				t.Errorf("RuntimeNoiseCount = %d, want %d", subject.RuntimeNoiseCount, tt.wantNoise)
+			}
+		})
+	}
+}
+
+func TestClassifyWorkspaceChangeSourceCheckBeforeTestCheck(t *testing.T) {
+	// 验证源文件名包含 "test" 子串时，优先被识别为源码修改而非测试文件
+	subject := contracts.AnalysisSubject{SourcePath: "datasets/python/test_utils.py"}
+	classifyWorkspaceChange(&subject, "test_utils.py")
+	if !subject.ModifiedSource {
+		t.Fatal("file matching source base should be classified as source modification")
+	}
+	if subject.HasTestWrite {
+		t.Fatal("file matching source base should not also be classified as test write")
+	}
+}
+
 func TestAnalyzeRulesAndLLMWritesEvidenceArtifacts(t *testing.T) {
 	root := t.TempDir()
 	runID := "run-test"
@@ -209,6 +317,126 @@ func TestAnalyzeWithoutLLMStillWritesRules(t *testing.T) {
 	}
 }
 
+func TestAnalyzeHighlightsSourceModificationAsFailureCause(t *testing.T) {
+	root := t.TempDir()
+	runID := "run-source-modified"
+	runDir := filepath.Join(root, "runs", runID)
+	diffPath := filepath.Join(runDir, "generated", "metadata", "agent_traces", "claudecode", "go", "sample.diff.json")
+	if err := contracts.WriteJSON(diffPath, map[string]any{"changes": []string{"sample.go", "generated_test.go"}}); err != nil {
+		t.Fatal(err)
+	}
+	eval := contracts.EvaluationResultSet{
+		SchemaVersion:  contracts.SchemaVersion,
+		RunID:          runID,
+		EvaluatedAtUTC: time.Now().UTC(),
+		Results: []contracts.EvaluationResult{{
+			Model:             "claudecode__m__qta-ut",
+			SubjectID:         "claudecode__m__qta-ut",
+			Language:          "go",
+			SampleID:          "sample",
+			SourcePath:        "datasets/go/sample.go",
+			CompilePass:       false,
+			CompileError:      "found packages main and fixspaces",
+			WorkspaceDiffPath: diffPath,
+		}},
+	}
+	if err := contracts.WriteJSON(filepath.Join(runDir, "evaluation", "evaluation_result.json"), eval); err != nil {
+		t.Fatal(err)
+	}
+	report, err := NewService().Analyze(context.Background(), Options{RunID: runID, OutputRoot: root, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Subjects) != 1 || !report.Subjects[0].ModifiedSource {
+		t.Fatalf("source modification not detected: %+v", report.Subjects)
+	}
+	if got := strings.Join(report.Subjects[0].ModifiedSourcePaths, ","); got != "sample.go" {
+		t.Fatalf("modified source paths = %q", got)
+	}
+	var found bool
+	for _, finding := range report.Findings {
+		if finding.Category == "policy" && strings.Contains(finding.Detail, "源码污染") && strings.Contains(finding.Detail, "sample.go") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("source pollution finding missing: %+v", report.Findings)
+	}
+	if !strings.Contains(strings.Join(report.Summary.KeyPoints, "\n"), "修改了被测源码") {
+		t.Fatalf("summary does not highlight source modification: %+v", report.Summary.KeyPoints)
+	}
+	if len(report.RootCauses) == 0 || report.RootCauses[0].Category != "policy" {
+		t.Fatalf("source modification root cause missing: %+v", report.RootCauses)
+	}
+	if !strings.Contains(report.RootCauses[0].Detail, "源码污染") {
+		t.Fatalf("root cause should explain source pollution: %+v", report.RootCauses[0])
+	}
+	if len(report.EvidenceIndex) == 0 {
+		t.Fatalf("evidence index missing")
+	}
+}
+
+func TestAnalyzeGroupsRepeatedTraceRootCause(t *testing.T) {
+	root := t.TempDir()
+	runID := "run-group-trace"
+	runDir := filepath.Join(root, "runs", runID)
+	ok := true
+	results := make([]contracts.EvaluationResult, 0, 2)
+	for _, subjectID := range []string{"claudecode__m__qta-ut", "codebuddy__m__qta-ut"} {
+		traceDir := filepath.Join(runDir, "generated", "metadata", "agent_traces", subjectID, "python")
+		trajPath := filepath.Join(traceDir, "sample.trajectory.json")
+		if err := contracts.WriteJSON(trajPath, runner.AgentTrajectory{
+			SchemaVersion: "trajectory.v0.1.0",
+			SubjectID:     subjectID,
+			SampleID:      "sample",
+			Language:      "python",
+			Steps: []runner.TrajectoryStep{
+				{Index: 1, Kind: "tool_call", Tool: "read", Input: map[string]any{"filePath": "/workspace/sample.py"}, Success: &ok},
+				{Index: 2, Kind: "tool_call", Tool: "write", Input: map[string]any{"filePath": "/workspace/test_sample.py"}, Success: &ok},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		results = append(results, contracts.EvaluationResult{
+			Model:          subjectID,
+			SubjectID:      subjectID,
+			Language:       "python",
+			SampleID:       "sample",
+			CompilePass:    true,
+			TrajectoryPath: trajPath,
+		})
+	}
+	if err := contracts.WriteJSON(filepath.Join(runDir, "evaluation", "evaluation_result.json"), contracts.EvaluationResultSet{
+		SchemaVersion:  contracts.SchemaVersion,
+		RunID:          runID,
+		EvaluatedAtUTC: time.Now().UTC(),
+		Results:        results,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := NewService().Analyze(context.Background(), Options{RunID: runID, OutputRoot: root, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var grouped *contracts.AnalysisRootCause
+	for i := range report.RootCauses {
+		if report.RootCauses[i].Title == "未观察到本地测试验证" {
+			grouped = &report.RootCauses[i]
+			break
+		}
+	}
+	if grouped == nil {
+		t.Fatalf("grouped trace root cause missing: %+v", report.RootCauses)
+	}
+	if len(grouped.AffectedSubjects) != 2 {
+		t.Fatalf("affected subjects = %d, root cause = %+v", len(grouped.AffectedSubjects), grouped)
+	}
+	if !strings.Contains(grouped.Detail, "共 2 个对象") {
+		t.Fatalf("group detail should summarize repeated cause: %+v", grouped.Detail)
+	}
+}
+
 func TestAnalyzeSelectedHealthySubjectIncludedInEvidence(t *testing.T) {
 	root := t.TempDir()
 	runID := "run-selected"
@@ -317,6 +545,13 @@ func TestAnalyzeCompareSelectionPromptAndMissingSubject(t *testing.T) {
 	}
 	if !strings.Contains(llm.prompt, "横向对比") {
 		t.Fatalf("compare prompt missing: %s", llm.prompt)
+	}
+	report, err := ReadReport(filepath.Join(runDir, "analysis", "analysis_report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ComparisonSummary == nil || len(report.ComparisonSummary.Differences) != 2 {
+		t.Fatalf("comparison summary missing: %+v", report.ComparisonSummary)
 	}
 	_, err = NewServiceWithLLM(&captureLLM{}).Analyze(context.Background(), Options{
 		RunID:      runID,

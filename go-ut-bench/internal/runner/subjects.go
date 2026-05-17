@@ -484,7 +484,9 @@ func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, out
 	b.WriteString(prompt)
 	b.WriteString("\n\nAgent execution contract:\n")
 	b.WriteString("- Work only inside the provided workspace.\n")
-	b.WriteString("- Do not modify the original source behavior.\n")
+	b.WriteString("- Treat all original source files as read-only inputs. Do not edit, rename, reformat, move, delete, or overwrite any source file.\n")
+	b.WriteString("- Only create or edit the final generated test file. If validation fails, fix the generated test file instead of changing production/source code.\n")
+	b.WriteString("- Preserve the source package/module/namespace/class/function signatures exactly; never change them to make tests compile.\n")
 	b.WriteString("- Generate one complete unit test file.\n")
 	b.WriteString("- Write the final test file to: ")
 	b.WriteString(outputFile)
@@ -497,12 +499,10 @@ func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, out
 
 	// Skill 调用指令
 	if skillDir != "" && skillName != "" && skillName != agentconfig.NoSkill {
-		// Claude Code 使用斜杠命令调用 skill
 		if strings.EqualFold(framework, "claudecode") || strings.EqualFold(framework, "claude_code") || strings.EqualFold(framework, "claude-code") {
-			b.WriteString("\nIMPORTANT: Use the /")
-			b.WriteString(strings.ReplaceAll(skillName, "-", "_"))
-			b.WriteString(" command to generate tests according to the skill methodology.\n")
-			b.WriteString("The skill provides structured guidelines for test generation.\n")
+			b.WriteString("\nIMPORTANT: This task must run through the Claude Code native skill /")
+			b.WriteString(slashSkill)
+			b.WriteString(". The prompt starts with that slash command; keep following the skill until the final test file is written.\n")
 		} else if strings.EqualFold(framework, "codebuddy") {
 			b.WriteString("\nIMPORTANT: This task must run through the CodeBuddy native skill /")
 			b.WriteString(slashSkill)
@@ -525,7 +525,11 @@ func buildAgentPrompt(prompt string, sample contracts.SampleRef, sourceFile, out
 }
 
 func usesSlashSkillInvocation(framework string) bool {
-	return strings.EqualFold(framework, "codebuddy") || strings.EqualFold(framework, "opencode")
+	return strings.EqualFold(framework, "claudecode") ||
+		strings.EqualFold(framework, "claude_code") ||
+		strings.EqualFold(framework, "claude-code") ||
+		strings.EqualFold(framework, "codebuddy") ||
+		strings.EqualFold(framework, "opencode")
 }
 
 func nativeSkillNameFromDir(skillDir, fallback string) string {

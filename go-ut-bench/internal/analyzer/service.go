@@ -145,6 +145,9 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 	report.Recommendations = dedupeRecommendations(report.Recommendations)
 	sortFindings(report.Findings)
 	sortRecommendations(report.Recommendations)
+	report.EvidenceIndex = buildEvidenceIndex(opts.OutputRoot, report)
+	report.RootCauses = buildRootCauses(report)
+	report.ComparisonSummary = buildComparisonSummary(report)
 	report.Summary = buildSummary(report)
 
 	reportProgress(opts.Progress, "写入报告")
@@ -309,13 +312,19 @@ func classifyWorkspaceChange(subject *contracts.AnalysisSubject, change string) 
 		subject.RuntimeNoiseCount++
 		return
 	}
-	if strings.Contains(lower, "generated_test") || strings.HasSuffix(lower, "_test.go") || strings.HasSuffix(lower, "test.java") || strings.Contains(lower, "test") {
-		subject.HasTestWrite = true
-		return
-	}
 	sourceBase := strings.ToLower(filepath.Base(subject.SourcePath))
 	if sourceBase != "" && strings.HasSuffix(lower, sourceBase) {
-		subject.ModifiedSource = true
+		// 边界检查：确保 sourceBase 出现在路径分隔符之后或路径开头，
+		// 避免 test_sample.py 误匹配 sourceBase=sample.py 的情况。
+		idx := len(lower) - len(sourceBase)
+		if idx == 0 || lower[idx-1] == '/' {
+			subject.ModifiedSource = true
+			subject.ModifiedSourcePaths = appendUniqueString(subject.ModifiedSourcePaths, clean)
+			return
+		}
+	}
+	if strings.Contains(lower, "generated_test") || strings.HasSuffix(lower, "_test.go") || strings.HasSuffix(lower, "test.java") || strings.Contains(lower, "test") {
+		subject.HasTestWrite = true
 	}
 }
 
@@ -352,7 +361,13 @@ func buildRuleFindings(res contracts.EvaluationResult, subject contracts.Analysi
 	if subject.MutationScore == nil {
 		add("P1", "mutation", "缺少变异测试得分", firstNonEmpty(res.MutationError, "评测结果没有 mutation_score。"), "确认变异测试工具链可用，并检查生成测试是否能稳定运行。", baseEv)
 	} else if normMetric(*subject.MutationScore) < 0.6 {
-		add("P1", "mutation", "变异得分偏低", fmt.Sprintf("当前变异得分为 %.1f%%。", normMetric(*subject.MutationScore)*100), "增加对关键分支、边界条件和错误消息的强断言。", baseEv)
+		title := "变异得分偏低"
+		detail := fmt.Sprintf("当前变异得分为 %.1f%%。", normMetric(*subject.MutationScore)*100)
+		if strings.TrimSpace(res.MutationError) != "" {
+			title = "变异测试跳过或失败"
+			detail += " mutation 工具反馈：" + trim(res.MutationError, 240)
+		}
+		add("P1", "mutation", title, detail, "增加对关键分支、边界条件和错误消息的强断言，并先确保 baseline 测试全量通过。", baseEv)
 	}
 	if subject.TraceStepCount == 0 {
 		add("P1", "trace", "缺少 step-by-step trajectory", "没有读取到统一 trajectory，无法还原 agent 的逐步执行过程。", "优先修复对应 agent 的原始 trace 导出和 trajectory 适配。", evidenceRefFromPath("trajectory", subject.TrajectoryPath, subject.SubjectID, subject.SampleID))
@@ -364,7 +379,16 @@ func buildRuleFindings(res contracts.EvaluationResult, subject contracts.Analysi
 		add("P2", "trace", "未观察到测试执行步骤", "trajectory 中没有发现 pytest/go test/mvn test 等本地验证命令。", "要求 agent 写完测试后运行最小验证命令，并根据失败结果迭代。", evidenceRefFromPath("trajectory", subject.TrajectoryPath, subject.SubjectID, subject.SampleID))
 	}
 	if subject.ModifiedSource {
-		add("P0", "policy", "agent 修改了被测源码", "workspace diff 显示 agent 可能修改了原始业务源码。", "强化执行约束：只允许写测试文件，不允许改业务源码。", evidenceRefFromPath("workspace_diff", subject.WorkspaceDiffPath, subject.SubjectID, subject.SampleID))
+		detail := "workspace diff 显示 agent 修改了原始业务源码"
+		if len(subject.ModifiedSourcePaths) > 0 {
+			detail += "：" + strings.Join(subject.ModifiedSourcePaths, "、")
+		}
+		if !res.CompilePass || (res.TestPass != nil && !*res.TestPass) || subject.MutationScore == nil || (subject.MutationScore != nil && normMetric(*subject.MutationScore) == 0) {
+			detail += "。本结果同时存在编译、测试或变异阶段失败，失败根因需要优先按源码污染排查。"
+		} else {
+			detail += "。即使本次指标通过，也应视为无效行为，因为评测应只接受生成测试文件。"
+		}
+		add("P0", "policy", "agent 修改了被测源码", detail, "强化执行约束：只允许写测试文件，不允许改业务源码；验证失败时只能修改生成测试。", evidenceRefFromPath("workspace_diff", subject.WorkspaceDiffPath, subject.SubjectID, subject.SampleID))
 	}
 	if subject.RuntimeNoiseCount > 0 {
 		add("P3", "policy", "产生运行时噪声文件", fmt.Sprintf("workspace diff 中有 %d 个缓存、插件或临时文件。", subject.RuntimeNoiseCount), "继续过滤运行时噪声，必要时清理 agent 工作区后再采集 diff。", evidenceRefFromPath("workspace_diff", subject.WorkspaceDiffPath, subject.SubjectID, subject.SampleID))
@@ -518,6 +542,170 @@ func buildRecommendations(findings []contracts.AnalysisFinding, subjects []contr
 	return out
 }
 
+func buildEvidenceIndex(outputRoot string, report *contracts.AnalysisReport) []contracts.AnalysisEvidenceItem {
+	var out []contracts.AnalysisEvidenceItem
+	add := func(id, kind, title string, subject contracts.AnalysisSubject, path string, stepIndex int, excerpt string) {
+		if strings.TrimSpace(id) == "" {
+			id = fmt.Sprintf("ev-%03d", len(out)+1)
+		}
+		out = append(out, contracts.AnalysisEvidenceItem{
+			EvidenceID: id,
+			Kind:       kind,
+			Title:      title,
+			SubjectID:  subject.SubjectID,
+			SampleID:   subject.SampleID,
+			Language:   subject.Language,
+			Path:       path,
+			StepIndex:  stepIndex,
+			Excerpt:    trim(excerpt, 1200),
+		})
+	}
+	subjects := map[string]contracts.AnalysisSubject{}
+	for _, subject := range report.Subjects {
+		subjects[analysisSubjectKey(subject.SubjectID, subject.SampleID, subject.Language)] = subject
+		add("subject-"+safeEvidenceID(subject.SubjectID+"-"+subject.SampleID+"-"+subject.Language), "evaluation", "对象指标摘要", subject, "", 0, subjectEvidenceExcerpt(subject))
+		if subject.WorkspaceDiffPath != "" {
+			changes := readWorkspaceChanges(resolvePath(outputRoot, subject.WorkspaceDiffPath))
+			if len(changes) > 0 {
+				add("diff-"+safeEvidenceID(subject.SubjectID+"-"+subject.SampleID+"-"+subject.Language), "workspace_diff", "workspace diff 摘要", subject, subject.WorkspaceDiffPath, 0, strings.Join(limitStrings(changes, 30), "\n"))
+			}
+		}
+		for _, step := range selectKeyAnalysisSteps(subject.Trajectory, 6) {
+			excerpt := strings.TrimSpace(strings.Join(nonEmptyStrings(step.TextExcerpt, step.InputExcerpt, step.OutputExcerpt), "\n\n"))
+			add(fmt.Sprintf("step-%s-%d", safeEvidenceID(subject.SubjectID+"-"+subject.SampleID+"-"+subject.Language), step.Index), "trajectory_step", stepEvidenceTitleForAnalysis(step), subject, subject.TrajectoryPath, step.Index, excerpt)
+		}
+		if snippet := readSnippet(resolvePath(outputRoot, subject.GeneratedTestPath), 1000); snippet != "" {
+			add("test-"+safeEvidenceID(subject.SubjectID+"-"+subject.SampleID+"-"+subject.Language), "generated_test", "生成测试片段", subject, subject.GeneratedTestPath, 0, snippet)
+		}
+	}
+	for _, finding := range report.Findings {
+		subject := subjects[analysisSubjectKey(finding.SubjectID, finding.SampleID, subjectLanguageForFinding(report.Subjects, finding))]
+		add("finding-"+safeEvidenceID(finding.ID), "finding", finding.Title, subject, "", 0, finding.Detail)
+	}
+	return out
+}
+
+func buildRootCauses(report *contracts.AnalysisReport) []contracts.AnalysisRootCause {
+	type bucket struct {
+		key      string
+		severity string
+		category string
+		title    string
+		detail   string
+		action   string
+		subjects []contracts.AnalysisSubjectSelector
+		findings []string
+		evidence []string
+	}
+	subjectByPair := map[string]contracts.AnalysisSubject{}
+	for _, subject := range report.Subjects {
+		subjectByPair[subject.SubjectID+"\x00"+subject.SampleID] = subject
+	}
+	buckets := map[string]*bucket{}
+	order := []string{}
+	for _, f := range report.Findings {
+		key, category, title := rootCauseKey(f, subjectByPair[f.SubjectID+"\x00"+f.SampleID])
+		if key == "" {
+			continue
+		}
+		b, ok := buckets[key]
+		if !ok {
+			b = &bucket{key: key, severity: f.Severity, category: category, title: title, detail: f.Detail, action: f.Recommendation}
+			buckets[key] = b
+			order = append(order, key)
+		}
+		if severityValue(f.Severity) < severityValue(b.severity) {
+			b.severity = f.Severity
+		}
+		if len([]rune(f.Detail)) > len([]rune(b.detail)) {
+			b.detail = f.Detail
+		}
+		if b.action == "" {
+			b.action = f.Recommendation
+		}
+		if f.SubjectID != "" && f.SampleID != "" {
+			lang := subjectByPair[f.SubjectID+"\x00"+f.SampleID].Language
+			b.subjects = appendUniqueSelector(b.subjects, contracts.AnalysisSubjectSelector{SubjectID: f.SubjectID, SampleID: f.SampleID, Language: lang})
+		}
+		b.findings = appendUniqueString(b.findings, f.ID)
+		b.evidence = appendUniqueString(b.evidence, "finding-"+safeEvidenceID(f.ID))
+		for _, ev := range f.Evidence {
+			if ev.Kind == "workspace_diff" {
+				b.evidence = appendUniqueString(b.evidence, "diff-"+safeEvidenceID(f.SubjectID+"-"+f.SampleID+"-"+subjectByPair[f.SubjectID+"\x00"+f.SampleID].Language))
+			} else if ev.Kind == "trajectory" {
+				b.evidence = appendUniqueString(b.evidence, "subject-"+safeEvidenceID(f.SubjectID+"-"+f.SampleID+"-"+subjectByPair[f.SubjectID+"\x00"+f.SampleID].Language))
+			}
+		}
+	}
+	var out []contracts.AnalysisRootCause
+	for _, key := range order {
+		b := buckets[key]
+		detail := b.detail
+		if len(b.subjects) > 1 {
+			detail = fmt.Sprintf("共 %d 个对象出现同类问题。代表性证据：%s", len(b.subjects), b.detail)
+		}
+		out = append(out, contracts.AnalysisRootCause{
+			ID:                fmt.Sprintf("rc-%03d", len(out)+1),
+			Severity:          firstNonEmpty(b.severity, "P2"),
+			Category:          b.category,
+			Title:             b.title,
+			Detail:            detail,
+			RecommendedAction: b.action,
+			AffectedSubjects:  b.subjects,
+			EvidenceIDs:       b.evidence,
+			RelatedFindings:   b.findings,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return severityValue(out[i].Severity) < severityValue(out[j].Severity)
+	})
+	return out
+}
+
+func buildComparisonSummary(report *contracts.AnalysisReport) *contracts.AnalysisComparisonSummary {
+	selected := report.Selection.SelectedSubjects
+	if len(selected) < 2 {
+		return nil
+	}
+	subjects := selectedSubjectsForComparison(report.Subjects, selected)
+	if len(subjects) < 2 {
+		return nil
+	}
+	best, worst := subjects[0], subjects[0]
+	issueCounts := map[string]int{}
+	var differences []string
+	for _, subject := range subjects {
+		if analysisQualityScore(subject) > analysisQualityScore(best) {
+			best = subject
+		}
+		if analysisQualityScore(subject) < analysisQualityScore(worst) {
+			worst = subject
+		}
+		for _, issue := range subjectIssueLabels(subject) {
+			issueCounts[issue]++
+		}
+		differences = append(differences, fmt.Sprintf("%s/%s/%s：编译=%t 测试=%s 覆盖=%s 变异=%s trace=%d", subject.SubjectID, subject.SampleID, subject.Language, subject.CompilePass, boolPtrLabelForAnalysis(subject.TestPass), metricText(subject.LineCoverage), metricText(subject.MutationScore), subject.TraceStepCount))
+	}
+	var common []string
+	for issue, count := range issueCounts {
+		if count >= 2 {
+			common = append(common, issue)
+		}
+	}
+	sort.Strings(common)
+	return &contracts.AnalysisComparisonSummary{
+		SelectedSubjects: selected,
+		CommonIssues:     common,
+		Differences:      differences,
+		BestSubject:      best.SubjectID + " / " + best.SampleID + " / " + best.Language,
+		WorstSubject:     worst.SubjectID + " / " + worst.SampleID + " / " + worst.Language,
+		TransferableStrategies: []string{
+			"迁移最好对象中稳定通过 baseline 的测试组织方式。",
+			"对最差对象优先修复编译、源码污染、未运行测试等阻断项，再优化覆盖和变异。",
+		},
+	}
+}
+
 func buildSummary(report *contracts.AnalysisReport) contracts.AnalysisSummary {
 	s := contracts.AnalysisSummary{
 		SubjectCount:        len(report.Subjects),
@@ -545,6 +733,15 @@ func buildSummary(report *contracts.AnalysisReport) contracts.AnalysisSummary {
 		fmt.Sprintf("已分析 %d 个 subject / sample 结果。", s.ResultCount),
 		fmt.Sprintf("trajectory 覆盖 %d/%d。", report.TraceQuality.SubjectsWithTrajectory, report.TraceQuality.TotalSubjects),
 	)
+	modifiedSourceCount := 0
+	for _, subject := range report.Subjects {
+		if subject.ModifiedSource {
+			modifiedSourceCount++
+		}
+	}
+	if modifiedSourceCount > 0 {
+		s.KeyPoints = append(s.KeyPoints, fmt.Sprintf("发现 %d 个结果修改了被测源码，相关失败应优先按源码污染排查。", modifiedSourceCount))
+	}
 	if report.LLMStatus.Enabled {
 		point := "LLM 诊断状态：" + report.LLMStatus.Status
 		if report.LLMStatus.Model != "" {
@@ -750,6 +947,233 @@ func containsAny(s string, items []string) bool {
 		}
 	}
 	return false
+}
+
+func safeEvidenceID(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "global"
+	}
+	return out
+}
+
+func appendUniqueString(items []string, item string) []string {
+	item = strings.TrimSpace(item)
+	if item == "" {
+		return items
+	}
+	for _, existing := range items {
+		if existing == item {
+			return items
+		}
+	}
+	return append(items, item)
+}
+
+func appendUniqueSelector(items []contracts.AnalysisSubjectSelector, item contracts.AnalysisSubjectSelector) []contracts.AnalysisSubjectSelector {
+	if item.SubjectID == "" || item.SampleID == "" {
+		return items
+	}
+	key := analysisSubjectKey(item.SubjectID, item.SampleID, item.Language)
+	for _, existing := range items {
+		if analysisSubjectKey(existing.SubjectID, existing.SampleID, existing.Language) == key {
+			return items
+		}
+	}
+	return append(items, item)
+}
+
+func rootCauseKey(f contracts.AnalysisFinding, subject contracts.AnalysisSubject) (string, string, string) {
+	base := f.SubjectID + "\x00" + f.SampleID
+	if subject.ModifiedSource && (f.Category == "policy" || f.Category == "compile" || f.Category == "test" || f.Category == "mutation") {
+		return "source_modified", "policy", "修改源码导致评测结果失真"
+	}
+	if f.Category == "mutation" && containsAny(strings.ToLower(f.Detail), []string{"baseline", "skip", "跳过", "failed"}) {
+		return "mutation_skipped", "mutation", "变异测试跳过或 baseline 失败"
+	}
+	if f.Category == "compile" {
+		return "compile\x00" + base, "compile", "编译失败"
+	}
+	if f.Category == "test" {
+		return "test\x00" + base, "test", f.Title
+	}
+	if f.Category == "trace" && strings.Contains(f.Title, "未观察到测试执行") {
+		return "no_test_execution", "trace", "未观察到本地测试验证"
+	}
+	if f.Category == "trace" && strings.Contains(f.Title, "未观察到源码读取") {
+		return "no_source_read", "trace", "未观察到源码读取"
+	}
+	if f.Category == "coverage" {
+		return "coverage_low", f.Category, "覆盖率不足"
+	}
+	if f.Category == "mutation" {
+		return "mutation_low", f.Category, "变异得分不足"
+	}
+	if severityValue(f.Severity) <= 1 {
+		return f.Category + "\x00" + base + "\x00" + f.Title, f.Category, f.Title
+	}
+	return "", "", ""
+}
+
+func severityValue(sev string) int {
+	switch sev {
+	case "P0":
+		return 0
+	case "P1":
+		return 1
+	case "P2":
+		return 2
+	case "P3":
+		return 3
+	default:
+		return 9
+	}
+}
+
+func subjectEvidenceExcerpt(subject contracts.AnalysisSubject) string {
+	return fmt.Sprintf("compile=%t test=%s coverage=%s mutation=%s trace_steps=%d source_read=%t test_write=%t test_execution=%t modified_source=%t policy_commands=%d runtime_noise=%d",
+		subject.CompilePass,
+		boolPtrLabelForAnalysis(subject.TestPass),
+		metricText(subject.LineCoverage),
+		metricText(subject.MutationScore),
+		subject.TraceStepCount,
+		subject.HasSourceRead,
+		subject.HasTestWrite,
+		subject.HasTestExecution,
+		subject.ModifiedSource,
+		subject.PolicyCommandCount,
+		subject.RuntimeNoiseCount,
+	)
+}
+
+func selectKeyAnalysisSteps(steps []contracts.AnalysisTrajectoryStep, max int) []contracts.AnalysisTrajectoryStep {
+	var out []contracts.AnalysisTrajectoryStep
+	for _, step := range steps {
+		if isKeyAnalysisStep(step) {
+			out = append(out, step)
+			if len(out) >= max {
+				return out
+			}
+		}
+	}
+	if len(out) == 0 && len(steps) > 0 {
+		limit := len(steps)
+		if limit > max {
+			limit = max
+		}
+		out = append(out, steps[:limit]...)
+	}
+	return out
+}
+
+func isKeyAnalysisStep(step contracts.AnalysisTrajectoryStep) bool {
+	text := strings.ToLower(strings.Join(nonEmptyStrings(step.Kind, step.Tool, step.TextExcerpt, step.InputExcerpt, step.OutputExcerpt), "\n"))
+	return containsAny(text, []string{"read", "write", "edit", "bash", "pytest", "go test", "mvn", "ctest", "error", "failed", "policy", "generated_test"})
+}
+
+func stepEvidenceTitleForAnalysis(step contracts.AnalysisTrajectoryStep) string {
+	label := firstNonEmpty(step.Tool, step.Role, step.Kind)
+	if label == "" {
+		label = "step"
+	}
+	return fmt.Sprintf("trajectory step #%d %s", step.Index, label)
+}
+
+func subjectLanguageForFinding(subjects []contracts.AnalysisSubject, finding contracts.AnalysisFinding) string {
+	for _, subject := range subjects {
+		if subject.SubjectID == finding.SubjectID && subject.SampleID == finding.SampleID {
+			return subject.Language
+		}
+	}
+	return ""
+}
+
+func selectedSubjectsForComparison(subjects []contracts.AnalysisSubject, selected []contracts.AnalysisSubjectSelector) []contracts.AnalysisSubject {
+	keys := map[string]bool{}
+	for _, item := range selected {
+		keys[analysisSubjectKey(item.SubjectID, item.SampleID, item.Language)] = true
+	}
+	var out []contracts.AnalysisSubject
+	for _, subject := range subjects {
+		if keys[analysisSubjectKey(subject.SubjectID, subject.SampleID, subject.Language)] {
+			out = append(out, subject)
+		}
+	}
+	return out
+}
+
+func analysisQualityScore(subject contracts.AnalysisSubject) float64 {
+	score := 0.0
+	if subject.CompilePass {
+		score += 100
+	}
+	if subject.TestPass != nil && *subject.TestPass {
+		score += 100
+	}
+	if subject.LineCoverage != nil {
+		score += normMetric(*subject.LineCoverage) * 70
+	}
+	if subject.MutationScore != nil {
+		score += normMetric(*subject.MutationScore) * 100
+	}
+	if subject.HasTestExecution {
+		score += 10
+	}
+	if subject.ModifiedSource {
+		score -= 120
+	}
+	score -= float64(subject.PolicyCommandCount * 5)
+	return score
+}
+
+func subjectIssueLabels(subject contracts.AnalysisSubject) []string {
+	var out []string
+	if !subject.CompilePass {
+		out = append(out, "编译失败")
+	}
+	if subject.TestPass == nil || !*subject.TestPass {
+		out = append(out, "测试未通过或未执行")
+	}
+	if subject.MutationScore == nil || normMetric(*subject.MutationScore) < 0.6 {
+		out = append(out, "变异得分低或缺失")
+	}
+	if subject.LineCoverage != nil && normMetric(*subject.LineCoverage) < 0.7 {
+		out = append(out, "覆盖率偏低")
+	}
+	if !subject.HasTestExecution {
+		out = append(out, "未观察到本地测试验证")
+	}
+	if subject.ModifiedSource {
+		out = append(out, "修改源码")
+	}
+	return out
+}
+
+func boolPtrLabelForAnalysis(v *bool) string {
+	if v == nil {
+		return "未执行"
+	}
+	if *v {
+		return "通过"
+	}
+	return "失败"
+}
+
+func metricText(v *float64) string {
+	if v == nil {
+		return "NA"
+	}
+	return fmt.Sprintf("%.1f%%", normMetric(*v)*100)
 }
 
 func isRuntimeNoise(path string) bool {

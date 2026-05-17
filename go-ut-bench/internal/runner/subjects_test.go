@@ -480,6 +480,35 @@ func TestBuildAgentPromptForCodeBuddyStartsWithSlashSkill(t *testing.T) {
 	if !strings.Contains(prompt, "CodeBuddy native skill /qta-gen-ut") {
 		t.Fatalf("expected prompt to explicitly require native skill, got %q", prompt)
 	}
+	for _, want := range []string{
+		"Treat all original source files as read-only inputs",
+		"Only create or edit the final generated test file",
+		"Preserve the source package/module/namespace/class/function signatures exactly",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to include source immutability contract %q, got %q", want, prompt)
+		}
+	}
+}
+
+func TestBuildAgentPromptForClaudeCodeStartsWithSlashSkill(t *testing.T) {
+	prompt := buildAgentPrompt("Task body", contracts.SampleRef{
+		ID:       "s1",
+		Language: "go",
+	}, "/workspace/source.go", "/workspace/generated_test.go", "/workspace/.claude/skills/qta-gen-ut", "claudecode", "qta-ut")
+
+	if !strings.HasPrefix(prompt, "/qta-gen-ut Task body") {
+		t.Fatalf("expected prompt to start with Claude Code slash skill invocation, got %q", prompt)
+	}
+	if strings.Contains(prompt, "/qta_ut") {
+		t.Fatalf("expected Claude Code prompt to use native skill dir name, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Claude Code native skill /qta-gen-ut") {
+		t.Fatalf("expected prompt to explicitly require native skill, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Only create or edit the final generated test file") {
+		t.Fatalf("expected prompt to include source immutability contract, got %q", prompt)
+	}
 }
 
 func TestInjectAgentNativeSkillForOpenCodeUsesSKILLMDAndCompatibleName(t *testing.T) {

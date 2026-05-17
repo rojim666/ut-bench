@@ -272,10 +272,10 @@
             </div>
 
             <!-- AI Analysis -->
-            <div x-show="detailTab === 'analysis'" class="space-y-4 pb-[190px] lg:pb-0 lg:pr-[400px]">
+            <div x-show="detailTab === 'analysis'" class="space-y-4 pb-[190px] lg:pb-0 lg:pr-[360px]">
               <template x-teleport="body">
                 <div x-show="page === 'run-detail' && detailTab === 'analysis' && currentAnalysis">
-                  <div class="hidden lg:block fixed right-6 top-24 bottom-6 w-[380px] z-[80]">
+                  <div class="hidden lg:block fixed right-4 top-24 bottom-6 w-[340px] z-[80]">
                     <div class="form-section h-full flex flex-col p-0 overflow-hidden shadow-lg" style="border-color:var(--border);background:var(--bg)">
                       <div class="p-4 border-b flex items-start justify-between gap-3" style="border-color:var(--border)">
                         <div class="min-w-0">
@@ -367,9 +367,99 @@
                       </div>
                     </div>
                   </div>
+                  <div x-show="analysisDetailOpen" class="fixed inset-y-0 right-0 lg:right-[370px] w-full sm:w-[520px] z-[95] shadow-2xl border-l flex flex-col"
+                       style="border-color:var(--border);background:var(--bg)">
+                    <div class="p-4 border-b flex items-start justify-between gap-3" style="border-color:var(--border);background:var(--bg-elevated)">
+                      <div class="min-w-0">
+                        <div class="section-title mb-1" x-text="analysisDetail?.type === 'evidence' ? '证据详情' : (analysisDetail?.type === 'subject' ? 'Agent 完整过程' : '根因详情')"></div>
+                        <div class="text-[12px] truncate" style="color:var(--fg-muted)" x-text="analysisDetail?.root_cause?.title || analysisDetail?.evidence?.title || analysisDetail?.subject?.subject_id || ''"></div>
+                      </div>
+                      <button @click="closeAnalysisDetail()" class="btn-ghost text-[12px]">关闭</button>
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-4 space-y-4">
+                      <template x-if="analysisDetail?.root_cause">
+                        <div @click="openAnalysisSubjectDetail(s)" class="rounded border p-3 cursor-pointer transition" style="border-color:var(--border);background:var(--bg-elevated)">
+                          <div class="flex flex-wrap gap-2 mb-2">
+                            <span class="tag-pill border" :style="findingBadgeStyle(analysisDetail.root_cause.severity)" x-text="analysisDetail.root_cause.severity"></span>
+                            <span class="tag-pill" x-text="analysisDetail.root_cause.category"></span>
+                          </div>
+                          <div class="font-medium text-[14px] mb-2" x-text="analysisDetail.root_cause.title"></div>
+                          <div class="text-[12px] leading-5" style="color:var(--fg-muted)" x-text="analysisDetail.root_cause.detail"></div>
+                          <div x-show="analysisDetail.root_cause.recommended_action" class="mt-3 text-[12px] leading-5">
+                            <span style="color:var(--fg)">下一步：</span><span style="color:var(--fg-muted)" x-text="analysisDetail.root_cause.recommended_action"></span>
+                          </div>
+                        </div>
+                      </template>
+                      <template x-if="analysisDetail?.evidence">
+                        <div class="rounded border p-3" style="border-color:var(--border);background:var(--bg-elevated)">
+                          <div class="flex flex-wrap gap-2 mb-2">
+                            <span class="tag-pill font-mono" x-text="analysisDetail.evidence.evidence_id"></span>
+                            <span class="tag-pill" x-text="analysisDetail.evidence.kind"></span>
+                          </div>
+                          <div class="font-medium text-[13px] mb-2" x-text="analysisDetail.evidence.title"></div>
+                          <div class="font-mono text-[11px] mb-2" style="color:var(--fg-muted)" x-text="[analysisDetail.evidence.subject_id, analysisDetail.evidence.sample_id, analysisDetail.evidence.language].filter(Boolean).join(' / ')"></div>
+                          <div class="font-mono text-[11px] whitespace-pre-wrap break-words rounded p-2" style="background:var(--bg-muted);color:var(--fg-subtle)" x-text="analysisDetail.evidence.excerpt || analysisDetail.evidence.path || '无摘要'"></div>
+                        </div>
+                      </template>
+                      <div x-show="analysisDetailSubjects().length">
+                        <div class="text-[13px] font-medium mb-2">影响对象与完整过程</div>
+                        <div class="space-y-3">
+                          <template x-for="s in analysisDetailSubjects()" :key="'detail-sub-' + analysisSubjectKey(s)">
+                            <details class="rounded border text-[12px]" style="border-color:var(--border);background:var(--bg-muted)" open>
+                              <summary class="cursor-pointer p-3">
+                                <div class="flex items-start justify-between gap-3">
+                                  <div class="min-w-0">
+                                    <div class="font-mono truncate" x-text="s.subject_id"></div>
+                                    <div class="font-mono text-[11px] mt-1" style="color:var(--fg-muted)" x-text="s.sample_id + ' / ' + s.language"></div>
+                                  </div>
+                                  <span class="tag-pill" x-text="(s.trace_step_count || 0) + ' steps'"></span>
+                                </div>
+                                <div class="mt-2 flex flex-wrap gap-1">
+                                  <template x-for="b in analysisSubjectBadges(s)" :key="'detail-badge-' + analysisSubjectKey(s) + '-' + b.label">
+                                    <span class="tag-pill border text-[10px]" :style="analysisBadgeStyle(b.tone)" x-text="b.label"></span>
+                                  </template>
+                                </div>
+                              </summary>
+                              <div class="border-t" style="border-color:var(--border)">
+                                <div x-show="!(s.trajectory || []).length" class="p-3 text-[12px]" style="color:var(--fg-muted)">没有采集到 trajectory 明细。</div>
+                                <div x-show="(s.trajectory || []).length" class="max-h-[460px] overflow-y-auto divide-y" style="border-color:var(--border)">
+                                  <template x-for="step in s.trajectory || []" :key="'detail-step-' + analysisSubjectKey(s) + '-' + step.index">
+                                    <div class="p-3 grid grid-cols-[48px_92px_1fr] gap-2">
+                                      <div class="font-mono" style="color:var(--fg-muted)">#<span x-text="step.index"></span></div>
+                                      <div class="min-w-0">
+                                        <span class="tag-pill border text-[10px]" :style="analysisBadgeStyle(analysisStepTone(step))" x-text="step.kind || 'step'"></span>
+                                        <div class="font-mono text-[10px] truncate mt-1" style="color:var(--fg-subtle)" x-text="step.tool || step.role || ''"></div>
+                                      </div>
+                                      <div class="font-mono text-[11px] whitespace-pre-wrap break-words leading-5" style="color:var(--fg-muted)" x-text="analysisStepSummary(step)"></div>
+                                    </div>
+                                  </template>
+                                </div>
+                              </div>
+                            </details>
+                          </template>
+                        </div>
+                      </div>
+                      <div x-show="analysisDetail?.root_cause?.evidence_ids?.length">
+                        <div class="text-[13px] font-medium mb-2">证据链</div>
+                        <div class="space-y-2">
+                          <template x-for="id in analysisDetail.root_cause.evidence_ids" :key="'detail-ev-' + id">
+                            <button @click="openAnalysisEvidence(id, analysisDetail.root_cause)" class="w-full text-left rounded border p-2 text-[12px]" style="border-color:var(--border);background:var(--bg-muted);color:var(--fg-muted)">
+                              <span class="font-mono" x-text="id"></span>
+                              <span x-text="' · ' + (analysisEvidenceByID(id)?.title || '查看证据')"></span>
+                            </button>
+                          </template>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="border-t p-3 flex flex-wrap gap-2" style="border-color:var(--border);background:var(--bg-elevated)">
+                      <button x-show="analysisDetail?.root_cause" @click="askAnalysisFocus(quickRootCauseQuestion(analysisDetail.root_cause, 'why'))" class="btn-ghost text-[12px]">问原因</button>
+                      <button x-show="analysisDetail?.root_cause" @click="askAnalysisFocus(quickRootCauseQuestion(analysisDetail.root_cause, 'fix'))" class="btn-ghost text-[12px]">问怎么改</button>
+                      <button x-show="analysisDetail?.root_cause" @click="askAnalysisFocus(quickRootCauseQuestion(analysisDetail.root_cause, 'evidence'))" class="btn-ghost text-[12px]">问证据</button>
+                    </div>
+                  </div>
                 </div>
               </template>
-              <div class="form-section">
+              <div class="form-section sticky top-[64px] z-30 shadow-sm" style="background:var(--bg)">
                 <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
                   <div>
                     <div class="section-title mb-1">AI 分析工作台</div>
@@ -421,19 +511,32 @@
                   <button @click="selectRecommendedAnalysisSubjects()" class="btn-ghost text-[12px]">推荐问题项</button>
                   <button @click="selectBestWorstAnalysisSubjects()" class="btn-ghost text-[12px]">最好+最差</button>
                   <button @click="selectSameSampleComparison()" class="btn-ghost text-[12px]">同样本对比</button>
+                  <button @click="selectSameAgentCrossLanguage()" class="btn-ghost text-[12px]">同 Agent 跨语言</button>
                   <button @click="analysisShowSelectedOnly = !analysisShowSelectedOnly" class="btn-ghost text-[12px]" x-text="analysisShowSelectedOnly ? '显示全部' : '只看已选'"></button>
                   <button @click="clearAnalysisSelection()" class="btn-ghost text-[12px]">清空选择</button>
                   <button @click="loadAnalysisSubjects()" class="btn-ghost text-[12px]">刷新对象</button>
                 </div>
                 <div class="px-4 py-2 text-[12px]" style="color:var(--fg-muted)" x-text="analysisSelectionLabel()"></div>
+                <div x-show="analysisSelection.length" class="px-4 pb-3 flex flex-wrap gap-2">
+                  <template x-for="s in analysisSelection" :key="'basket-' + analysisSubjectKey(s)">
+                    <button @click="toggleAnalysisSubject(s)" class="tag-pill border font-mono" style="border-color:rgba(14,165,233,.35);color:var(--accent)" x-text="s.subject_id + ' / ' + s.sample_id + ' / ' + s.language + ' ×'"></button>
+                  </template>
+                </div>
                 <div class="max-h-[260px] overflow-y-auto">
                   <table class="data-table">
                     <thead><tr><th>选择</th><th>Subject</th><th>样本</th><th>语言</th><th>编译</th><th>测试</th><th>覆盖率</th><th>变异</th><th>Trace</th></tr></thead>
                     <tbody>
-                      <template x-for="s in analysisSubjectRows()" :key="analysisSubjectKey(s)">
+                      <template x-for="s in analysisSubjectRows().slice(0, analysisSubjectLimit)" :key="analysisSubjectKey(s)">
                         <tr :style="isAnalysisSubjectSelected(s) ? 'background:rgba(14,165,233,.08)' : ''">
                           <td><input type="checkbox" :checked="isAnalysisSubjectSelected(s)" @change="toggleAnalysisSubject(s)"></td>
-                          <td class="font-mono text-[12px]" x-text="s.subject_id"></td>
+                          <td class="text-[12px]">
+                            <div class="font-mono" x-text="s.subject_id"></div>
+                            <div class="mt-1 flex flex-wrap gap-1">
+                              <template x-for="b in analysisSubjectBadges(s)" :key="analysisSubjectKey(s) + '-' + b.label">
+                                <span class="tag-pill border text-[10px]" :style="analysisBadgeStyle(b.tone)" x-text="b.label"></span>
+                              </template>
+                            </div>
+                          </td>
                           <td class="font-mono text-[12px]" x-text="s.sample_id"></td>
                           <td class="text-[12px]" x-text="s.language"></td>
                           <td class="text-[12px]" x-text="s.compile_pass ? '通过' : '失败'"></td>
@@ -446,6 +549,9 @@
                     </tbody>
                   </table>
                 </div>
+                <div x-show="analysisSubjectRows().length > analysisSubjectLimit" class="p-2 text-center">
+                  <button @click="analysisSubjectLimit += 50" class="btn-ghost text-[12px]" x-text="'加载更多（' + analysisSubjectRows().length + ' 中已显示 ' + Math.min(analysisSubjectLimit, analysisSubjectRows().length) + '）'"></button>
+                </div>
                 <div x-show="!analysisSubjectRows().length" class="p-4 text-[12px]" style="color:var(--fg-muted)">暂无可选对象。请先完成评测，或刷新对象列表。</div>
               </div>
 
@@ -457,6 +563,69 @@
 
               <template x-if="currentAnalysis">
                 <div class="space-y-4">
+                  <div class="form-section p-0 overflow-hidden">
+                    <div class="px-4 py-3 border-b flex flex-wrap items-center justify-between gap-3" style="border-color:var(--border)">
+                      <div>
+                        <div class="section-title mb-1">根因队列</div>
+                        <div class="text-[12px]" style="color:var(--fg-muted)">优先处理 P0/P1；点击卡片查看证据链，或直接让右侧助手追问。</div>
+                      </div>
+                      <span class="tag-pill" x-text="analysisRootCauses().length + ' 个根因'"></span>
+                    </div>
+                    <div x-show="!analysisRootCauses().length" class="p-4 text-[12px]" style="color:var(--fg-muted)">暂无阻断级根因。可以查看低优先级诊断或扩大样本复测。</div>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 p-4">
+                      <template x-for="rc in analysisRootCauses()" :key="rc.id">
+                        <div class="rounded border p-4 cursor-pointer transition" @click="openAnalysisRootCause(rc)"
+                             style="border-color:var(--border);background:var(--bg-elevated)">
+                          <div class="flex items-start justify-between gap-3 mb-3">
+                            <div class="flex flex-wrap gap-2">
+                              <span class="tag-pill border" :style="findingBadgeStyle(rc.severity)" x-text="rc.severity"></span>
+                              <span class="tag-pill" x-text="rc.category"></span>
+                              <span class="tag-pill" x-text="(rc.affected_subjects || []).length + ' 对象'"></span>
+                            </div>
+                            <span x-show="rootCauseOptimizationCount(rc)" class="tag-pill" style="color:var(--accent)" x-text="'优化项 ' + rootCauseOptimizationCount(rc)"></span>
+                          </div>
+                          <div class="font-medium text-[14px] mb-2" style="color:var(--fg)" x-text="rc.title"></div>
+                          <div class="text-[12px] leading-5 line-clamp-3" style="color:var(--fg-muted)" x-text="rc.detail"></div>
+                          <div x-show="rc.recommended_action" class="mt-3 rounded p-2 text-[12px] leading-5" style="background:var(--bg-muted);color:var(--fg-muted)">
+                            <span style="color:var(--fg)">下一步：</span><span x-text="rc.recommended_action"></span>
+                          </div>
+                          <div class="mt-3 flex flex-wrap gap-2">
+                            <template x-for="id in (rc.evidence_ids || []).slice(0, 4)" :key="rc.id + '-' + id">
+                              <button @click.stop="openAnalysisEvidence(id, rc)" class="tag-pill font-mono border" style="border-color:var(--border)" x-text="id"></button>
+                            </template>
+                            <button @click.stop="askAnalysisFocus(quickRootCauseQuestion(rc, 'why'))" class="tag-pill border" style="border-color:var(--border);color:var(--accent)">追问原因</button>
+                            <button @click.stop="askAnalysisFocus(quickRootCauseQuestion(rc, 'fix'))" class="tag-pill border" style="border-color:var(--border);color:var(--accent)">怎么改</button>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+
+                  <div x-show="currentAnalysis.comparison_summary" class="form-section">
+                    <div class="section-title">横向对比摘要</div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-[12px]" style="color:var(--fg-muted)">
+                      <div class="rounded border p-3" style="border-color:var(--border);background:var(--bg-elevated)">
+                        <div class="font-medium mb-2" style="color:var(--fg)">最好 / 最差</div>
+                        <div>最好：<span class="font-mono" x-text="currentAnalysis.comparison_summary?.best_subject || '—'"></span></div>
+                        <div>最差：<span class="font-mono" x-text="currentAnalysis.comparison_summary?.worst_subject || '—'"></span></div>
+                      </div>
+                      <div class="rounded border p-3" style="border-color:var(--border);background:var(--bg-elevated)">
+                        <div class="font-medium mb-2" style="color:var(--fg)">共同问题</div>
+                        <div class="flex flex-wrap gap-2">
+                          <template x-for="x in currentAnalysis.comparison_summary?.common_issues || []" :key="'common-' + x">
+                            <span class="tag-pill" x-text="x"></span>
+                          </template>
+                          <span x-show="!(currentAnalysis.comparison_summary?.common_issues || []).length">无明显共同问题</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-2 text-[12px]" style="color:var(--fg-muted)">
+                      <template x-for="d in currentAnalysis.comparison_summary?.differences || []" :key="'diff-' + d">
+                        <div class="rounded p-2 font-mono" style="background:var(--bg-muted)" x-text="d"></div>
+                      </template>
+                    </div>
+                  </div>
+
                   <div class="grid grid-cols-5 gap-3">
                     <div class="kpi-card text-center">
                       <div class="kpi-value kpi-total" x-text="currentAnalysis.summary?.result_count ?? 0"></div>
@@ -520,7 +689,7 @@
                     </div>
                     <div x-show="!analysisFindings().length" class="p-4 text-[12px]" style="color:var(--fg-muted)">暂无匹配的诊断问题。</div>
                     <div class="divide-y" style="border-color:var(--border)">
-                      <template x-for="f in analysisFindings()" :key="f.id">
+                      <template x-for="f in analysisFindings().slice(0, analysisFindingsLimit)" :key="f.id">
                         <details class="p-4">
                           <summary class="cursor-pointer flex items-center gap-2">
                             <span class="tag-pill border" :style="findingBadgeStyle(f.severity)" x-text="f.severity"></span>
@@ -542,6 +711,9 @@
                           </div>
                         </details>
                       </template>
+                    </div>
+                    <div x-show="analysisFindings().length > analysisFindingsLimit" class="p-2 text-center">
+                      <button @click="analysisFindingsLimit += 50" class="btn-ghost text-[12px]" x-text="'加载更多（' + analysisFindings().length + ' 中已显示 ' + Math.min(analysisFindingsLimit, analysisFindings().length) + '）'"></button>
                     </div>
                   </div>
 
@@ -571,9 +743,9 @@
 
                   <div class="form-section">
                     <div class="section-title">行为还原：Step-by-step Trajectory</div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-4">
                       <template x-for="s in selectedAnalysisReportSubjects()" :key="'behavior-' + analysisSubjectKey(s)">
-                        <div class="rounded border p-3" style="border-color:var(--border);background:var(--bg-elevated)">
+                        <button type="button" @click="openAnalysisSubjectDetail(s)" class="rounded border p-3 text-left cursor-pointer transition hover:shadow-sm" style="border-color:var(--border);background:var(--bg-elevated)">
                           <div class="flex items-start justify-between gap-3 mb-3">
                             <div class="min-w-0">
                               <div class="font-mono text-[12px] truncate" style="color:var(--fg)" x-text="s.subject_id"></div>
@@ -595,7 +767,8 @@
                             <span x-show="s.policy_command_count" class="tag-pill" style="color:var(--yellow)" x-text="'策略命令 ' + s.policy_command_count"></span>
                             <span x-show="s.runtime_noise_count" class="tag-pill" style="color:var(--fg-muted)" x-text="'噪声 ' + s.runtime_noise_count"></span>
                           </div>
-                        </div>
+                          <div class="mt-3 inline-flex items-center gap-1 text-[11px]" style="color:var(--accent)">查看完整 step-by-step 过程 <span>→</span></div>
+                        </button>
                       </template>
                     </div>
                     <template x-for="s in selectedAnalysisReportSubjects()" :key="s.subject_id + '-trajectory-' + s.sample_id">

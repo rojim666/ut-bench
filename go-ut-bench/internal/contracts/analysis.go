@@ -8,18 +8,21 @@ const AnalysisChatSessionSchemaVersion = "analysis_chat.v0.1.0"
 
 // AnalysisReport 是一次 run 的规则诊断与 LLM 诊断报告。
 type AnalysisReport struct {
-	SchemaVersion   string                   `json:"schema_version"`
-	RunID           string                   `json:"run_id"`
-	GeneratedAt     time.Time                `json:"generated_at"`
-	SourceFiles     AnalysisSourceFiles      `json:"source_files"`
-	Selection       AnalysisSelection        `json:"selection,omitempty"`
-	LLMStatus       LLMAnalysisStatus        `json:"llm_status"`
-	Summary         AnalysisSummary          `json:"summary"`
-	TraceQuality    AnalysisTraceQuality     `json:"trace_quality"`
-	Subjects        []AnalysisSubject        `json:"subjects"`
-	Findings        []AnalysisFinding        `json:"findings"`
-	Recommendations []AnalysisRecommendation `json:"recommendations"`
-	LLM             *LLMAnalysisResult       `json:"llm,omitempty"`
+	SchemaVersion     string                     `json:"schema_version"`
+	RunID             string                     `json:"run_id"`
+	GeneratedAt       time.Time                  `json:"generated_at"`
+	SourceFiles       AnalysisSourceFiles        `json:"source_files"`
+	Selection         AnalysisSelection          `json:"selection,omitempty"`
+	LLMStatus         LLMAnalysisStatus          `json:"llm_status"`
+	Summary           AnalysisSummary            `json:"summary"`
+	TraceQuality      AnalysisTraceQuality       `json:"trace_quality"`
+	Subjects          []AnalysisSubject          `json:"subjects"`
+	Findings          []AnalysisFinding          `json:"findings"`
+	Recommendations   []AnalysisRecommendation   `json:"recommendations"`
+	RootCauses        []AnalysisRootCause        `json:"root_causes,omitempty"`
+	EvidenceIndex     []AnalysisEvidenceItem     `json:"evidence_index,omitempty"`
+	ComparisonSummary *AnalysisComparisonSummary `json:"comparison_summary,omitempty"`
+	LLM               *LLMAnalysisResult         `json:"llm,omitempty"`
 }
 
 type AnalysisSourceFiles struct {
@@ -70,34 +73,35 @@ type LLMAnalysisStatus struct {
 }
 
 type AnalysisSubject struct {
-	SubjectID          string                   `json:"subject_id"`
-	Model              string                   `json:"model"`
-	AgentFramework     string                   `json:"agent_framework,omitempty"`
-	AgentModel         string                   `json:"agent_model,omitempty"`
-	SkillName          string                   `json:"skill_name,omitempty"`
-	Language           string                   `json:"language"`
-	SampleID           string                   `json:"sample_id"`
-	CompilePass        bool                     `json:"compile_pass"`
-	TestPass           *bool                    `json:"test_pass"`
-	LineCoverage       *float64                 `json:"line_coverage,omitempty"`
-	BranchCoverage     *float64                 `json:"branch_coverage,omitempty"`
-	MutationScore      *float64                 `json:"mutation_score,omitempty"`
-	LatencyMS          *int                     `json:"latency_ms,omitempty"`
-	TotalTokens        *int                     `json:"total_tokens,omitempty"`
-	TrajectoryPath     string                   `json:"trajectory_path,omitempty"`
-	RawTracePath       string                   `json:"raw_trace_path,omitempty"`
-	WorkspaceDiffPath  string                   `json:"workspace_diff_path,omitempty"`
-	GeneratedTestPath  string                   `json:"generated_test_path,omitempty"`
-	SourcePath         string                   `json:"source_path,omitempty"`
-	TraceStepCount     int                      `json:"trace_step_count"`
-	ToolCallCount      int                      `json:"tool_call_count"`
-	HasSourceRead      bool                     `json:"has_source_read"`
-	HasTestWrite       bool                     `json:"has_test_write"`
-	HasTestExecution   bool                     `json:"has_test_execution"`
-	ModifiedSource     bool                     `json:"modified_source"`
-	RuntimeNoiseCount  int                      `json:"runtime_noise_count"`
-	PolicyCommandCount int                      `json:"policy_command_count"`
-	Trajectory         []AnalysisTrajectoryStep `json:"trajectory,omitempty"`
+	SubjectID           string                   `json:"subject_id"`
+	Model               string                   `json:"model"`
+	AgentFramework      string                   `json:"agent_framework,omitempty"`
+	AgentModel          string                   `json:"agent_model,omitempty"`
+	SkillName           string                   `json:"skill_name,omitempty"`
+	Language            string                   `json:"language"`
+	SampleID            string                   `json:"sample_id"`
+	CompilePass         bool                     `json:"compile_pass"`
+	TestPass            *bool                    `json:"test_pass"`
+	LineCoverage        *float64                 `json:"line_coverage,omitempty"`
+	BranchCoverage      *float64                 `json:"branch_coverage,omitempty"`
+	MutationScore       *float64                 `json:"mutation_score,omitempty"`
+	LatencyMS           *int                     `json:"latency_ms,omitempty"`
+	TotalTokens         *int                     `json:"total_tokens,omitempty"`
+	TrajectoryPath      string                   `json:"trajectory_path,omitempty"`
+	RawTracePath        string                   `json:"raw_trace_path,omitempty"`
+	WorkspaceDiffPath   string                   `json:"workspace_diff_path,omitempty"`
+	GeneratedTestPath   string                   `json:"generated_test_path,omitempty"`
+	SourcePath          string                   `json:"source_path,omitempty"`
+	TraceStepCount      int                      `json:"trace_step_count"`
+	ToolCallCount       int                      `json:"tool_call_count"`
+	HasSourceRead       bool                     `json:"has_source_read"`
+	HasTestWrite        bool                     `json:"has_test_write"`
+	HasTestExecution    bool                     `json:"has_test_execution"`
+	ModifiedSource      bool                     `json:"modified_source"`
+	ModifiedSourcePaths []string                 `json:"modified_source_paths,omitempty"`
+	RuntimeNoiseCount   int                      `json:"runtime_noise_count"`
+	PolicyCommandCount  int                      `json:"policy_command_count"`
+	Trajectory          []AnalysisTrajectoryStep `json:"trajectory,omitempty"`
 }
 
 type AnalysisTrajectoryStep struct {
@@ -126,6 +130,40 @@ type AnalysisFinding struct {
 	Confidence     float64       `json:"confidence,omitempty"`
 	Source         string        `json:"source"` // rule / llm
 	Evidence       []EvidenceRef `json:"evidence,omitempty"`
+}
+
+type AnalysisRootCause struct {
+	ID                    string                    `json:"id"`
+	Severity              string                    `json:"severity"`
+	Category              string                    `json:"category"`
+	Title                 string                    `json:"title"`
+	Detail                string                    `json:"detail"`
+	RecommendedAction     string                    `json:"recommended_action,omitempty"`
+	AffectedSubjects      []AnalysisSubjectSelector `json:"affected_subjects,omitempty"`
+	EvidenceIDs           []string                  `json:"evidence_ids,omitempty"`
+	RelatedFindings       []string                  `json:"related_findings,omitempty"`
+	OptimizationItemCount int                       `json:"optimization_item_count,omitempty"`
+}
+
+type AnalysisEvidenceItem struct {
+	EvidenceID string `json:"evidence_id"`
+	Kind       string `json:"kind"`
+	Title      string `json:"title"`
+	SubjectID  string `json:"subject_id,omitempty"`
+	SampleID   string `json:"sample_id,omitempty"`
+	Language   string `json:"language,omitempty"`
+	Path       string `json:"path,omitempty"`
+	StepIndex  int    `json:"step_index,omitempty"`
+	Excerpt    string `json:"excerpt,omitempty"`
+}
+
+type AnalysisComparisonSummary struct {
+	SelectedSubjects       []AnalysisSubjectSelector `json:"selected_subjects,omitempty"`
+	CommonIssues           []string                  `json:"common_issues,omitempty"`
+	Differences            []string                  `json:"differences,omitempty"`
+	BestSubject            string                    `json:"best_subject,omitempty"`
+	WorstSubject           string                    `json:"worst_subject,omitempty"`
+	TransferableStrategies []string                  `json:"transferable_strategies,omitempty"`
 }
 
 type EvidenceRef struct {

@@ -203,6 +203,16 @@
     analysisChatError: '',
     analysisChatController: null,
     analysisChatForceNew: false,
+    analysisFocus: null,
+    analysisDetailOpen: false,
+    analysisDetail: null,
+    _evidenceMap: null,
+    _subjectMap: null,
+    _selectionSet: null,
+    _cachedRootCauses: null,
+    _rootCausesDirty: true,
+    analysisSubjectLimit: 50,
+    analysisFindingsLimit: 50,
     detailTab: 'logs',
     sseSource: null,
     runActionBusy: '',
@@ -3223,6 +3233,10 @@
       this.stopAnalysisChatStream()
       this.stopSSE(); this.currentReport = null; this.currentAnalysis = null; this.currentOptimizationPlan = null; this.currentLogs = []; this._logCount = 0; this.detailTab = 'logs'
       this.analysisSelection = []
+      this._selectionSet = new Set()
+      this._evidenceMap = null
+      this._subjectMap = null
+      this._cachedRootCauses = null
       this.analysisShowSelectedOnly = false
       this.analysisJob = null
       this.analysisChatSessions = []
@@ -3230,6 +3244,9 @@
       this.analysisChatInput = ''
       this.analysisChatError = ''
       this.analysisChatForceNew = false
+      this.analysisFocus = null
+      this.analysisDetailOpen = false
+      this.analysisDetail = null
       this._resetLogPre()
       this.page = 'run-detail'
       this.syncPageVisibility()
@@ -3374,6 +3391,7 @@
         if (r.ok) {
           this.currentAnalysis = await r.json()
           this.analysisSubjectOptions = this.currentAnalysis.subjects || []
+          this._buildAnalysisIndex()
           await this.loadOptimizationPlan(false)
           await this.loadAnalysisChatSessions(false)
           return
@@ -3436,6 +3454,7 @@
           this.analysisJob = data
           if (data.status === 'succeeded') {
             this.currentAnalysis = data.report
+            this._buildAnalysisIndex()
             this.currentOptimizationPlan = null
             await this.loadAnalysisChatSessions(false)
             this.analysisGenerating = false
@@ -3547,7 +3566,12 @@
         const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/chat/sessions/${session.session_id}/messages:stream`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, llm_model: this.analysisOptions.llm_model || '' }),
+          body: JSON.stringify({
+            content,
+            llm_model: this.analysisOptions.llm_model || '',
+            focus_evidence_id: this.analysisFocus?.evidence_id || '',
+            focus_root_cause_id: this.analysisFocus?.root_cause_id || '',
+          }),
           signal: this.analysisChatController.signal,
         })
         if (!r.ok || !r.body) {
@@ -3755,6 +3779,7 @@
       return rows
     },
     isAnalysisSubjectSelected(s) {
+      if (this._selectionSet) return this._selectionSet.has(this.analysisSubjectKey(s))
       const key = this.analysisSubjectKey(s)
       return (this.analysisSelection || []).some(x => this.analysisSubjectKey(x) === key)
     },
@@ -3763,6 +3788,7 @@
       const idx = this.analysisSelection.findIndex(x => this.analysisSubjectKey(x) === key)
       if (idx >= 0) {
         this.analysisSelection.splice(idx, 1)
+        if (this._selectionSet) this._selectionSet.delete(key)
         this.resetAnalysisChatContext()
         return
       }
@@ -3771,6 +3797,7 @@
         return
       }
       this.analysisSelection.push({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language })
+      if (this._selectionSet) this._selectionSet.add(key)
       this.resetAnalysisChatContext()
     },
     selectedAnalysisSubjectsPayload() {
@@ -3778,6 +3805,7 @@
     },
     clearAnalysisSelection() {
       this.analysisSelection = []
+      this._selectionSet = new Set()
       this.analysisShowSelectedOnly = false
       this.resetAnalysisChatContext()
     },
@@ -3813,6 +3841,27 @@
       })
       if (bestGroup.length < 2) {
         this.showToast('没有找到同一样本下可对比的多个 Agent', 'warn', 4000)
+        return
+      }
+      const ranked = [...bestGroup].sort((a, b) => this.analysisSubjectRiskRank(b) - this.analysisSubjectRiskRank(a))
+      this.analysisSelection = ranked.slice(0, 3).map(s => ({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language }))
+      this.resetAnalysisChatContext()
+    },
+    selectSameAgentCrossLanguage() {
+      const rows = this.analysisSubjectOptions?.length ? this.analysisSubjectOptions : (this.currentAnalysis?.subjects || [])
+      const groups = new Map()
+      rows.forEach(s => {
+        const key = s.subject_id || ''
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(s)
+      })
+      let bestGroup = []
+      groups.forEach(group => {
+        const langs = new Set(group.map(s => s.language))
+        if (langs.size > 1 && group.length > bestGroup.length) bestGroup = group
+      })
+      if (bestGroup.length < 2) {
+        this.showToast('没有找到同一 Agent 的跨语言结果', 'warn', 4000)
         return
       }
       const ranked = [...bestGroup].sort((a, b) => this.analysisSubjectRiskRank(b) - this.analysisSubjectRiskRank(a))
@@ -3914,6 +3963,218 @@
         const priRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
         return srcRank(a.source) - srcRank(b.source) || priRank(a.priority) - priRank(b.priority)
       })
+    },
+    analysisRootCauses() {
+      if (!this._rootCausesDirty && this._cachedRootCauses) return this._cachedRootCauses
+      const items = this.currentAnalysis?.root_causes
+      let result
+      if (items && items.length) {
+        result = this.mergeAnalysisRootCauses(items).sort((a, b) => {
+          const sevRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+          return sevRank(a.severity) - sevRank(b.severity) || String(a.category || '').localeCompare(String(b.category || ''))
+        })
+      } else {
+        result = this.analysisFindings().filter(f => ['P0', 'P1'].includes(f.severity)).map((f, idx) => ({
+          id: f.id || ('fallback-rc-' + idx),
+          severity: f.severity,
+          category: f.category,
+          title: f.title,
+          detail: f.detail,
+          recommended_action: f.recommendation,
+          affected_subjects: f.subject_id ? [{ subject_id: f.subject_id, sample_id: f.sample_id, language: '' }] : [],
+          evidence_ids: (f.evidence || []).map(e => e.evidence_id).filter(Boolean),
+          related_findings: [f.id].filter(Boolean),
+        }))
+      }
+      this._cachedRootCauses = result
+      this._rootCausesDirty = false
+      return result
+    },
+    mergeAnalysisRootCauses(items) {
+      const sevRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+      const groups = new Map()
+      ;(items || []).forEach((item, idx) => {
+        const key = [item.category || '', item.title || item.id || idx].join('|')
+        if (!groups.has(key)) {
+          const subjSet = new Set()
+          const evSet = new Set()
+          const findSet = new Set()
+          const subjects = [...(item.affected_subjects || [])]
+          const evidences = [...(item.evidence_ids || [])]
+          const findings = [...(item.related_findings || [])]
+          subjects.forEach(s => subjSet.add(this.analysisSubjectKey(s)))
+          evidences.forEach(id => evSet.add(id))
+          findings.forEach(id => findSet.add(id))
+          groups.set(key, {
+            ...item,
+            id: item.id || ('rc-' + idx),
+            affected_subjects: subjects,
+            evidence_ids: evidences,
+            related_findings: findings,
+            _subjSet: subjSet,
+            _evSet: evSet,
+            _findSet: findSet,
+          })
+          return
+        }
+        const g = groups.get(key)
+        if (sevRank(item.severity) < sevRank(g.severity)) g.severity = item.severity
+        if ((item.detail || '').length > (g.detail || '').length) g.detail = item.detail
+        if (!g.recommended_action && item.recommended_action) g.recommended_action = item.recommended_action
+        for (const s of (item.affected_subjects || [])) {
+          const sk = this.analysisSubjectKey(s)
+          if (!g._subjSet.has(sk)) { g._subjSet.add(sk); g.affected_subjects.push(s) }
+        }
+        for (const id of (item.evidence_ids || [])) {
+          if (!g._evSet.has(id)) { g._evSet.add(id); g.evidence_ids.push(id) }
+        }
+        for (const id of (item.related_findings || [])) {
+          if (!g._findSet.has(id)) { g._findSet.add(id); g.related_findings.push(id) }
+        }
+      })
+      return Array.from(groups.values()).map(item => {
+        if ((item.affected_subjects || []).length > 1 && !String(item.detail || '').includes('共 ')) {
+          item.detail = `共 ${item.affected_subjects.length} 个对象出现同类问题。代表性证据：${item.detail || item.title || ''}`
+        }
+        delete item._subjSet
+        delete item._evSet
+        delete item._findSet
+        return item
+      })
+    },
+    _buildAnalysisIndex() {
+      const analysis = this.currentAnalysis
+      this._evidenceMap = new Map()
+      this._subjectMap = new Map()
+      this._cachedRootCauses = null
+      this._rootCausesDirty = true
+      this.analysisSubjectLimit = 50
+      this.analysisFindingsLimit = 50
+      if (!analysis) return
+      for (const e of (analysis.evidence_index || [])) {
+        if (e.evidence_id) this._evidenceMap.set(e.evidence_id, e)
+      }
+      for (const s of (analysis.subjects || [])) {
+        this._subjectMap.set(this.analysisSubjectKey(s), s)
+      }
+      this._rebuildSelectionSet()
+    },
+    _rebuildSelectionSet() {
+      this._selectionSet = new Set((this.analysisSelection || []).map(s => this.analysisSubjectKey(s)))
+    },
+    analysisEvidenceByID(id) {
+      if (!id) return null
+      if (this._evidenceMap) return this._evidenceMap.get(id) || null
+      return (this.currentAnalysis?.evidence_index || []).find(e => e.evidence_id === id) || null
+    },
+    analysisFindingByID(id) {
+      return (this.currentAnalysis?.findings || []).find(f => f.id === id) || null
+    },
+    analysisSubjectBySelector(sel) {
+      if (!sel) return null
+      const key = this.analysisSubjectKey(sel)
+      if (this._subjectMap) {
+        const exact = this._subjectMap.get(key)
+        if (exact) return exact
+        for (const s of this._subjectMap.values()) {
+          if (s.subject_id === sel.subject_id && s.sample_id === sel.sample_id) return s
+        }
+        return null
+      }
+      return (this.currentAnalysis?.subjects || []).find(s => this.analysisSubjectKey(s) === key || (s.subject_id === sel.subject_id && s.sample_id === sel.sample_id)) || null
+    },
+    analysisDetailSubjects() {
+      const detail = this.analysisDetail
+      if (!detail) return []
+      const selectors = detail.root_cause?.affected_subjects?.length
+        ? detail.root_cause.affected_subjects
+        : (detail.subject ? [detail.subject] : (detail.evidence?.subject_id ? [{
+            subject_id: detail.evidence.subject_id,
+            sample_id: detail.evidence.sample_id,
+            language: detail.evidence.language,
+          }] : []))
+      const seen = new Set()
+      return selectors.map(sel => this.analysisSubjectBySelector(sel) || sel).filter(s => {
+        const key = this.analysisSubjectKey(s)
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+    },
+    analysisStepSummary(step) {
+      if (!step) return ''
+      return [step.text_excerpt, step.input_excerpt, step.output_excerpt].filter(Boolean).join('\n\n') || '无步骤摘要'
+    },
+    analysisStepTone(step) {
+      if (!step) return 'neutral'
+      if (step.success === false || step.exit_code) return 'bad'
+      const text = String([step.kind, step.tool, step.text_excerpt, step.input_excerpt, step.output_excerpt].filter(Boolean).join(' ')).toLowerCase()
+      if (text.includes('error') || text.includes('failed') || text.includes('permission') || text.includes('denied')) return 'bad'
+      if (text.includes('pytest') || text.includes('go test') || text.includes('mvn') || text.includes('ctest')) return 'good'
+      if (text.includes('write') || text.includes('edit')) return 'warn'
+      return 'neutral'
+    },
+    rootCauseOptimizationCount(rc) {
+      if (!rc) return 0
+      const subjects = new Set((rc.affected_subjects || []).map(s => s.subject_id))
+      return (this.currentOptimizationPlan?.items || []).filter(i => {
+        if (!subjects.size) return false
+        return (i.applies_to || []).some(s => subjects.has(s))
+      }).length
+    },
+    openAnalysisRootCause(rc) {
+      if (!rc) return
+      this.analysisFocus = { root_cause_id: rc.id, evidence_id: '' }
+      this.analysisDetail = { type: 'root_cause', root_cause: rc }
+      this.analysisDetailOpen = true
+    },
+    openAnalysisSubjectDetail(subject) {
+      if (!subject) return
+      this.analysisFocus = { root_cause_id: '', evidence_id: 'subject-' + [subject.subject_id, subject.sample_id, subject.language].filter(Boolean).join('-') }
+      this.analysisDetail = { type: 'subject', subject }
+      this.analysisDetailOpen = true
+    },
+    openAnalysisEvidence(id, rc = null) {
+      const evidence = this.analysisEvidenceByID(id)
+      if (!evidence) {
+        this.showToast('没有找到证据：' + id, 'warn', 4000)
+        return
+      }
+      this.analysisFocus = { root_cause_id: rc?.id || '', evidence_id: id }
+      this.analysisDetail = { type: 'evidence', evidence, root_cause: rc }
+      this.analysisDetailOpen = true
+    },
+    closeAnalysisDetail() {
+      this.analysisDetailOpen = false
+      this.analysisDetail = null
+    },
+    askAnalysisFocus(question) {
+      this.analysisChatInput = question
+      this.sendAnalysisChatMessage()
+    },
+    quickRootCauseQuestion(rc, kind) {
+      const title = rc?.title || '这个问题'
+      if (kind === 'why') return `请解释「${title}」为什么会发生，按证据链说明。`
+      if (kind === 'compare') return `把「${title}」相关对象和最好对象对比，差异在哪里？`
+      if (kind === 'fix') return `针对「${title}」，应该如何修改 skill/prompt/agent 配置？`
+      return `「${title}」的证据链是否充分？还缺什么证据？`
+    },
+    analysisSubjectBadges(s) {
+      const badges = []
+      badges.push({ label: s.compile_pass ? '编译通过' : '编译失败', tone: s.compile_pass ? 'good' : 'bad' })
+      badges.push({ label: s.test_pass == null ? '测试未执行' : (s.test_pass ? '测试通过' : '测试失败'), tone: s.test_pass === true ? 'good' : 'bad' })
+      if (s.line_coverage != null) badges.push({ label: '覆盖 ' + this.metricPct(s.line_coverage), tone: this.metricNumber(s.line_coverage) >= 70 ? 'good' : 'warn' })
+      if (s.mutation_score != null) badges.push({ label: '变异 ' + this.metricPct(s.mutation_score), tone: this.metricNumber(s.mutation_score) >= 60 ? 'good' : 'warn' })
+      if ((s.trace_step_count || 0) > 0) badges.push({ label: 'Trace ' + s.trace_step_count, tone: 'neutral' })
+      if (s.modified_source) badges.push({ label: '源码污染', tone: 'bad' })
+      if (s.total_tokens && s.total_tokens > 200000) badges.push({ label: 'Token 高', tone: 'warn' })
+      return badges
+    },
+    analysisBadgeStyle(tone) {
+      if (tone === 'good') return 'background:rgba(16,185,129,.10);color:var(--green);border-color:rgba(16,185,129,.28)'
+      if (tone === 'bad') return 'background:var(--error-bg);color:var(--red);border-color:var(--error-border)'
+      if (tone === 'warn') return 'background:var(--warn-bg);color:var(--yellow);border-color:rgba(245,158,11,.28)'
+      return 'background:var(--bg-muted);color:var(--fg-muted);border-color:var(--border)'
     },
     optimizationItems(target = '') {
       let items = this.currentOptimizationPlan?.items || []

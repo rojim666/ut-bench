@@ -26,31 +26,32 @@ type LLMEvidenceBundle struct {
 }
 
 type LLMEvidenceSubject struct {
-	SubjectID          string   `json:"subject_id"`
-	SampleID           string   `json:"sample_id"`
-	AgentFramework     string   `json:"agent_framework,omitempty"`
-	AgentModel         string   `json:"agent_model,omitempty"`
-	SkillName          string   `json:"skill_name,omitempty"`
-	Language           string   `json:"language"`
-	CompilePass        bool     `json:"compile_pass"`
-	TestPass           *bool    `json:"test_pass,omitempty"`
-	LineCoverage       *float64 `json:"line_coverage,omitempty"`
-	MutationScore      *float64 `json:"mutation_score,omitempty"`
-	TraceStepCount     int      `json:"trace_step_count"`
-	HasSourceRead      bool     `json:"has_source_read"`
-	HasTestWrite       bool     `json:"has_test_write"`
-	HasTestExecution   bool     `json:"has_test_execution"`
-	ModifiedSource     bool     `json:"modified_source"`
-	RuntimeNoiseCount  int      `json:"runtime_noise_count"`
-	PolicyCommandCount int      `json:"policy_command_count"`
-	TotalTokens        *int     `json:"total_tokens,omitempty"`
-	EvidenceIDs        []string `json:"evidence_ids,omitempty"`
-	FailureSummary     string   `json:"failure_summary,omitempty"`
-	SelectedReason     []string `json:"selected_reason,omitempty"`
-	ComparisonGroup    string   `json:"comparison_group,omitempty"`
-	GeneratedTestPath  string   `json:"generated_test_path,omitempty"`
-	TrajectoryPath     string   `json:"trajectory_path,omitempty"`
-	WorkspaceDiffPath  string   `json:"workspace_diff_path,omitempty"`
+	SubjectID           string   `json:"subject_id"`
+	SampleID            string   `json:"sample_id"`
+	AgentFramework      string   `json:"agent_framework,omitempty"`
+	AgentModel          string   `json:"agent_model,omitempty"`
+	SkillName           string   `json:"skill_name,omitempty"`
+	Language            string   `json:"language"`
+	CompilePass         bool     `json:"compile_pass"`
+	TestPass            *bool    `json:"test_pass,omitempty"`
+	LineCoverage        *float64 `json:"line_coverage,omitempty"`
+	MutationScore       *float64 `json:"mutation_score,omitempty"`
+	TraceStepCount      int      `json:"trace_step_count"`
+	HasSourceRead       bool     `json:"has_source_read"`
+	HasTestWrite        bool     `json:"has_test_write"`
+	HasTestExecution    bool     `json:"has_test_execution"`
+	ModifiedSource      bool     `json:"modified_source"`
+	ModifiedSourcePaths []string `json:"modified_source_paths,omitempty"`
+	RuntimeNoiseCount   int      `json:"runtime_noise_count"`
+	PolicyCommandCount  int      `json:"policy_command_count"`
+	TotalTokens         *int     `json:"total_tokens,omitempty"`
+	EvidenceIDs         []string `json:"evidence_ids,omitempty"`
+	FailureSummary      string   `json:"failure_summary,omitempty"`
+	SelectedReason      []string `json:"selected_reason,omitempty"`
+	ComparisonGroup     string   `json:"comparison_group,omitempty"`
+	GeneratedTestPath   string   `json:"generated_test_path,omitempty"`
+	TrajectoryPath      string   `json:"trajectory_path,omitempty"`
+	WorkspaceDiffPath   string   `json:"workspace_diff_path,omitempty"`
 }
 
 type LLMEvidenceItem struct {
@@ -114,28 +115,29 @@ func buildLLMEvidenceBundle(outputRoot string, report *contracts.AnalysisReport)
 			reasons = append([]string{"user_selected"}, reasons...)
 		}
 		view := LLMEvidenceSubject{
-			SubjectID:          subject.SubjectID,
-			SampleID:           subject.SampleID,
-			AgentFramework:     subject.AgentFramework,
-			AgentModel:         subject.AgentModel,
-			SkillName:          subject.SkillName,
-			Language:           subject.Language,
-			CompilePass:        subject.CompilePass,
-			TestPass:           subject.TestPass,
-			LineCoverage:       subject.LineCoverage,
-			MutationScore:      subject.MutationScore,
-			TraceStepCount:     subject.TraceStepCount,
-			HasSourceRead:      subject.HasSourceRead,
-			HasTestWrite:       subject.HasTestWrite,
-			HasTestExecution:   subject.HasTestExecution,
-			ModifiedSource:     subject.ModifiedSource,
-			RuntimeNoiseCount:  subject.RuntimeNoiseCount,
-			PolicyCommandCount: subject.PolicyCommandCount,
-			TotalTokens:        subject.TotalTokens,
-			GeneratedTestPath:  subject.GeneratedTestPath,
-			TrajectoryPath:     subject.TrajectoryPath,
-			WorkspaceDiffPath:  subject.WorkspaceDiffPath,
-			SelectedReason:     compactStringList(reasons),
+			SubjectID:           subject.SubjectID,
+			SampleID:            subject.SampleID,
+			AgentFramework:      subject.AgentFramework,
+			AgentModel:          subject.AgentModel,
+			SkillName:           subject.SkillName,
+			Language:            subject.Language,
+			CompilePass:         subject.CompilePass,
+			TestPass:            subject.TestPass,
+			LineCoverage:        subject.LineCoverage,
+			MutationScore:       subject.MutationScore,
+			TraceStepCount:      subject.TraceStepCount,
+			HasSourceRead:       subject.HasSourceRead,
+			HasTestWrite:        subject.HasTestWrite,
+			HasTestExecution:    subject.HasTestExecution,
+			ModifiedSource:      subject.ModifiedSource,
+			ModifiedSourcePaths: subject.ModifiedSourcePaths,
+			RuntimeNoiseCount:   subject.RuntimeNoiseCount,
+			PolicyCommandCount:  subject.PolicyCommandCount,
+			TotalTokens:         subject.TotalTokens,
+			GeneratedTestPath:   subject.GeneratedTestPath,
+			TrajectoryPath:      subject.TrajectoryPath,
+			WorkspaceDiffPath:   subject.WorkspaceDiffPath,
+			SelectedReason:      compactStringList(reasons),
 		}
 		if report.Selection.CompareMode && len(report.Selection.SelectedSubjects) > 1 {
 			view.ComparisonGroup = "selected"

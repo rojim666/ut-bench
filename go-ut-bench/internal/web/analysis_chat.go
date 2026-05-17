@@ -21,8 +21,10 @@ type analysisChatSessionRequest struct {
 }
 
 type analysisChatMessageRequest struct {
-	Content  string `json:"content"`
-	LLMModel string `json:"llm_model,omitempty"`
+	Content          string `json:"content"`
+	LLMModel         string `json:"llm_model,omitempty"`
+	FocusEvidenceID  string `json:"focus_evidence_id,omitempty"`
+	FocusRootCauseID string `json:"focus_root_cause_id,omitempty"`
 }
 
 func (s *Server) handleRunAnalysisChat(w http.ResponseWriter, r *http.Request, runID, suffix string) {
@@ -181,7 +183,7 @@ func (s *Server) streamAnalysisChatMessage(w http.ResponseWriter, r *http.Reques
 	})
 
 	start := time.Now()
-	systemPrompt, userPrompt := buildAnalysisChatPrompt(report, session, req.Content)
+	systemPrompt, userPrompt := buildAnalysisChatPrompt(report, session, req.Content, req.FocusEvidenceID, req.FocusRootCauseID)
 	modelName := firstNonEmpty(strings.TrimSpace(req.LLMModel), strings.TrimSpace(session.LLMModel), strings.TrimSpace(report.LLMStatus.Model))
 	var content bytes.Buffer
 	text, err := (&analyzer.HTTPClient{}).StreamText(r.Context(), analyzer.LLMTextRequest{
@@ -265,7 +267,7 @@ func normalizeChatSelection(report *contracts.AnalysisReport, selected []contrac
 	return out, nil
 }
 
-func buildAnalysisChatPrompt(report *contracts.AnalysisReport, session *contracts.AnalysisChatSession, question string) (string, string) {
+func buildAnalysisChatPrompt(report *contracts.AnalysisReport, session *contracts.AnalysisChatSession, question string, focusEvidenceID string, focusRootCauseID string) (string, string) {
 	system := `你是 UTBench 的 Agent 行为分析助手。你只基于当前分析报告、已选对象和 trace 摘要回答；如果证据不足，要明确说明缺少什么证据。回答使用中文，尽量给出可执行判断，但不要声称已经自动修改 skill、prompt 或执行复测。`
 	var b strings.Builder
 	b.WriteString("当前用户问题：\n")
@@ -274,6 +276,19 @@ func buildAnalysisChatPrompt(report *contracts.AnalysisReport, session *contract
 	b.WriteString(fmt.Sprintf("- run_id: %s\n- headline: %s\n", report.RunID, report.Summary.Headline))
 	if report.LLM != nil && strings.TrimSpace(report.LLM.Summary) != "" {
 		b.WriteString("- llm_summary: " + report.LLM.Summary + "\n")
+	}
+	if focus := findAnalysisRootCause(report.RootCauses, focusRootCauseID); focus != nil {
+		b.WriteString("\n当前聚焦根因：\n")
+		b.WriteString(fmt.Sprintf("- [%s/%s] %s: %s\n", focus.Severity, focus.Category, focus.Title, trim(focus.Detail, 500)))
+		if focus.RecommendedAction != "" {
+			b.WriteString("- recommended_action: " + trim(focus.RecommendedAction, 300) + "\n")
+		}
+	}
+	if evidence := findAnalysisEvidence(report.EvidenceIndex, focusEvidenceID); evidence != nil {
+		b.WriteString("\n当前聚焦证据：\n")
+		b.WriteString(fmt.Sprintf("- %s / %s / %s / step#%d\n", evidence.EvidenceID, evidence.Kind, evidence.Title, evidence.StepIndex))
+		b.WriteString("- subject: " + evidence.SubjectID + " / " + evidence.SampleID + " / " + evidence.Language + "\n")
+		b.WriteString("- excerpt: " + trim(evidence.Excerpt, 900) + "\n")
 	}
 	b.WriteString("\n当前选择对象：\n")
 	selectedSubjects := selectedAnalysisChatSubjects(report, session.SelectedSubjects)
@@ -285,7 +300,7 @@ func buildAnalysisChatPrompt(report *contracts.AnalysisReport, session *contract
 		}
 	}
 	b.WriteString("\n相关诊断：\n")
-	for _, f := range limitChatFindings(report.Findings, session.SelectedSubjects, 8) {
+	for _, f := range limitChatFindings(report.Findings, session.SelectedSubjects, focusRootCauseID, report.RootCauses, 8) {
 		b.WriteString(fmt.Sprintf("- [%s/%s/%s] %s: %s\n", firstNonEmpty(f.Severity, "P?"), firstNonEmpty(f.Source, "rule"), firstNonEmpty(f.Category, "unknown"), f.Title, trim(f.Detail, 220)))
 	}
 	b.WriteString("\n相关建议：\n")
@@ -333,9 +348,18 @@ func selectedAnalysisChatSubjects(report *contracts.AnalysisReport, selected []c
 	return out
 }
 
-func limitChatFindings(items []contracts.AnalysisFinding, selected []contracts.AnalysisSubjectSelector, max int) []contracts.AnalysisFinding {
+func limitChatFindings(items []contracts.AnalysisFinding, selected []contracts.AnalysisSubjectSelector, focusRootCauseID string, rootCauses []contracts.AnalysisRootCause, max int) []contracts.AnalysisFinding {
+	focused := map[string]bool{}
+	if focus := findAnalysisRootCause(rootCauses, focusRootCauseID); focus != nil {
+		for _, id := range focus.RelatedFindings {
+			focused[id] = true
+		}
+	}
 	var out []contracts.AnalysisFinding
 	for _, item := range items {
+		if len(focused) > 0 && !focused[item.ID] {
+			continue
+		}
 		if chatAppliesToSelection(item.SubjectID, item.SampleID, selected) {
 			out = append(out, item)
 			if len(out) >= max {
@@ -344,6 +368,32 @@ func limitChatFindings(items []contracts.AnalysisFinding, selected []contracts.A
 		}
 	}
 	return out
+}
+
+func findAnalysisRootCause(items []contracts.AnalysisRootCause, id string) *contracts.AnalysisRootCause {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	for i := range items {
+		if items[i].ID == id {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+func findAnalysisEvidence(items []contracts.AnalysisEvidenceItem, id string) *contracts.AnalysisEvidenceItem {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	for i := range items {
+		if items[i].EvidenceID == id {
+			return &items[i]
+		}
+	}
+	return nil
 }
 
 func limitChatRecommendations(items []contracts.AnalysisRecommendation, selected []contracts.AnalysisSubjectSelector, max int) []contracts.AnalysisRecommendation {
