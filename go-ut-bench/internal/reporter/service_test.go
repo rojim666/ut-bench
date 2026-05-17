@@ -237,6 +237,50 @@ func TestScoreEligibilityExcludesNonModelFailuresFromRanking(t *testing.T) {
 	}
 }
 
+func TestToolMutationFailureStillContributesDisplayMetrics(t *testing.T) {
+	pass := true
+	excluded := false
+	lineCov := 1.0
+	assertDensity := 1.75
+
+	rows := []contracts.EvaluationResult{
+		{
+			Model:            "opencode__deepseek__qta-ut",
+			SubjectID:        "opencode__deepseek__qta-ut",
+			AgentFramework:   "opencode",
+			AgentModel:       "deepseek",
+			SkillName:        "qta-ut",
+			CompilePass:      true,
+			TestPass:         &pass,
+			LineCoverage:     &lineCov,
+			AssertionDensity: &assertDensity,
+			MutationError:    "pitest: Coverage generation minion exited abnormally",
+			FailureOrigin:    "tool",
+			ScoreEligible:    &excluded,
+		},
+	}
+
+	summary := buildSummary(rows)
+	if summary.EligibleSamples != 0 || summary.ExcludedSamples != 1 {
+		t.Fatalf("tool row should stay excluded from score summary, got %+v", summary)
+	}
+
+	dims := buildDimensions(rows, nil)
+	if len(dims.ByModel) != 1 {
+		t.Fatalf("expected tool row in display model dimensions, got %+v", dims.ByModel)
+	}
+	got := dims.ByModel[0]
+	if got.TotalSamples != 1 || got.CompilePassRate != 1 || got.AvgLineCoverage != 1 || got.AvgAssertionDensity != assertDensity {
+		t.Fatalf("unexpected display metrics for tool row: %+v", got)
+	}
+
+	subjects := buildSubjectMetrics(rows)
+	sm := subjects["opencode|deepseek|qta-ut|"]
+	if sm == nil || sm.count != 1 || sm.lineCov() != 1 || sm.assertDensity() != assertDensity {
+		t.Fatalf("expected tool row in subject comparison metrics, got %+v", subjects)
+	}
+}
+
 func TestClassifyMutationError(t *testing.T) {
 	cases := map[string]string{
 		"Mull: baseline tests failed, skipping mutation":                           "mutation_skipped_baseline_failed",

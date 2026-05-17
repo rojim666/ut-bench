@@ -238,7 +238,7 @@ func (s *subjectMetrics) composite() float64 {
 func buildSubjectMetrics(rows []contracts.EvaluationResult) map[string]*subjectMetrics {
 	m := map[string]*subjectMetrics{}
 	for _, row := range rows {
-		if !isScoreEligible(row) {
+		if !includeInDisplayMetrics(row) {
 			continue
 		}
 		fw := firstNonEmpty(row.AgentFramework, "model_api")
@@ -560,6 +560,23 @@ func isScoreEligible(row contracts.EvaluationResult) bool {
 		return true
 	}
 	return *row.ScoreEligible
+}
+
+func includeInDisplayMetrics(row contracts.EvaluationResult) bool {
+	if isScoreEligible(row) {
+		return true
+	}
+	if !strings.EqualFold(strings.TrimSpace(row.FailureOrigin), "tool") {
+		return false
+	}
+	return row.CompilePass ||
+		row.TestPass != nil ||
+		row.LineCoverage != nil ||
+		row.BranchCoverage != nil ||
+		row.MutationScore != nil ||
+		row.AssertionDensity != nil ||
+		row.AssertionCount != nil ||
+		row.TestCaseCount != nil
 }
 
 func buildScoreExclusions(rows []contracts.EvaluationResult) []contracts.ScoreExclusionRow {

@@ -17,7 +17,7 @@ func buildDimensions(rows []contracts.EvaluationResult, modelDetails map[string]
 	modelScenarioMap := map[string]*modelScenarioAgg{}
 
 	for _, row := range rows {
-		if !isScoreEligible(row) {
+		if !includeInDisplayMetrics(row) {
 			continue
 		}
 		agg := getOrCreateModelAgg(modelMap, row.Model)

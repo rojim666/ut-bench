@@ -75,8 +75,20 @@ func main() {
 	if !strings.Contains(result.Code, "def test_generated") {
 		t.Fatalf("unexpected generated code: %s", result.Code)
 	}
-	if result.Trace.TracePath != "" || result.Trace.WorkspaceDiffPath != "" {
-		t.Fatalf("trace artifacts should not be persisted, got %+v", result.Trace)
+	if result.Trace.TracePath == "" || result.Trace.RawTracePath == "" || result.Trace.TrajectoryPath == "" || result.Trace.WorkspaceDiffPath == "" {
+		t.Fatalf("expected trace artifact paths to be recorded, got %+v", result.Trace)
+	}
+	for _, artifactPath := range []string{
+		result.Trace.TracePath,
+		result.Trace.RawTracePath,
+		result.Trace.RawStdoutPath,
+		result.Trace.RawStderrPath,
+		result.Trace.TrajectoryPath,
+		result.Trace.WorkspaceDiffPath,
+	} {
+		if _, err := os.Stat(artifactPath); err != nil {
+			t.Fatalf("expected trace artifact %s to exist: %v", artifactPath, err)
+		}
 	}
 	if result.Trace.SandboxFingerprint == "" {
 		t.Fatalf("expected sandbox fingerprint, got %+v", result.Trace)
@@ -536,10 +548,11 @@ func TestInjectAgentNativeSkillForCodeBuddyAddsFrontmatterWhenMissing(t *testing
 }
 
 func TestBuildAgentPromptForCodeBuddyStartsWithSlashSkill(t *testing.T) {
-	prompt := buildAgentPrompt("Task body", contracts.SampleRef{
+	sample := contracts.SampleRef{
 		ID:       "s1",
 		Language: "go",
-	}, "/workspace/source.go", "/workspace/generated_test.go", "/workspace/.codebuddy/skills/qta-gen-ut", "codebuddy", "qta-ut")
+	}
+	prompt := buildAgentPrompt("Task body", sample, "/workspace/source.go", "/workspace/generated_test.go", "/workspace/.codebuddy/skills/qta-gen-ut", "codebuddy", "qta-ut", resolveGenerationStrategy(sample))
 
 	if !strings.HasPrefix(prompt, "/qta-gen-ut Task body") {
 		t.Fatalf("expected prompt to start with CodeBuddy slash skill invocation, got %q", prompt)
@@ -559,10 +572,11 @@ func TestBuildAgentPromptForCodeBuddyStartsWithSlashSkill(t *testing.T) {
 }
 
 func TestBuildAgentPromptForClaudeCodeStartsWithSlashSkill(t *testing.T) {
-	prompt := buildAgentPrompt("Task body", contracts.SampleRef{
+	sample := contracts.SampleRef{
 		ID:       "s1",
 		Language: "go",
-	}, "/workspace/source.go", "/workspace/generated_test.go", "/workspace/.claude/skills/qta-gen-ut", "claudecode", "qta-ut")
+	}
+	prompt := buildAgentPrompt("Task body", sample, "/workspace/source.go", "/workspace/generated_test.go", "/workspace/.claude/skills/qta-gen-ut", "claudecode", "qta-ut", resolveGenerationStrategy(sample))
 
 	if !strings.HasPrefix(prompt, "/qta-gen-ut Task body") {
 		t.Fatalf("expected prompt to start with Claude Code slash skill invocation, got %q", prompt)
@@ -646,10 +660,11 @@ func TestInjectAgentNativeSkillForOpenCodeUsesFrontmatterName(t *testing.T) {
 }
 
 func TestBuildAgentPromptForOpenCodeStartsWithSlashSkill(t *testing.T) {
-	prompt := buildAgentPrompt("Task body", contracts.SampleRef{
+	sample := contracts.SampleRef{
 		ID:       "s1",
 		Language: "python",
-	}, "/workspace/source.py", "/workspace/generated_test.py", "/workspace/.opencode/skills/unit-test-skill", "opencode", "unit_test_skill")
+	}
+	prompt := buildAgentPrompt("Task body", sample, "/workspace/source.py", "/workspace/generated_test.py", "/workspace/.opencode/skills/unit-test-skill", "opencode", "unit_test_skill", resolveGenerationStrategy(sample))
 
 	if !strings.HasPrefix(prompt, "/unit-test-skill Task body") {
 		t.Fatalf("expected prompt to start with OpenCode slash skill invocation, got %q", prompt)
