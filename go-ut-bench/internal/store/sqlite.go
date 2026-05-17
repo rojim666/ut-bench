@@ -299,6 +299,22 @@ type DBEvaluationAssetItem struct {
 	CreatedAtUTC             string `json:"created_at_utc,omitempty"`
 }
 
+type DBSkillVersionComparisonItem struct {
+	SkillName         string  `json:"skill_name"`
+	SkillVersion      string  `json:"skill_version"`
+	Framework         string  `json:"framework,omitempty"`
+	Model             string  `json:"model,omitempty"`
+	SubjectCount      int     `json:"subject_count"`
+	SampleCount       int     `json:"sample_count"`
+	CompilePassRate   float64 `json:"compile_pass_rate"`
+	TestPassRate      float64 `json:"test_pass_rate"`
+	AvgLineCoverage   float64 `json:"avg_line_coverage"`
+	AvgMutationScore  float64 `json:"avg_mutation_score"`
+	AvgTotalTokens    float64 `json:"avg_total_tokens"`
+	AvgRuntimeMS      float64 `json:"avg_runtime_ms"`
+	LatestEvaluatedAt string  `json:"latest_evaluated_at,omitempty"`
+}
+
 // ReusableGeneratedCase 可复用的生成结果（别名，实际定义在 contracts 包）
 type ReusableGeneratedCase = contracts.ReusableGeneratedCase
 

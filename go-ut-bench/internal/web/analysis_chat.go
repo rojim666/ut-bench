@@ -277,6 +277,21 @@ func buildAnalysisChatPrompt(report *contracts.AnalysisReport, session *contract
 	if report.LLM != nil && strings.TrimSpace(report.LLM.Summary) != "" {
 		b.WriteString("- llm_summary: " + report.LLM.Summary + "\n")
 	}
+	if len(report.ReportInsights) > 0 {
+		b.WriteString("\n报告级洞察：\n")
+		for _, insight := range limitChatReportInsights(report.ReportInsights, 8) {
+			b.WriteString(fmt.Sprintf("- [%s/%s/%s] %s: %s\n", firstNonEmpty(insight.Priority, "P?"), firstNonEmpty(insight.Source, "rule"), firstNonEmpty(insight.Category, "report"), insight.Title, trim(insight.Detail, 260)))
+		}
+	}
+	if report.EvolutionPlan != nil {
+		b.WriteString("\n自进化建议：\n")
+		if report.EvolutionPlan.Summary != "" {
+			b.WriteString("- summary: " + trim(report.EvolutionPlan.Summary, 260) + "\n")
+		}
+		for _, item := range limitChatEvolutionItems(report.EvolutionPlan.Items, 5) {
+			b.WriteString(fmt.Sprintf("- [%s/%s/%s] %s: %s\n", firstNonEmpty(item.Priority, "P?"), firstNonEmpty(item.Source, "rule"), firstNonEmpty(item.Target, "skill"), item.Title, trim(item.Reason, 260)))
+		}
+	}
 	if focus := findAnalysisRootCause(report.RootCauses, focusRootCauseID); focus != nil {
 		b.WriteString("\n当前聚焦根因：\n")
 		b.WriteString(fmt.Sprintf("- [%s/%s] %s: %s\n", focus.Severity, focus.Category, focus.Title, trim(focus.Detail, 500)))
@@ -315,6 +330,20 @@ func buildAnalysisChatPrompt(report *contracts.AnalysisReport, session *contract
 	}
 	b.WriteString("\n回答要求：\n- 先直接回答结论，再给证据和改进建议。\n- 对比问题要明确指出共同点、差异点、最好/最差原因。\n- 引用对象时使用 subject_id / sample_id / language。\n")
 	return system, b.String()
+}
+
+func limitChatReportInsights(items []contracts.ReportInsight, max int) []contracts.ReportInsight {
+	if len(items) <= max {
+		return items
+	}
+	return items[:max]
+}
+
+func limitChatEvolutionItems(items []contracts.EvolutionItem, max int) []contracts.EvolutionItem {
+	if len(items) <= max {
+		return items
+	}
+	return items[:max]
 }
 
 func renderChatSubjectContext(report *contracts.AnalysisReport, subject contracts.AnalysisSubject) string {

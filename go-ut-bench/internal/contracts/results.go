@@ -392,6 +392,7 @@ type ComparisonEntry struct {
 	Platform         string  `json:"platform"` // 平台/框架
 	Model            string  `json:"model"`    // 模型
 	Skill            string  `json:"skill"`    // Skill
+	SkillVersion     string  `json:"skill_version,omitempty"`
 	SubjectID        string  `json:"subject_id,omitempty"`
 	SampleCount      int     `json:"sample_count"`
 	CompilePassRate  float64 `json:"compile_pass_rate"`

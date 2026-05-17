@@ -2,27 +2,30 @@ package contracts
 
 import "time"
 
-const AnalysisSchemaVersion = "analysis.v0.1.1"
+const AnalysisSchemaVersion = "analysis.v0.1.3"
 const OptimizationPlanSchemaVersion = "optimization_plan.v0.1.0"
 const AnalysisChatSessionSchemaVersion = "analysis_chat.v0.1.0"
 
 // AnalysisReport 是一次 run 的规则诊断与 LLM 诊断报告。
 type AnalysisReport struct {
-	SchemaVersion     string                     `json:"schema_version"`
-	RunID             string                     `json:"run_id"`
-	GeneratedAt       time.Time                  `json:"generated_at"`
-	SourceFiles       AnalysisSourceFiles        `json:"source_files"`
-	Selection         AnalysisSelection          `json:"selection,omitempty"`
-	LLMStatus         LLMAnalysisStatus          `json:"llm_status"`
-	Summary           AnalysisSummary            `json:"summary"`
-	TraceQuality      AnalysisTraceQuality       `json:"trace_quality"`
-	Subjects          []AnalysisSubject          `json:"subjects"`
-	Findings          []AnalysisFinding          `json:"findings"`
-	Recommendations   []AnalysisRecommendation   `json:"recommendations"`
-	RootCauses        []AnalysisRootCause        `json:"root_causes,omitempty"`
-	EvidenceIndex     []AnalysisEvidenceItem     `json:"evidence_index,omitempty"`
-	ComparisonSummary *AnalysisComparisonSummary `json:"comparison_summary,omitempty"`
-	LLM               *LLMAnalysisResult         `json:"llm,omitempty"`
+	SchemaVersion       string                     `json:"schema_version"`
+	RunID               string                     `json:"run_id"`
+	GeneratedAt         time.Time                  `json:"generated_at"`
+	SourceFiles         AnalysisSourceFiles        `json:"source_files"`
+	Selection           AnalysisSelection          `json:"selection,omitempty"`
+	LLMStatus           LLMAnalysisStatus          `json:"llm_status"`
+	ReportInsightStatus LLMAnalysisStatus          `json:"report_insight_status"`
+	Summary             AnalysisSummary            `json:"summary"`
+	TraceQuality        AnalysisTraceQuality       `json:"trace_quality"`
+	Subjects            []AnalysisSubject          `json:"subjects"`
+	Findings            []AnalysisFinding          `json:"findings"`
+	Recommendations     []AnalysisRecommendation   `json:"recommendations"`
+	RootCauses          []AnalysisRootCause        `json:"root_causes,omitempty"`
+	ReportInsights      []ReportInsight            `json:"report_insights,omitempty"`
+	EvolutionPlan       *EvolutionPlan             `json:"evolution_plan,omitempty"`
+	EvidenceIndex       []AnalysisEvidenceItem     `json:"evidence_index,omitempty"`
+	ComparisonSummary   *AnalysisComparisonSummary `json:"comparison_summary,omitempty"`
+	LLM                 *LLMAnalysisResult         `json:"llm,omitempty"`
 }
 
 type AnalysisSourceFiles struct {
@@ -145,6 +148,39 @@ type AnalysisRootCause struct {
 	OptimizationItemCount int                       `json:"optimization_item_count,omitempty"`
 }
 
+type ReportInsight struct {
+	ID               string                    `json:"id"`
+	Priority         string                    `json:"priority"`
+	Category         string                    `json:"category"`
+	Title            string                    `json:"title"`
+	Detail           string                    `json:"detail"`
+	AffectedSubjects []AnalysisSubjectSelector `json:"affected_subjects,omitempty"`
+	Metrics          map[string]float64        `json:"metrics,omitempty"`
+	EvidenceIDs      []string                  `json:"evidence_ids,omitempty"`
+	Source           string                    `json:"source"`
+	Confidence       float64                   `json:"confidence,omitempty"`
+}
+
+type EvolutionPlan struct {
+	Summary string          `json:"summary"`
+	Items   []EvolutionItem `json:"items,omitempty"`
+}
+
+type EvolutionItem struct {
+	ID                      string   `json:"id"`
+	Priority                string   `json:"priority"`
+	Target                  string   `json:"target"`
+	Title                   string   `json:"title"`
+	Reason                  string   `json:"reason"`
+	ExpectedMetrics         []string `json:"expected_metrics,omitempty"`
+	Risks                   []string `json:"risks,omitempty"`
+	ManualVerification      []string `json:"manual_verification,omitempty"`
+	RelatedOptimizationRefs []string `json:"related_optimization_refs,omitempty"`
+	EvidenceIDs             []string `json:"evidence_ids,omitempty"`
+	Source                  string   `json:"source"`
+	Confidence              float64  `json:"confidence,omitempty"`
+}
+
 type AnalysisEvidenceItem struct {
 	EvidenceID string `json:"evidence_id"`
 	Kind       string `json:"kind"`
@@ -198,6 +234,8 @@ type LLMAnalysisResult struct {
 	RawOutput       string                   `json:"raw_output,omitempty"`
 	Findings        []AnalysisFinding        `json:"findings,omitempty"`
 	Recommendations []AnalysisRecommendation `json:"recommendations,omitempty"`
+	ReportInsights  []ReportInsight          `json:"report_insights,omitempty"`
+	EvolutionPlan   *EvolutionPlan           `json:"evolution_plan,omitempty"`
 	Error           string                   `json:"error,omitempty"`
 }
 

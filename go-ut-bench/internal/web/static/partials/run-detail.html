@@ -266,6 +266,75 @@
                         </template>
                       </tbody>
                     </table>
+                  <!-- Skill Uplift -->
+                  <div x-show="(currentReport.skill_uplifts ?? []).length > 0" class="form-section p-0 overflow-hidden">
+                    <div class="px-4 py-3 border-b text-[13px] font-medium" style="border-color:var(--border)">
+                      Skill 增益对比
+                      <span class="text-[11px] font-normal ml-2" style="color:var(--fg-subtle)">相对 no_skill 基线的指标差异</span>
+                    </div>
+                    <div class="overflow-x-auto">
+                      <table class="data-table">
+                        <thead><tr><th>Subject</th><th>框架</th><th>模型</th><th>Skill</th><th>版本</th><th>语言</th><th class="text-right">编译 Δ</th><th class="text-right">测试 Δ</th><th class="text-right">覆盖 Δ</th><th class="text-right">变异 Δ</th></tr></thead>
+                        <tbody>
+                          <template x-for="u in currentReport.skill_uplifts ?? []" :key="u.subject_id+u.skill+u.language">
+                            <tr>
+                              <td class="font-mono text-[11px] truncate max-w-[120px]" :title="u.subject_id" x-text="u.subject_id"></td>
+                              <td class="text-[12px]" x-text="u.framework"></td>
+                              <td class="text-[12px]" x-text="u.model"></td>
+                              <td class="text-[12px] font-medium" x-text="u.skill"></td>
+                              <td class="text-[12px] font-mono" style="color:var(--fg-muted)" x-text="u.skill_version || '—'"></td>
+                              <td class="text-[12px]" x-text="u.language || '—'"></td>
+                              <td class="text-right text-[12px] font-mono" :style="deltaColor(u.compile_pass_delta)" x-text="signedPct(u.compile_pass_delta)"></td>
+                              <td class="text-right text-[12px] font-mono" :style="deltaColor(u.test_pass_delta)" x-text="signedPct(u.test_pass_delta)"></td>
+                              <td class="text-right text-[12px] font-mono" :style="deltaColor(u.line_coverage_delta)" x-text="signedPct(u.line_coverage_delta)"></td>
+                              <td class="text-right text-[12px] font-mono" :style="deltaColor(u.mutation_score_delta)" x-text="signedPct(u.mutation_score_delta)"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <!-- Comparison Views -->
+                  <div x-show="(currentReport.comparison_views ?? []).length > 0" class="space-y-4">
+                    <template x-for="view in currentReport.comparison_views ?? []" :key="view.dimension">
+                      <div class="form-section p-0 overflow-hidden">
+                        <div class="px-4 py-3 border-b text-[13px] font-medium" style="border-color:var(--border)">
+                          <span x-text="view.label || view.dimension"></span>
+                          <span class="text-[11px] font-normal ml-2" style="color:var(--fg-subtle)" x-text="(view.groups?.length ?? 0) + ' 组'"></span>
+                        </div>
+                        <template x-for="group in view.groups ?? []" :key="(group.fixed_model||'')+(group.fixed_skill||'')+(group.fixed_platform||'')">
+                          <div class="border-b" style="border-color:var(--border)">
+                            <div class="px-4 py-2 text-[12px]" style="background:var(--bg-elevated);color:var(--fg-muted)">
+                              <span x-show="group.fixed_platform">平台: <span class="font-medium" style="color:var(--fg)" x-text="group.fixed_platform"></span> · </span>
+                              <span x-show="group.fixed_model">模型: <span class="font-medium" style="color:var(--fg)" x-text="group.fixed_model"></span> · </span>
+                              <span x-show="group.fixed_skill">Skill: <span class="font-medium" style="color:var(--fg)" x-text="group.fixed_skill"></span></span>
+                            </div>
+                            <table class="data-table">
+                              <thead><tr><th>#</th><th>平台</th><th>模型</th><th>Skill</th><th class="text-right">编译</th><th class="text-right">测试</th><th class="text-right">覆盖</th><th class="text-right">变异</th><th class="text-right">总分</th></tr></thead>
+                              <tbody>
+                                <template x-for="e in group.entries ?? []" :key="e.subject_id || (e.platform+e.model+e.skill)">
+                                  <tr>
+                                    <td class="font-mono text-[12px]" style="color:var(--fg-muted)">#<span x-text="e.rank"></span></td>
+                                    <td class="text-[12px]" x-text="e.platform"></td>
+                                    <td class="text-[12px]" x-text="e.model"></td>
+                                    <td class="text-[12px]">
+                                      <span x-text="e.skill"></span>
+                                      <span x-show="e.skill_version" class="font-mono text-[11px] ml-1" style="color:var(--fg-muted)" x-text="'@'+e.skill_version"></span>
+                                    </td>
+                                    <td class="text-right text-[12px]" :class="pctColor(e.compile_pass_rate)" x-text="pct(e.compile_pass_rate)"></td>
+                                    <td class="text-right text-[12px]" :class="pctColor(e.avg_test_pass_rate)" x-text="pct(e.avg_test_pass_rate)"></td>
+                                    <td class="text-right text-[12px]" :class="pctColor(e.avg_line_coverage)" x-text="pct(e.avg_line_coverage)"></td>
+                                    <td class="text-right text-[12px]" :class="pctColor(e.avg_mutation_score)" x-text="pct(e.avg_mutation_score)"></td>
+                                    <td class="text-right text-[13px] font-bold" style="color:var(--accent)" x-text="((e.composite_score||0)*100).toFixed(1)"></td>
+                                  </tr>
+                                </template>
+                              </tbody>
+                            </table>
+                          </div>
+                        </template>
+                      </div>
+                    </template>
                   </div>
                 </div>
               </template>
@@ -371,8 +440,8 @@
                        style="border-color:var(--border);background:var(--bg)">
                     <div class="p-4 border-b flex items-start justify-between gap-3" style="border-color:var(--border);background:var(--bg-elevated)">
                       <div class="min-w-0">
-                        <div class="section-title mb-1" x-text="analysisDetail?.type === 'evidence' ? '证据详情' : (analysisDetail?.type === 'subject' ? 'Agent 完整过程' : '根因详情')"></div>
-                        <div class="text-[12px] truncate" style="color:var(--fg-muted)" x-text="analysisDetail?.root_cause?.title || analysisDetail?.evidence?.title || analysisDetail?.subject?.subject_id || ''"></div>
+                        <div class="section-title mb-1" x-text="analysisDetailTitle()"></div>
+                        <div class="text-[12px] truncate" style="color:var(--fg-muted)" x-text="analysisDetailSubtitle()"></div>
                       </div>
                       <button @click="closeAnalysisDetail()" class="btn-ghost text-[12px]">关闭</button>
                     </div>
@@ -399,6 +468,22 @@
                           <div class="font-medium text-[13px] mb-2" x-text="analysisDetail.evidence.title"></div>
                           <div class="font-mono text-[11px] mb-2" style="color:var(--fg-muted)" x-text="[analysisDetail.evidence.subject_id, analysisDetail.evidence.sample_id, analysisDetail.evidence.language].filter(Boolean).join(' / ')"></div>
                           <div class="font-mono text-[11px] whitespace-pre-wrap break-words rounded p-2" style="background:var(--bg-muted);color:var(--fg-subtle)" x-text="analysisDetail.evidence.excerpt || analysisDetail.evidence.path || '无摘要'"></div>
+                        </div>
+                      </template>
+                      <template x-if="analysisDetail?.report_insight">
+                        <div class="rounded border p-3" style="border-color:var(--border);background:var(--bg-elevated)">
+                          <div class="flex flex-wrap gap-2 mb-2">
+                            <span class="tag-pill border" :style="findingBadgeStyle(analysisDetail.report_insight.priority)" x-text="analysisDetail.report_insight.priority"></span>
+                            <span class="tag-pill border" :style="analysisSourceBadgeStyle(analysisDetail.report_insight.source)" x-text="analysisSourceLabel(analysisDetail.report_insight.source)"></span>
+                            <span class="tag-pill" x-text="analysisDetail.report_insight.category"></span>
+                          </div>
+                          <div class="font-medium text-[14px] mb-2" x-text="analysisDetail.report_insight.title"></div>
+                          <div class="text-[12px] leading-5" style="color:var(--fg-muted)" x-text="analysisDetail.report_insight.detail"></div>
+                          <div x-show="Object.keys(analysisDetail.report_insight.metrics || {}).length" class="mt-3 flex flex-wrap gap-2">
+                            <template x-for="([k, v]) in Object.entries(analysisDetail.report_insight.metrics || {})" :key="'metric-' + k">
+                              <span class="tag-pill font-mono" x-text="k + '=' + Number(v).toFixed(1)"></span>
+                            </template>
+                          </div>
                         </div>
                       </template>
                       <div x-show="analysisDetailSubjects().length">
@@ -450,6 +535,17 @@
                           </template>
                         </div>
                       </div>
+                      <div x-show="analysisDetail?.report_insight?.evidence_ids?.length">
+                        <div class="text-[13px] font-medium mb-2">报告级证据</div>
+                        <div class="space-y-2">
+                          <template x-for="id in analysisDetail.report_insight.evidence_ids" :key="'detail-ri-ev-' + id">
+                            <button @click="openAnalysisEvidence(id)" class="w-full text-left rounded border p-2 text-[12px]" style="border-color:var(--border);background:var(--bg-muted);color:var(--fg-muted)">
+                              <span class="font-mono" x-text="id"></span>
+                              <span x-text="' · ' + (analysisEvidenceByID(id)?.title || '查看证据')"></span>
+                            </button>
+                          </template>
+                        </div>
+                      </div>
                     </div>
                     <div class="border-t p-3 flex flex-wrap gap-2" style="border-color:var(--border);background:var(--bg-elevated)">
                       <button x-show="analysisDetail?.root_cause" @click="askAnalysisFocus(quickRootCauseQuestion(analysisDetail.root_cause, 'why'))" class="btn-ghost text-[12px]">问原因</button>
@@ -492,7 +588,7 @@
                     </select>
                   </label>
                   <button @click="generateAnalysis(true)" :disabled="analysisGenerating" class="btn-primary">
-                    <span x-text="analysisGenerating ? '分析中...' : (currentAnalysis ? '重新分析' : '生成分析')"></span>
+                    <span x-text="analysisGenerating ? '生成中...' : (currentAnalysis ? '重新生成建议' : '生成自进化建议')"></span>
                   </button>
                   <button @click="loadAnalysis(true)" :disabled="analysisLoading" class="btn-ghost">刷新</button>
                   <span class="text-[12px]" style="color:var(--fg-muted)" x-show="currentAnalysis">
@@ -504,6 +600,97 @@
                     <span class="tag-pill" x-text="analysisJob?.status || 'running'"></span>
                     <span x-text="analysisJobPhaseLabel()"></span>
                     <span x-show="analysisJob?.error" style="color:var(--red)" x-text="analysisJob?.error"></span>
+                  </div>
+                </div>
+              </div>
+
+              <div x-show="currentAnalysis" class="space-y-4">
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div class="kpi-card">
+                    <div class="kpi-label">整体健康度</div>
+                    <div class="kpi-value" :class="analysisHealthScore() >= 70 ? 'pct-good' : (analysisHealthScore() >= 50 ? 'pct-warn' : 'pct-bad')" x-text="analysisHealthScore().toFixed(1)"></div>
+                  </div>
+                  <div class="kpi-card">
+                    <div class="kpi-label">最佳 Agent</div>
+                    <div class="text-[13px] font-mono truncate mt-2" style="color:var(--fg)" x-text="analysisBestWorst().best"></div>
+                  </div>
+                  <div class="kpi-card">
+                    <div class="kpi-label">最差 Agent</div>
+                    <div class="text-[13px] font-mono truncate mt-2" style="color:var(--fg)" x-text="analysisBestWorst().worst"></div>
+                  </div>
+                  <div class="kpi-card">
+                    <div class="kpi-label">最高 ROI 目标</div>
+                    <div class="text-[13px] font-medium truncate mt-2" style="color:var(--fg)" x-text="topEvolutionTarget()"></div>
+                  </div>
+                </div>
+
+                <div class="form-section">
+                  <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                    <div>
+                      <div class="section-title mb-1">报告洞察 / 自进化建议</div>
+                      <div class="text-[12px]" style="color:var(--fg-muted)">
+                        <span>报告洞察：</span><span x-text="currentAnalysis?.report_insight_status?.status || 'unknown'"></span>
+                        <span x-show="currentAnalysis?.report_insight_status?.message"> · </span>
+                        <span x-show="currentAnalysis?.report_insight_status?.message" x-text="currentAnalysis?.report_insight_status?.message"></span>
+                      </div>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      <button @click="askAnalysisFocus('下一轮先改哪个 skill 或 agent 配置？请按 ROI 排序。')" class="btn-ghost text-[12px]">下一轮先改谁</button>
+                      <button @click="askAnalysisFocus('为什么这个 agent 最差？请结合报告洞察和证据说明。')" class="btn-ghost text-[12px]">为什么最差</button>
+                      <button @click="askAnalysisFocus('这个优化会不会拖累其他语言？请说明风险和验收方式。')" class="btn-ghost text-[12px]">跨语言风险</button>
+                    </div>
+                  </div>
+                  <div x-show="!reportInsights().length" class="rounded border p-4 text-[13px]" style="border-color:var(--border);color:var(--fg-muted)">
+                    当前分析没有生成报告级洞察。可重新生成自进化建议，或检查 report_summary.json 是否存在。
+                  </div>
+                  <div class="grid md:grid-cols-2 gap-3">
+                    <template x-for="insight in reportInsights()" :key="insight.id">
+                      <button @click="openReportInsight(insight)" class="text-left rounded border p-3 transition hover:shadow-sm" style="border-color:var(--border);background:var(--bg-elevated)">
+                        <div class="flex flex-wrap gap-2 mb-2">
+                          <span class="tag-pill border" :style="findingBadgeStyle(insight.priority)" x-text="insight.priority"></span>
+                          <span class="tag-pill border" :style="analysisSourceBadgeStyle(insight.source)" x-text="analysisSourceLabel(insight.source)"></span>
+                          <span class="tag-pill" x-text="insight.category"></span>
+                        </div>
+                        <div class="font-medium text-[13px] mb-2" x-text="insight.title"></div>
+                        <div class="text-[12px] leading-5 line-clamp-3" style="color:var(--fg-muted)" x-text="insight.detail"></div>
+                        <div class="mt-3 flex flex-wrap gap-1">
+                          <template x-for="id in insight.evidence_ids || []" :key="insight.id + '-' + id">
+                            <span class="tag-pill font-mono text-[10px]" x-text="id"></span>
+                          </template>
+                        </div>
+                      </button>
+                    </template>
+                  </div>
+                </div>
+
+                <div class="form-section">
+                  <div class="section-title mb-3">自进化建议</div>
+                  <div class="text-[13px] mb-3" style="color:var(--fg-muted)" x-text="currentAnalysis?.evolution_plan?.summary || '暂无自进化建议。'"></div>
+                  <div class="space-y-3">
+                    <template x-for="item in evolutionItems()" :key="item.id">
+                      <details class="rounded border p-3" style="border-color:var(--border);background:var(--bg-elevated)">
+                        <summary class="cursor-pointer flex flex-wrap items-center gap-2">
+                          <span class="tag-pill border" :style="findingBadgeStyle(item.priority)" x-text="item.priority"></span>
+                          <span class="tag-pill border" :style="analysisSourceBadgeStyle(item.source)" x-text="analysisSourceLabel(item.source)"></span>
+                          <span class="tag-pill" x-text="optimizationTargetLabel(item.target)"></span>
+                          <span class="font-medium text-[13px]" x-text="item.title"></span>
+                        </summary>
+                        <div class="mt-3 text-[12px] space-y-3" style="color:var(--fg-muted)">
+                          <div x-text="item.reason"></div>
+                          <div x-show="(item.expected_metrics || []).length">
+                            <span style="color:var(--fg)">预计影响：</span>
+                            <template x-for="m in item.expected_metrics || []" :key="item.id + '-m-' + m"><span class="tag-pill mr-1" x-text="m"></span></template>
+                          </div>
+                          <div x-show="(item.risks || []).length"><span style="color:var(--fg)">风险：</span><span x-text="(item.risks || []).join('；')"></span></div>
+                          <div x-show="(item.manual_verification || []).length"><span style="color:var(--fg)">人工验收：</span><span x-text="(item.manual_verification || []).join('；')"></span></div>
+                          <div x-show="(item.evidence_ids || []).length" class="flex flex-wrap gap-2">
+                            <template x-for="id in item.evidence_ids || []" :key="item.id + '-ev-' + id">
+                              <button @click.prevent="openAnalysisEvidence(id)" class="tag-pill font-mono text-[10px]" x-text="id"></button>
+                            </template>
+                          </div>
+                        </div>
+                      </details>
+                    </template>
                   </div>
                 </div>
               </div>

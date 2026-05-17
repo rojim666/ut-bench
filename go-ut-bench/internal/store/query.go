@@ -634,3 +634,52 @@ func (s *SQLiteStore) FindReusableEvaluationAsset(ctx context.Context, evaluatio
 	out.Result.WorkspaceDiffPath = resolveStoredPath(out.Result.WorkspaceDiffPath)
 	return out, true, nil
 }
+
+func (s *SQLiteStore) SkillVersionComparison(ctx context.Context, skillName, framework, model string) ([]DBSkillVersionComparisonItem, error) {
+	where := []string{"COALESCE(skill_name, '') <> ''", "COALESCE(skill_name, '') <> 'no_skill'"}
+	args := []any{}
+	if strings.TrimSpace(skillName) != "" {
+		where = append(where, "skill_name = ?")
+		args = append(args, strings.TrimSpace(skillName))
+	}
+	if strings.TrimSpace(framework) != "" {
+		where = append(where, "agent_framework = ?")
+		args = append(args, strings.TrimSpace(framework))
+	}
+	if strings.TrimSpace(model) != "" {
+		where = append(where, "agent_model = ?")
+		args = append(args, strings.TrimSpace(model))
+	}
+	query := `
+		SELECT COALESCE(skill_name, ''),
+		       COALESCE(NULLIF(skill_version, ''), 'unversioned'),
+		       COALESCE(agent_framework, ''),
+		       COALESCE(agent_model, ''),
+		       COUNT(DISTINCT subject_id),
+		       COUNT(*),
+		       AVG(CASE WHEN compile_pass THEN 100.0 ELSE 0.0 END),
+		       AVG(CASE WHEN test_pass = 1 THEN 100.0 ELSE 0.0 END),
+		       COALESCE(AVG(line_coverage), 0),
+		       COALESCE(AVG(mutation_score), 0),
+		       COALESCE(AVG(total_tokens), 0),
+		       COALESCE(AVG(runtime_ms), 0),
+		       COALESCE(MAX(updated_db_at_utc), '')
+		FROM evaluation_results
+		WHERE ` + strings.Join(where, " AND ") + `
+		GROUP BY skill_name, COALESCE(NULLIF(skill_version, ''), 'unversioned'), agent_framework, agent_model
+		ORDER BY skill_name, agent_framework, agent_model, skill_version`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DBSkillVersionComparisonItem
+	for rows.Next() {
+		var item DBSkillVersionComparisonItem
+		if err := rows.Scan(&item.SkillName, &item.SkillVersion, &item.Framework, &item.Model, &item.SubjectCount, &item.SampleCount, &item.CompilePassRate, &item.TestPassRate, &item.AvgLineCoverage, &item.AvgMutationScore, &item.AvgTotalTokens, &item.AvgRuntimeMS, &item.LatestEvaluatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}

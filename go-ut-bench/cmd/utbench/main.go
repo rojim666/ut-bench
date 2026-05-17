@@ -534,6 +534,7 @@ func runAnalyze(args []string) error {
 	llm := fs.Bool("llm", false, "Enable LLM diagnosis")
 	noLLM := fs.Bool("no-llm", false, "Disable LLM diagnosis")
 	llmModel := fs.String("llm-model", "", "Model name from models.yaml for LLM diagnosis")
+	noReportInsights := fs.Bool("no-report-insights", false, "Skip report-level insights and evolution plan")
 	force := fs.Bool("force", true, "Regenerate analysis even when analysis_report.json exists")
 	jsonOut := fs.Bool("json", false, "Print full analysis JSON")
 	if err := fs.Parse(args); err != nil {
@@ -544,12 +545,13 @@ func runAnalyze(args []string) error {
 	}
 	llmEnabled := *llm && !*noLLM
 	report, err := analyzer.NewService().Analyze(context.Background(), analyzer.Options{
-		RunID:      *runID,
-		OutputRoot: *outputRoot,
-		ConfigPath: *configPath,
-		LLMEnabled: llmEnabled,
-		LLMModel:   *llmModel,
-		Force:      *force,
+		RunID:              *runID,
+		OutputRoot:         *outputRoot,
+		ConfigPath:         *configPath,
+		LLMEnabled:         llmEnabled,
+		LLMModel:           *llmModel,
+		Force:              *force,
+		SkipReportInsights: *noReportInsights,
 	})
 	if err != nil {
 		return err
@@ -559,7 +561,7 @@ func runAnalyze(args []string) error {
 	}
 	fmt.Printf("Analysis generated for %s\n", report.RunID)
 	fmt.Printf("Summary: %s\n", report.Summary.Headline)
-	fmt.Printf("Findings: %d | Recommendations: %d | LLM: %s\n", len(report.Findings), len(report.Recommendations), report.LLMStatus.Status)
+	fmt.Printf("Findings: %d | Recommendations: %d | Report insights: %d | LLM: %s | Report LLM: %s\n", len(report.Findings), len(report.Recommendations), len(report.ReportInsights), report.LLMStatus.Status, report.ReportInsightStatus.Status)
 	fmt.Printf("Result: %s\n", filepath.Join(*outputRoot, "runs", *runID, "analysis", "analysis_report.json"))
 	return nil
 }

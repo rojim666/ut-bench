@@ -97,7 +97,7 @@ func buildSkillUplifts(rows []contracts.EvaluationResult) []contracts.SkillUplif
 		if !ok {
 			continue
 		}
-		key := strings.Join([]string{row.Model, baseline.Model, framework, model, skill, row.Language}, "|")
+		key := strings.Join([]string{row.Model, baseline.Model, framework, model, skill, row.SkillVersion, row.Language}, "|")
 		agg := getComparisonAgg(aggs, key)
 		agg.subjectID = firstNonEmpty(row.SubjectID, row.Model)
 		agg.baselineSubjectID = firstNonEmpty(baseline.SubjectID, baseline.Model)
@@ -213,6 +213,7 @@ type subjectMetrics struct {
 	framework    string
 	model        string
 	skill        string
+	skillVersion string
 	subjectID    string
 	count        int
 	compileSum   float64
@@ -243,14 +244,16 @@ func buildSubjectMetrics(rows []contracts.EvaluationResult) map[string]*subjectM
 		fw := firstNonEmpty(row.AgentFramework, "model_api")
 		model := firstNonEmpty(row.AgentModel, row.Model)
 		skill := firstNonEmpty(row.SkillName, "no_skill")
-		key := strings.Join([]string{fw, model, skill}, "|")
+		skillVersion := row.SkillVersion
+		key := strings.Join([]string{fw, model, skill, skillVersion}, "|")
 		sm, ok := m[key]
 		if !ok {
 			sm = &subjectMetrics{
-				framework: fw,
-				model:     model,
-				skill:     skill,
-				subjectID: firstNonEmpty(row.SubjectID, row.Model),
+				framework:    fw,
+				model:        model,
+				skill:        skill,
+				skillVersion: skillVersion,
+				subjectID:    firstNonEmpty(row.SubjectID, row.Model),
 			}
 			m[key] = sm
 		}
@@ -295,6 +298,7 @@ func buildComparisonViews(rows []contracts.EvaluationResult) []contracts.Compari
 			Platform:         sm.framework,
 			Model:            sm.model,
 			Skill:            sm.skill,
+			SkillVersion:     sm.skillVersion,
 			SubjectID:        sm.subjectID,
 			SampleCount:      sm.count,
 			CompilePassRate:  sm.compileRate(),
@@ -305,19 +309,19 @@ func buildComparisonViews(rows []contracts.EvaluationResult) []contracts.Compari
 		}
 
 		// 平台对比：按 model+skill 分组
-		pKey := sm.model + "|" + sm.skill
+		pKey := sm.model + "|" + sm.skill + "|" + sm.skillVersion
 		pg, ok := platformGroups[pKey]
 		if !ok {
-			pg = &contracts.ComparisonGroup{FixedModel: sm.model, FixedSkill: sm.skill}
+			pg = &contracts.ComparisonGroup{FixedModel: sm.model, FixedSkill: skillVersionLabel(sm.skill, sm.skillVersion)}
 			platformGroups[pKey] = pg
 		}
 		pg.Entries = append(pg.Entries, entry)
 
 		// 模型对比：按 platform+skill 分组
-		mKey := sm.framework + "|" + sm.skill
+		mKey := sm.framework + "|" + sm.skill + "|" + sm.skillVersion
 		mg, ok := modelGroups[mKey]
 		if !ok {
-			mg = &contracts.ComparisonGroup{FixedPlatform: sm.framework, FixedSkill: sm.skill}
+			mg = &contracts.ComparisonGroup{FixedPlatform: sm.framework, FixedSkill: skillVersionLabel(sm.skill, sm.skillVersion)}
 			modelGroups[mKey] = mg
 		}
 		mg.Entries = append(mg.Entries, entry)
@@ -861,6 +865,13 @@ func inferSkill(subjectID string) string {
 		return parts[2]
 	}
 	return "no_skill"
+}
+
+func skillVersionLabel(skill, version string) string {
+	if strings.TrimSpace(version) == "" || skill == "no_skill" {
+		return skill
+	}
+	return skill + "@" + version
 }
 
 func avg(sum float64, count int) float64 {

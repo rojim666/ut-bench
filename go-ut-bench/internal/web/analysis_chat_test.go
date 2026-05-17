@@ -62,6 +62,23 @@ func TestBuildAnalysisChatPromptIncludesSelectedTrajectoryAndQuestion(t *testing
 			Title:     "未观察到测试执行步骤",
 			Detail:    "trajectory 中没有发现测试命令。",
 		}},
+		ReportInsights: []contracts.ReportInsight{{
+			Priority: "P1",
+			Source:   "rule",
+			Category: "skill_uplift",
+			Title:    "下一轮先改 qta-ut",
+			Detail:   "skill uplift 明显，优先沉淀高收益策略。",
+		}},
+		EvolutionPlan: &contracts.EvolutionPlan{
+			Summary: "优先优化 skill",
+			Items: []contracts.EvolutionItem{{
+				Priority: "P1",
+				Source:   "rule",
+				Target:   "skill",
+				Title:    "沉淀高 uplift skill 策略",
+				Reason:   "覆盖和变异提升空间最大。",
+			}},
+		},
 	}
 	session := &contracts.AnalysisChatSession{
 		SessionID:        "chat-1",
@@ -70,7 +87,7 @@ func TestBuildAnalysisChatPromptIncludesSelectedTrajectoryAndQuestion(t *testing
 		SelectedSubjects: []contracts.AnalysisSubjectSelector{{SubjectID: "agent-a", SampleID: "s1", Language: "python"}},
 	}
 	_, user := buildAnalysisChatPrompt(report, session, "它为什么没完成验证？", "", "")
-	for _, want := range []string{"它为什么没完成验证？", "agent-a / s1 / python", "pytest", "未观察到测试执行步骤"} {
+	for _, want := range []string{"它为什么没完成验证？", "agent-a / s1 / python", "pytest", "未观察到测试执行步骤", "报告级洞察", "自进化建议", "沉淀高 uplift skill 策略"} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, user)
 		}

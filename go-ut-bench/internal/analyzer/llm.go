@@ -524,6 +524,8 @@ func parseLLMJSON(text string) (contracts.LLMAnalysisResult, error) {
 		Summary         string                             `json:"summary"`
 		Findings        []contracts.AnalysisFinding        `json:"findings"`
 		Recommendations []contracts.AnalysisRecommendation `json:"recommendations"`
+		ReportInsights  []contracts.ReportInsight          `json:"report_insights"`
+		EvolutionPlan   *contracts.EvolutionPlan           `json:"evolution_plan"`
 	}
 	if err := json.Unmarshal([]byte(clean), &wire); err != nil {
 		return contracts.LLMAnalysisResult{}, err
@@ -532,6 +534,8 @@ func parseLLMJSON(text string) (contracts.LLMAnalysisResult, error) {
 		Summary:         wire.Summary,
 		Findings:        wire.Findings,
 		Recommendations: wire.Recommendations,
+		ReportInsights:  wire.ReportInsights,
+		EvolutionPlan:   wire.EvolutionPlan,
 	}, nil
 }
 

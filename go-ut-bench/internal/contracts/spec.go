@@ -35,19 +35,21 @@ type RunSpec struct {
 // SubjectSpec 定义一个可评测对象：framework + model + optional skill。
 // Model API 基线使用 framework=model_api, kind=model_api, skill=no_skill。
 type SubjectSpec struct {
-	ID        string   `json:"subject_id"`
-	Kind      string   `json:"kind"`
-	Framework string   `json:"framework"`
-	Model     string   `json:"model"`
-	Skill     string   `json:"skill"`
-	Labels    []string `json:"labels,omitempty"`
-	Tags      []string `json:"tags,omitempty"`
+	ID           string   `json:"subject_id"`
+	Kind         string   `json:"kind"`
+	Framework    string   `json:"framework"`
+	Model        string   `json:"model"`
+	Skill        string   `json:"skill"`
+	SkillVersion string   `json:"skill_version,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
 }
 
 // SkillSpec 定义通用能力包，不绑定具体 Agent 的原生 skill 机制。
 type SkillSpec struct {
 	Name                 string   `json:"name"`
 	Version              string   `json:"version,omitempty"`
+	DefaultVersion       string   `json:"default_version,omitempty"`
 	Description          string   `json:"description,omitempty"`
 	InstructionPath      string   `json:"instruction_path,omitempty"`
 	Files                []string `json:"files,omitempty"`

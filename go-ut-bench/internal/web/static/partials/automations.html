@@ -264,8 +264,11 @@
                     <select class="input-base text-[12px]" x-model="combo.model" @change="onAutomationCombinationModelChange()">
                       <template x-for="m in _comboModels(combo.framework)" :key="m"><option :value="m" x-text="comboModelOptionLabel(m)"></option></template>
                     </select>
-                    <select class="input-base text-[12px]" x-model="combo.skill">
+                    <select class="input-base text-[12px]" x-model="combo.skill" @change="onAutomationCombinationSkillChange(combo)">
                       <template x-for="sk in _comboSkills(combo.framework)" :key="sk"><option :value="sk" x-text="sk"></option></template>
+                    </select>
+                    <select class="input-base text-[12px]" x-model="combo.skill_version" :disabled="combo.skill === 'no_skill'" @change="refreshAutomationJSONFromPlan()">
+                      <template x-for="v in _comboSkillVersions(combo.framework, combo.skill)" :key="v"><option :value="v" x-text="v"></option></template>
                     </select>
                     <code x-text="buildSubjectId(combo)"></code>
                     <button type="button" class="btn-ghost py-1 px-2" :disabled="(automationPlan.combinations || []).length <= 1" @click="removeAutomationCombination(idx)">×</button>

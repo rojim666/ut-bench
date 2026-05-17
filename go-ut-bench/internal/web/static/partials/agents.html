@@ -84,10 +84,12 @@
                   </div>
                   <span x-text="skill.description || skill.inject_mode || 'registered'"></span>
                   <div class="agent-skill-meta">
-                    <i x-text="skill.version ? 'v' + skill.version : 'no version'"></i>
+                    <i x-text="skill.default_version ? 'default ' + skill.default_version : (skill.version || 'no version')"></i>
+                    <i x-show="(skill.versions || []).length" x-text="(skill.versions || []).length + ' versions'"></i>
                     <i x-text="skill.inject_mode || 'none'"></i>
                   </div>
                 </div>
+                <button type="button" @click.stop="createSkillDraftVersion(skill)" class="text-[11px] btn-ghost py-0.5 px-1.5 ml-1" style="color:var(--accent)" :disabled="!!skillDraftCreating[skill.name]" x-text="skillDraftCreating[skill.name] ? '生成中' : '生成草稿版本'"></button>
                 <button type="button" @click.stop="viewSkillDetail(skill)" class="text-[11px] btn-ghost py-0.5 px-1.5 ml-1" style="color:var(--fg-muted)">详情</button>
               </div>
             </template>

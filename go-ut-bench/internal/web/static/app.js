@@ -62,6 +62,7 @@
       skill_root: '',
       names: [],
     },
+    skillDraftCreating: {},
     // Skill 详情/对比
     skillDetailOpen: false,
     skillDetail: null,
@@ -136,7 +137,7 @@
     dbReportFilter: { run_id:'' },
     dbRunArtifactFilter: { run_id:'' },
     form: {
-      run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill'}], languages:[], class:'self_contained', scenario:'', level:'',
+      run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill',skill_version:''}], languages:[], class:'self_contained', scenario:'', level:'',
       max_samples:1, workers:4, mode:'full', phase:'full', source_run_id:'', manifest_path:'', evaluation_path:'',
       dry_run:false, reuse_generated:true, reuse_evaluation:false, mutation_enabled:true,
       mutation_timeout:360, mutation_policy:'warn', ingest:true, use_docker:true,
@@ -1020,7 +1021,7 @@
         source_run_id: this.form.source_run_id || '',
         manifest_path: this.form.manifest_path || '',
         evaluation_path: this.form.evaluation_path || '',
-        combinations: [{ _id: 1, framework: 'model_api', model: defaultModel, skill: 'no_skill' }],
+        combinations: [{ _id: 1, framework: 'model_api', model: defaultModel, skill: 'no_skill', skill_version: '' }],
         models: [],
         languages: this.form.languages?.length ? [...this.form.languages] : ['python'],
         class: this.form.class || 'self_contained',
@@ -1052,7 +1053,7 @@
         source_run_id: opts.source_run_id || '',
         manifest_path: opts.manifest_path || '',
         evaluation_path: opts.evaluation_path || '',
-        combinations: combos.length ? combos : [{ _id: 1, framework: 'model_api', model: models[0] || this._comboModels('model_api')[0] || '', skill: 'no_skill' }],
+        combinations: combos.length ? combos : [{ _id: 1, framework: 'model_api', model: models[0] || this._comboModels('model_api')[0] || '', skill: 'no_skill', skill_version: '' }],
         models: combos.length ? [] : models,
         languages: Array.isArray(spec.languages) ? spec.languages : [],
         class: Array.isArray(spec.dataset_classes) ? spec.dataset_classes.join(',') : '',
@@ -1073,7 +1074,13 @@
     comboFromSubjectId(subject, id) {
       const parts = String(subject || '').split('__')
       if (parts.length < 3) return null
-      return { _id: id, framework: parts[0] || 'model_api', model: parts[1] || '', skill: parts.slice(2).join('__') || 'no_skill' }
+      let skillParts = parts.slice(2)
+      let skillVersion = ''
+      if (skillParts.length > 1 && /^v[0-9a-z_.-]+$/i.test(skillParts[skillParts.length - 1] || '')) {
+        skillVersion = skillParts.pop()
+      }
+      const skill = skillParts.join('__') || 'no_skill'
+      return { _id: id, framework: parts[0] || 'model_api', model: parts[1] || '', skill, skill_version: skill === 'no_skill' ? '' : skillVersion }
     },
 
     buildAutomationRunSpecFromPlan() {
@@ -1165,7 +1172,7 @@
       const defaultModel = models.includes('deepseek-v4-flash') ? 'deepseek-v4-flash' : (models[0] || '')
       if (!Array.isArray(this.automationPlan.combinations)) this.automationPlan.combinations = []
       this.automationPlan.models = []
-      this.automationPlan.combinations.push({ _id: ++this._comboSeq, framework: 'model_api', model: defaultModel, skill: 'no_skill' })
+      this.automationPlan.combinations.push({ _id: ++this._comboSeq, framework: 'model_api', model: defaultModel, skill: 'no_skill', skill_version: '' })
     },
 
     removeAutomationCombination(idx) {
@@ -1180,10 +1187,17 @@
       if (!models.includes(combo.model)) combo.model = models[0] || ''
       const skills = this._comboSkills(combo.framework)
       if (!skills.includes(combo.skill)) combo.skill = 'no_skill'
+      this.normalizeComboSkillVersion(combo)
       this.automationPlan.models = []
     },
 
     onAutomationCombinationModelChange() {
+      this.automationPlan.models = []
+    },
+
+    onAutomationCombinationSkillChange(combo) {
+      if (!combo) return
+      this.normalizeComboSkillVersion(combo)
       this.automationPlan.models = []
     },
 
@@ -2246,6 +2260,7 @@
         framework: subject.framework || 'model_api',
         model: subject.model || '',
         skill: subject.skill || 'no_skill',
+        skill_version: subject.skill_version || '',
       }]
       this.form.models = []
       if (subject.sandbox_mode === 'docker') this.form.use_docker = true
@@ -2691,6 +2706,33 @@
       }
     },
 
+    async createSkillDraftVersion(skill) {
+      if (!skill?.name || this.skillDraftCreating[skill.name]) return
+      this.skillDraftCreating = { ...this.skillDraftCreating, [skill.name]: true }
+      try {
+        const r = await fetch(`/api/agents/skills/${encodeURIComponent(skill.name)}/versions/drafts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source_run_id: this.currentRun?.run_id || '',
+            base_version: skill.default_version || skill.version || '',
+          }),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.showToast(`已生成 Skill 草稿版本 ${data.version || ''}`, 'ok')
+        await this.loadConfig()
+        const refreshed = (this.config?.skills || []).find(s => s.name === skill.name)
+        if (refreshed && this.skillDetail?.name === skill.name) this.skillDetail = refreshed
+      } catch (e) {
+        this.showToast('生成 Skill 草稿失败：' + (e.message || String(e)), 'err', 6000)
+      } finally {
+        const next = { ...this.skillDraftCreating }
+        delete next[skill.name]
+        this.skillDraftCreating = next
+      }
+    },
+
     toggleSkillSelection(name) {
       const idx = this.selectedSkillNames.indexOf(name)
       if (idx >= 0) this.selectedSkillNames.splice(idx, 1)
@@ -3002,6 +3044,43 @@
       }
       return skills
     },
+    _skillConfig(name) {
+      return (this.config?.skills ?? []).find(sk => sk.name === name) || null
+    },
+    _comboSkillVersions(framework, skill) {
+      if (!skill || skill === 'no_skill') return []
+      const sk = this._skillConfig(skill)
+      if (!sk) return []
+      const frameworks = sk.compatible_frameworks || []
+      if (frameworks.length && !frameworks.includes(framework)) return []
+      const versions = Array.isArray(sk.versions) ? sk.versions.map(v => v.version || v.name || '').filter(Boolean) : []
+      if (versions.length) return [...new Set(versions)]
+      return sk.version ? [sk.version] : []
+    },
+    defaultSkillVersion(framework, skill) {
+      if (!skill || skill === 'no_skill') return ''
+      const sk = this._skillConfig(skill)
+      const versions = this._comboSkillVersions(framework, skill)
+      if (sk?.default_version && versions.includes(sk.default_version)) return sk.default_version
+      if (sk?.version && versions.includes(sk.version)) return sk.version
+      return versions[0] || ''
+    },
+    normalizeComboSkillVersion(combo) {
+      if (!combo) return
+      if (!combo.skill || combo.skill === 'no_skill') {
+        combo.skill = 'no_skill'
+        combo.skill_version = ''
+        return
+      }
+      const versions = this._comboSkillVersions(combo.framework, combo.skill)
+      if (!versions.length) {
+        combo.skill_version = ''
+        return
+      }
+      if (!versions.includes(combo.skill_version)) {
+        combo.skill_version = this.defaultSkillVersion(combo.framework, combo.skill)
+      }
+    },
     comboModelOptionLabel(name) {
       return String(name || '')
     },
@@ -3024,15 +3103,28 @@
         `<option value="${this._escapeHtml(s)}" ${s===current?'selected':''}>${this._escapeHtml(s)}</option>`
       ).join('')
     },
+    renderSkillVersionOptions(framework, skill, current) {
+      const versions = this._comboSkillVersions(framework, skill)
+      if (!versions.length) {
+        return '<option value="">—</option>'
+      }
+      if (!versions.includes(current)) current = this.defaultSkillVersion(framework, skill)
+      return versions.map(v =>
+        `<option value="${this._escapeHtml(v)}" ${v===current?'selected':''}>${this._escapeHtml(v)}</option>`
+      ).join('')
+    },
     renderCombinationRows() {
       const rows = this.form.combinations || []
       return rows.map((combo, idx) => {
+        this.normalizeComboSkillVersion(combo)
         const id = combo._id ?? idx
         const disabled = rows.length <= 1 ? 'disabled' : ''
+        const versionDisabled = combo.skill === 'no_skill' ? 'disabled' : ''
         return `<div class="flex items-center gap-2" data-combo-row="${this._escapeHtml(id)}">
           <select class="input-base text-[12px] flex-1" data-combo-id="${this._escapeHtml(id)}" data-combo-idx="${idx}" data-combo-type="framework">${this.renderFrameworkOptions(combo.framework)}</select>
           <select class="input-base text-[12px] flex-1" data-combo-id="${this._escapeHtml(id)}" data-combo-idx="${idx}" data-combo-type="model">${this.renderModelOptions(combo.framework, combo.model)}</select>
           <select class="input-base text-[12px] flex-1" data-combo-id="${this._escapeHtml(id)}" data-combo-idx="${idx}" data-combo-type="skill">${this.renderSkillOptions(combo.framework, combo.skill)}</select>
+          <select class="input-base text-[12px] w-[108px]" data-combo-id="${this._escapeHtml(id)}" data-combo-idx="${idx}" data-combo-type="skill_version" ${versionDisabled}>${this.renderSkillVersionOptions(combo.framework, combo.skill, combo.skill_version)}</select>
           <span class="font-mono text-[11px] px-2 py-1 rounded" style="background:var(--bg-overlay);color:var(--fg-subtle)">${this._escapeHtml(this.buildSubjectId(combo))}</span>
           <button type="button" data-combo-remove="${this._escapeHtml(id)}" class="text-[12px] px-1.5 py-0.5 rounded" style="color:var(--fg-muted);background:var(--bg-overlay)" ${disabled}>&times;</button>
         </div>`
@@ -3060,7 +3152,10 @@
       const fw = sanitize(combo.framework || 'model_api')
       const model = sanitize(combo.model)
       const skill = sanitize(combo.skill || 'no_skill')
-      return `${fw}__${model}__${skill}`
+      if (skill === 'no_skill') return `${fw}__${model}__${skill}`
+      const version = sanitize(combo.skill_version || this.defaultSkillVersion(combo.framework, combo.skill) || '1')
+      const versionPart = version.startsWith('v') ? version : `v${version}`
+      return `${fw}__${model}__${skill}__${versionPart}`
     },
     addCombination() {
       if (this._comboAddLocked) return
@@ -3069,7 +3164,7 @@
       const models = this._comboModels('model_api')
       const defaultModel = models.includes('deepseek-v4-flash') ? 'deepseek-v4-flash' : (models[0] || '')
       this.form.models = []
-      this.form.combinations.push({ _id: ++this._comboSeq, framework: 'model_api', model: defaultModel, skill: 'no_skill' })
+      this.form.combinations.push({ _id: ++this._comboSeq, framework: 'model_api', model: defaultModel, skill: 'no_skill', skill_version: '' })
     },
     setCombinationValue(rowID, idx, type, value) {
       let combo = null
@@ -3086,6 +3181,9 @@
         combo.model = value
       } else if (type === 'skill') {
         combo.skill = value
+        this.normalizeComboSkillVersion(combo)
+      } else if (type === 'skill_version') {
+        combo.skill_version = value
       }
     },
     onCombinationFrameworkChange(idx) {
@@ -3098,6 +3196,7 @@
       if (!skills.includes(combo.skill)) {
         combo.skill = 'no_skill'
       }
+      this.normalizeComboSkillVersion(combo)
     },
     syncPageVisibility() {
       const pages = ['dashboard', 'new-run', 'runs', 'automations', 'agents', 'database', 'environment', 'models', 'run-detail']
@@ -3762,6 +3861,8 @@
     },
     pct(v) { return pct(v) },
     pctColor(v) { return pctColor(v) },
+    deltaColor(v) { return deltaColor(v) },
+    signedPct(v) { return signedPct(v) },
     metricPct(v) {
       if (v == null) return '—'
       return (v > 1 ? v : v * 100).toFixed(1) + '%'
@@ -3965,6 +4066,48 @@
         return srcRank(a.source) - srcRank(b.source) || priRank(a.priority) - priRank(b.priority)
       })
     },
+    reportInsights() {
+      const priRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+      return [...(this.currentAnalysis?.report_insights || [])].sort((a, b) => {
+        return priRank(a.priority) - priRank(b.priority) || String(a.category || '').localeCompare(String(b.category || ''))
+      })
+    },
+    evolutionItems() {
+      const priRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+      return [...(this.currentAnalysis?.evolution_plan?.items || [])].sort((a, b) => {
+        return priRank(a.priority) - priRank(b.priority) || String(a.target || '').localeCompare(String(b.target || ''))
+      })
+    },
+    analysisHealthScore() {
+      const health = this.reportInsights().find(i => i.category === 'health' && i.metrics?.health_score != null)
+      if (health) return Number(health.metrics.health_score) || 0
+      const subjects = this.currentAnalysis?.subjects || []
+      if (!subjects.length) return 0
+      const avg = (field) => {
+        const vals = subjects.map(s => s[field]).filter(v => v != null).map(v => v > 1 ? v : v * 100)
+        return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0
+      }
+      const compile = subjects.filter(s => s.compile_pass).length / subjects.length * 100
+      const tested = subjects.filter(s => s.test_pass === true).length / subjects.length * 100
+      return 0.3 * compile + 0.3 * tested + 0.2 * avg('line_coverage') + 0.2 * avg('mutation_score')
+    },
+    analysisBestWorst() {
+      const subjects = [...(this.currentAnalysis?.subjects || [])]
+      const score = s => {
+        const cov = s.line_coverage == null ? 0 : this.metricNumber(s.line_coverage)
+        const mut = s.mutation_score == null ? 0 : this.metricNumber(s.mutation_score)
+        return (s.compile_pass ? 100 : 0) + (s.test_pass === true ? 100 : 0) + cov * 0.7 + mut
+      }
+      subjects.sort((a, b) => score(b) - score(a))
+      return {
+        best: subjects[0]?.subject_id || '—',
+        worst: subjects[subjects.length - 1]?.subject_id || '—',
+      }
+    },
+    topEvolutionTarget() {
+      const item = this.evolutionItems()[0]
+      return item ? this.optimizationTargetLabel(item.target) : '—'
+    },
     analysisRootCauses() {
       if (!this._rootCausesDirty && this._cachedRootCauses) return this._cachedRootCauses
       const items = this.currentAnalysis?.root_causes
@@ -4089,11 +4232,13 @@
       if (!detail) return []
       const selectors = detail.root_cause?.affected_subjects?.length
         ? detail.root_cause.affected_subjects
-        : (detail.subject ? [detail.subject] : (detail.evidence?.subject_id ? [{
+        : (detail.report_insight?.affected_subjects?.length
+          ? detail.report_insight.affected_subjects
+          : (detail.subject ? [detail.subject] : (detail.evidence?.subject_id ? [{
             subject_id: detail.evidence.subject_id,
             sample_id: detail.evidence.sample_id,
             language: detail.evidence.language,
-          }] : []))
+          }] : [])))
       const seen = new Set()
       return selectors.map(sel => this.analysisSubjectBySelector(sel) || sel).filter(s => {
         const key = this.analysisSubjectKey(s)
@@ -4129,6 +4274,13 @@
       this.analysisDetail = { type: 'root_cause', root_cause: rc }
       this.analysisDetailOpen = true
     },
+    openReportInsight(insight) {
+      if (!insight) return
+      const evID = (insight.evidence_ids || [])[0] || ''
+      this.analysisFocus = { root_cause_id: '', evidence_id: evID }
+      this.analysisDetail = { type: 'report_insight', report_insight: insight }
+      this.analysisDetailOpen = true
+    },
     openAnalysisSubjectDetail(subject) {
       if (!subject) return
       this.analysisFocus = { root_cause_id: '', evidence_id: 'subject-' + [subject.subject_id, subject.sample_id, subject.language].filter(Boolean).join('-') }
@@ -4148,6 +4300,19 @@
     closeAnalysisDetail() {
       this.analysisDetailOpen = false
       this.analysisDetail = null
+    },
+    analysisDetailTitle() {
+      if (this.analysisDetail?.type === 'evidence') return '证据详情'
+      if (this.analysisDetail?.type === 'subject') return 'Agent 完整过程'
+      if (this.analysisDetail?.type === 'report_insight') return '报告洞察'
+      return '根因详情'
+    },
+    analysisDetailSubtitle() {
+      return this.analysisDetail?.root_cause?.title
+        || this.analysisDetail?.report_insight?.title
+        || this.analysisDetail?.evidence?.title
+        || this.analysisDetail?.subject?.subject_id
+        || ''
     },
     askAnalysisFocus(question) {
       this.analysisChatInput = question
@@ -4355,5 +4520,14 @@ function pctColor(v) {
   if (v >= .8) return 'pct-good'
   if (v >= .6) return 'pct-warn'
   return 'pct-bad'
+}
+function deltaColor(v) {
+  if (v==null || v===0) return 'color:var(--fg-muted)'
+  return v > 0 ? 'color:var(--green)' : 'color:var(--red)'
+}
+function signedPct(v) {
+  if (v==null) return '—'
+  const s = (v*100).toFixed(1)
+  return v > 0 ? '+'+s+'%' : s+'%'
 }
 

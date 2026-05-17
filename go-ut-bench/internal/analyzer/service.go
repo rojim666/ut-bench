@@ -17,18 +17,20 @@ import (
 )
 
 const promptVersion = "analysis-prompt.v0.1.1"
+const reportInsightPromptVersion = "report-insight-prompt.v0.1.3"
 
 type Options struct {
-	RunID            string
-	OutputRoot       string
-	ConfigPath       string
-	RuleEnabled      bool
-	LLMEnabled       bool
-	LLMModel         string
-	Force            bool
-	SelectedSubjects []contracts.AnalysisSubjectSelector
-	CompareMode      bool
-	Progress         func(phase string)
+	RunID              string
+	OutputRoot         string
+	ConfigPath         string
+	RuleEnabled        bool
+	LLMEnabled         bool
+	LLMModel           string
+	Force              bool
+	SkipReportInsights bool
+	SelectedSubjects   []contracts.AnalysisSubjectSelector
+	CompareMode        bool
+	Progress           func(phase string)
 }
 
 type Service struct {
@@ -106,6 +108,11 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 			Status:  mapBool(opts.LLMEnabled, "skipped", "disabled"),
 			Model:   opts.LLMModel,
 		},
+		ReportInsightStatus: contracts.LLMAnalysisStatus{
+			Enabled: !opts.SkipReportInsights,
+			Status:  mapBool(!opts.SkipReportInsights, "skipped", "disabled"),
+			Model:   opts.LLMModel,
+		},
 	}
 
 	if opts.RuleEnabled {
@@ -155,6 +162,16 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 	report.EvidenceIndex = buildEvidenceIndex(opts.OutputRoot, report)
 	report.RootCauses = buildRootCauses(report)
 	report.ComparisonSummary = buildComparisonSummary(report)
+
+	if !opts.SkipReportInsights {
+		reportProgress(opts.Progress, "构建报告证据")
+		insights, evolution, evidence, status := s.buildReportInsights(ctx, opts, report, eval, analysisDir)
+		reportProgress(opts.Progress, "写入自进化建议")
+		report.ReportInsights = insights
+		report.EvolutionPlan = evolution
+		report.ReportInsightStatus = status
+		report.EvidenceIndex = append(report.EvidenceIndex, evidence...)
+	}
 	report.Summary = buildSummary(report)
 
 	reportProgress(opts.Progress, "写入报告")
@@ -759,6 +776,16 @@ func buildSummary(report *contracts.AnalysisReport) contracts.AnalysisSummary {
 		}
 		s.KeyPoints = append(s.KeyPoints, point)
 	}
+	if report.ReportInsightStatus.Enabled {
+		point := "报告洞察状态：" + report.ReportInsightStatus.Status
+		if report.ReportInsightStatus.EvidenceCount > 0 {
+			point += fmt.Sprintf("，报告证据 %d 条", report.ReportInsightStatus.EvidenceCount)
+		}
+		if len(report.ReportInsights) > 0 {
+			point += fmt.Sprintf("，洞察 %d 条", len(report.ReportInsights))
+		}
+		s.KeyPoints = append(s.KeyPoints, point)
+	}
 	return s
 }
 
@@ -903,6 +930,16 @@ func renderMarkdown(report *contracts.AnalysisReport) string {
 	fmt.Fprintf(&b, "\n## 总结\n\n%s\n\n", report.Summary.Headline)
 	for _, p := range report.Summary.KeyPoints {
 		fmt.Fprintf(&b, "- %s\n", p)
+	}
+	fmt.Fprintf(&b, "\n## 报告洞察\n\n")
+	for _, insight := range report.ReportInsights {
+		fmt.Fprintf(&b, "- **[%s][%s][%s] %s**: %s\n", insight.Priority, insight.Source, insight.Category, insight.Title, insight.Detail)
+	}
+	if report.EvolutionPlan != nil {
+		fmt.Fprintf(&b, "\n## 自进化建议\n\n%s\n\n", report.EvolutionPlan.Summary)
+		for _, item := range report.EvolutionPlan.Items {
+			fmt.Fprintf(&b, "- **[%s][%s][%s] %s**: %s\n", item.Priority, item.Source, item.Target, item.Title, item.Reason)
+		}
 	}
 	fmt.Fprintf(&b, "\n## 规则诊断\n\n")
 	for _, f := range report.Findings {

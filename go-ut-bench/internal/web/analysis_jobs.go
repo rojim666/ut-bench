@@ -92,14 +92,15 @@ func (s *Server) runAnalysisJob(jobID string, req runAnalysisRequest) {
 	}
 	job.setRunning("准备证据")
 	report, err := analyzer.NewService().Analyze(context.Background(), analyzer.Options{
-		RunID:            job.RunID,
-		OutputRoot:       s.outputRoot,
-		ConfigPath:       s.configPath,
-		LLMEnabled:       req.LLMEnabled,
-		LLMModel:         req.LLMModel,
-		Force:            req.Force,
-		SelectedSubjects: req.SelectedSubjects,
-		CompareMode:      req.CompareMode,
+		RunID:              job.RunID,
+		OutputRoot:         s.outputRoot,
+		ConfigPath:         s.configPath,
+		LLMEnabled:         req.LLMEnabled,
+		LLMModel:           req.LLMModel,
+		Force:              req.Force,
+		SkipReportInsights: req.SkipReportInsights,
+		SelectedSubjects:   req.SelectedSubjects,
+		CompareMode:        req.CompareMode,
 		Progress: func(phase string) {
 			job.setPhase(phase)
 		},
