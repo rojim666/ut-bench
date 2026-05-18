@@ -13,7 +13,7 @@ import (
 // 包含数据集路径、输出路径、数据库路径、默认模型、默认语言等配置项
 // 这些值可以在CLI启动时被命令行参数覆盖
 type AppConfig struct {
-	DefaultDatasetRoot string                 // 数据集根目录路径，默认为"./datasets"
+	DefaultDatasetRoot string                 // 数据集根目录路径，默认为"../datasets"
 	DefaultOutputRoot  string                 // 评测结果输出根目录，默认为"./artifacts"
 	DefaultDBPath      string                 // SQLite数据库文件路径，默认为"./storage/utbench.db"
 	DefaultModels      []string               // 默认启用的模型列表，默认为["deepseek"]
@@ -27,7 +27,7 @@ type AppConfig struct {
 //   - AppConfig: 包含所有默认值的配置对象
 //
 // 默认配置包含：
-//   - 数据集根目录: ./datasets
+//   - 数据集根目录: ../datasets
 //   - 输出根目录: ./artifacts
 //   - 数据库路径: ./storage/utbench.db
 //   - 默认模型: deepseek
@@ -36,7 +36,7 @@ type AppConfig struct {
 //   - 运行模式: full
 func Default() AppConfig {
 	return AppConfig{
-		DefaultDatasetRoot: "./datasets",
+		DefaultDatasetRoot: "../datasets",
 		DefaultOutputRoot:  "./artifacts",
 		DefaultDBPath:      "./storage/utbench.db",
 		DefaultModels:      []string{"deepseek"},

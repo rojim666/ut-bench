@@ -21,9 +21,9 @@ func buildInsights(topModels []contracts.ModelRank, dims contracts.Dimensions, s
 		if len(topModels) > 1 {
 			gapToSecond = best.CompositeScore - topModels[1].CompositeScore
 		}
-		gapPct := gapToSecond * 100
-		detail := fmt.Sprintf("综合得分 %.1f%%，领先第二名 %.1f%%。编译通过率 %.1f%%，测试通过率 %.1f%%，行覆盖率 %.1f%%，变异分数 %.1f%%。",
-			best.CompositeScore*100, gapPct,
+		gapPct := gapToSecond
+		detail := fmt.Sprintf("综合得分 %.1f，领先第二名 %.1f。编译通过率 %.1f%%，测试通过率 %.1f%%，行覆盖率 %.1f%%，变异分数 %.1f%%。",
+			best.CompositeScore, gapPct,
 			best.CompilePassRate*100, best.AvgTestPassRate*100, best.AvgLineCoverage*100, best.AvgMutationScore*100)
 		insights.BestModel = contracts.InsightItem{
 			Category: "best_model",

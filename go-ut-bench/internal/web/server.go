@@ -5,7 +5,10 @@ package web
 import (
 	"archive/zip"
 	"context"
+	"database/sql"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +27,7 @@ import (
 	"time"
 
 	"go-ut-bench/internal/agentconfig"
+	"go-ut-bench/internal/analyzer"
 	"go-ut-bench/internal/contracts"
 	"go-ut-bench/internal/dataset"
 	"go-ut-bench/internal/obs"
@@ -50,11 +54,13 @@ type Server struct {
 	httpServer *http.Server       // 用于优雅关闭
 
 	// 缓存层：避免重复读磁盘/解析YAML
-	automation    *AutomationScheduler
-	cacheMu       sync.RWMutex
-	catalogCache  *catalogCacheEntry
-	runsCache     *runsCacheEntry
-	envCheckCache *envCheckCacheEntry
+	automation     *AutomationScheduler
+	cacheMu        sync.RWMutex
+	catalogCache   *catalogCacheEntry
+	runsCache      *runsCacheEntry
+	envCheckCache  *envCheckCacheEntry
+	analysisJobs   map[string]*analysisJob
+	analysisJobsMu sync.RWMutex
 }
 
 type catalogCacheEntry struct {
@@ -91,12 +97,13 @@ func NewServer(mgr *RunManager, bld *BuildManager, configPath, outputRoot, dbPat
 	}
 
 	s := &Server{
-		mgr:        mgr,
-		bld:        bld,
-		configPath: configPath,
-		outputRoot: outputRoot,
-		dockerCfg:  cfg,
-		db:         db,
+		mgr:          mgr,
+		bld:          bld,
+		configPath:   configPath,
+		outputRoot:   outputRoot,
+		dockerCfg:    cfg,
+		db:           db,
+		analysisJobs: map[string]*analysisJob{},
 	}
 	s.automation = NewAutomationScheduler(s)
 	s.mux = http.NewServeMux()
@@ -206,7 +213,7 @@ func (s *Server) Close() error {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -226,6 +233,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/environment/install", s.handleEnvironmentInstall)
 	s.mux.HandleFunc("/api/runs", s.handleRuns)
 	s.mux.HandleFunc("/api/runs/", s.handleRunSub)
+	s.mux.HandleFunc("/api/generated-sets", s.handleGeneratedSets)
+	s.mux.HandleFunc("/api/generated-sets/", s.handleGeneratedSetSub)
 	s.mux.HandleFunc("/api/assets/runs", s.handleAssets)
 	s.mux.HandleFunc("/api/models", s.handleModels)
 	s.mux.HandleFunc("/api/models/test-all", s.handleTestAllModels)
@@ -234,6 +243,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/agents/install-cli", s.handleAgentInstallCLI)
 	s.mux.HandleFunc("/api/agents/frameworks", s.handleAgentFrameworks)
 	s.mux.HandleFunc("/api/agents/skills", s.handleAgentSkills)
+	s.mux.HandleFunc("/api/agents/skills/", s.handleAgentSkillsSub)
 	s.mux.HandleFunc("/api/agents/skills/upload", s.handleAgentSkillsUpload)
 	s.mux.HandleFunc("/api/agents/skills/command", s.handleAgentSkillsCommand)
 	s.mux.HandleFunc("/api/agents/skills/scan", s.handleAgentSkillsScan)
@@ -247,6 +257,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/db/overview", s.handleDBOverview)
 	s.mux.HandleFunc("/api/db/runs", s.handleDBRuns)
 	s.mux.HandleFunc("/api/db/results", s.handleDBResults)
+	s.mux.HandleFunc("/api/db/skill-version-comparison", s.handleDBSkillVersionComparison)
 	s.mux.HandleFunc("/api/db/artifacts", s.handleDBArtifacts)
 	s.mux.HandleFunc("/api/db/facets", s.handleDBFacets)
 	s.mux.HandleFunc("/api/db/ingest-run", s.handleDBIngestRun)
@@ -339,6 +350,339 @@ func (s *Server) handleDBOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, overview)
 }
 
+type generatedSetPromoteRequest struct {
+	RunID              string `json:"run_id"`
+	SourceManifestPath string `json:"source_manifest_path"`
+	Name               string `json:"name"`
+	Note               string `json:"note"`
+	Status             string `json:"status"`
+}
+
+type generatedSetUpdateRequest struct {
+	Name   string `json:"name"`
+	Note   string `json:"note"`
+	Status string `json:"status"`
+}
+
+type generatedSetEvaluateRequest struct {
+	RunID           string `json:"run_id"`
+	UseDocker       *bool  `json:"use_docker"`
+	Workers         int    `json:"workers"`
+	MutationEnabled *bool  `json:"mutation_enabled"`
+	MutationTimeout int    `json:"mutation_timeout"`
+	MutationPolicy  string `json:"mutation_policy"`
+	ReuseEvaluation bool   `json:"reuse_evaluation"`
+	Ingest          *bool  `json:"ingest"`
+}
+
+func (s *Server) handleGeneratedSets(w http.ResponseWriter, r *http.Request) {
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := db.ListGeneratedSets(r.Context(), r.URL.Query().Get("status"), parseLimit(r, 100))
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, rows)
+	case http.MethodPost:
+		var req generatedSetPromoteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			errJSON(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		manifestPath := strings.TrimSpace(req.SourceManifestPath)
+		if manifestPath == "" && strings.TrimSpace(req.RunID) != "" {
+			manifestPath = filepath.Join(s.outputRoot, "runs", strings.TrimSpace(req.RunID), "generated", "generated_manifest.json")
+		}
+		if manifestPath == "" {
+			errJSON(w, http.StatusBadRequest, "run_id or source_manifest_path is required")
+			return
+		}
+		if _, err := os.Stat(s.resolveWebPath(manifestPath)); err != nil {
+			errJSON(w, http.StatusNotFound, "generated manifest not found: "+manifestPath)
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" && strings.TrimSpace(req.RunID) != "" {
+			if label := s.loadRunLabel(strings.TrimSpace(req.RunID)); label != "" {
+				name = label
+			}
+		}
+		set, err := db.PromoteGeneratedSetFromManifest(r.Context(), store.PromoteGeneratedSetOptions{
+			Name:               name,
+			Note:               req.Note,
+			Status:             req.Status,
+			SourceRunID:        strings.TrimSpace(req.RunID),
+			SourceManifestPath: manifestPath,
+		})
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		set, err = s.ensureGeneratedSetDockerManifest(r.Context(), db, set)
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, set)
+	default:
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleGeneratedSetSub(w http.ResponseWriter, r *http.Request) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/generated-sets/"), "/")
+	if path == "" {
+		errJSON(w, http.StatusNotFound, "generated set id is required")
+		return
+	}
+	parts := strings.Split(path, "/")
+	id := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	switch {
+	case action == "" && r.Method == http.MethodGet:
+		set, err := db.GetGeneratedSet(r.Context(), id)
+		if errors.Is(err, sql.ErrNoRows) {
+			errJSON(w, http.StatusNotFound, "generated set not found")
+			return
+		}
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		samples, err := db.ListGeneratedSetSamples(r.Context(), id, parseLimit(r, 500))
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"set": set, "samples": samples})
+	case action == "" && r.Method == http.MethodPatch:
+		var req generatedSetUpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			errJSON(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		set, err := db.UpdateGeneratedSet(r.Context(), id, store.UpdateGeneratedSetOptions{
+			Name:   req.Name,
+			Note:   req.Note,
+			Status: req.Status,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			errJSON(w, http.StatusNotFound, "generated set not found")
+			return
+		}
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, set)
+	case action == "samples" && r.Method == http.MethodGet:
+		samples, err := db.ListGeneratedSetSamples(r.Context(), id, parseLimit(r, 500))
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, samples)
+	case action == "evaluate" && r.Method == http.MethodPost:
+		s.handleGeneratedSetEvaluate(w, r, db, id)
+	default:
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleGeneratedSetEvaluate(w http.ResponseWriter, r *http.Request, db *store.SQLiteStore, id string) {
+	var req generatedSetEvaluateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		errJSON(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	set, err := db.GetGeneratedSet(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		errJSON(w, http.StatusNotFound, "generated set not found")
+		return
+	}
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	useDocker := req.UseDocker == nil || *req.UseDocker
+	if useDocker && !isDockerReady(s.dockerCfg) {
+		errJSON(w, http.StatusConflict, "Docker image is not ready; generated set evaluation requires Docker by default")
+		return
+	}
+	if useDocker {
+		set, err = s.ensureGeneratedSetDockerManifest(r.Context(), db, set)
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	hostManifestPath := s.resolveWebPath(set.ManifestPath)
+	manifest, err := contracts.ReadGeneratedManifest(hostManifestPath)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "read generated set manifest: "+err.Error())
+		return
+	}
+	runID := strings.TrimSpace(req.RunID)
+	if runID == "" {
+		runID = contracts.NewRunID()
+	}
+	spec := manifest.Spec
+	spec.RunID = runID
+	spec.CreatedAtUTC = time.Now().UTC()
+	spec.OutputRoot = s.outputRoot
+	spec.DatasetRoot = s.mgr.datasetRoot
+	spec.ConfigPath = s.configPath
+	spec.DBPath = s.mgr.dbPath
+	if req.Workers > 0 {
+		spec.Workers = req.Workers
+	}
+	models, languages := generatedSetManifestDims(manifest.Cases)
+	if len(spec.Models) == 0 {
+		spec.Models = models
+	}
+	if len(spec.Languages) == 0 {
+		spec.Languages = languages
+	}
+	if req.MutationEnabled == nil {
+		spec.MutationEnabled = true
+	} else {
+		spec.MutationEnabled = *req.MutationEnabled
+	}
+	if req.MutationTimeout > 0 {
+		spec.MutationTimeout = req.MutationTimeout
+	} else if spec.MutationTimeout == 0 {
+		spec.MutationTimeout = 1800
+	}
+	if strings.TrimSpace(req.MutationPolicy) != "" {
+		spec.MutationPolicy = req.MutationPolicy
+	} else if spec.MutationPolicy == "" {
+		spec.MutationPolicy = "warn"
+	}
+	spec.ReuseGenerated = false
+	spec.ReuseEvaluation = req.ReuseEvaluation
+
+	manifestPath := hostManifestPath
+	if useDocker && strings.TrimSpace(set.DockerManifestPath) != "" {
+		manifestPath = s.resolveWebPath(set.DockerManifestPath)
+	}
+	ingest := true
+	if req.Ingest != nil {
+		ingest = *req.Ingest
+	}
+	entry := s.mgr.Submit(spec, orchestrator.Options{
+		Phase:        "evaluate",
+		SourceRunID:  runID,
+		ManifestPath: manifestPath,
+		Ingest:       ingest,
+		DBPath:       s.mgr.dbPath,
+	}, useDocker)
+	s.cacheMu.Lock()
+	s.runsCache = nil
+	s.cacheMu.Unlock()
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"run_id":           entry.RunID,
+		"status":           string(entry.Status),
+		"generated_set_id": id,
+		"manifest_path":    manifestPath,
+		"use_docker":       useDocker,
+	})
+}
+
+func (s *Server) ensureGeneratedSetDockerManifest(ctx context.Context, db *store.SQLiteStore, set store.GeneratedSetItem) (store.GeneratedSetItem, error) {
+	hostManifestPath := s.resolveWebPath(set.ManifestPath)
+	if strings.TrimSpace(hostManifestPath) == "" {
+		return set, fmt.Errorf("generated set manifest path is empty")
+	}
+	manifest, err := contracts.ReadGeneratedManifest(hostManifestPath)
+	if err != nil {
+		return set, err
+	}
+	outputDir := s.resolveWebPath(set.OutputDir)
+	if strings.TrimSpace(outputDir) == "" {
+		outputDir = filepath.Dir(hostManifestPath)
+	}
+	dockerPath := s.resolveWebPath(set.DockerManifestPath)
+	if strings.TrimSpace(dockerPath) == "" {
+		dockerPath = filepath.Join(outputDir, "generated_manifest.docker.json")
+	}
+	spec := manifest.Spec
+	spec.OutputRoot = s.outputRoot
+	spec.DatasetRoot = s.mgr.datasetRoot
+	spec.ConfigPath = s.configPath
+	if spec.DBPath == "" {
+		spec.DBPath = s.mgr.dbPath
+	}
+	if _, err := s.mgr.writeDockerGeneratedManifest(spec, hostManifestPath, dockerPath); err != nil {
+		return set, err
+	}
+	return db.UpdateGeneratedSet(ctx, set.GeneratedSetID, store.UpdateGeneratedSetOptions{
+		Name:               set.Name,
+		Note:               set.Note,
+		Status:             set.Status,
+		ManifestPath:       set.ManifestPath,
+		DockerManifestPath: dockerPath,
+	})
+}
+
+func (s *Server) resolveWebPath(path string) string {
+	raw := strings.TrimSpace(path)
+	if raw == "" {
+		return ""
+	}
+	p := filepath.FromSlash(raw)
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidate := filepath.Join(cwd, p)
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate
+		}
+	}
+	return p
+}
+
+func generatedSetManifestDims(cases []contracts.GeneratedCase) ([]string, []string) {
+	modelSet := map[string]struct{}{}
+	languageSet := map[string]struct{}{}
+	for _, c := range cases {
+		if strings.TrimSpace(c.Model) != "" {
+			modelSet[c.Model] = struct{}{}
+		}
+		if strings.TrimSpace(c.Language) != "" {
+			languageSet[c.Language] = struct{}{}
+		}
+	}
+	models := make([]string, 0, len(modelSet))
+	for value := range modelSet {
+		models = append(models, value)
+	}
+	languages := make([]string, 0, len(languageSet))
+	for value := range languageSet {
+		languages = append(languages, value)
+	}
+	sort.Strings(models)
+	sort.Strings(languages)
+	return models, languages
+}
+
 func (s *Server) handleDBRuns(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -369,6 +713,25 @@ func (s *Server) handleDBResults(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	rows, err := db.ListResults(r.Context(), q.Get("run_id"), q.Get("model"), q.Get("language"), parseLimit(r, 200))
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (s *Server) handleDBSkillVersionComparison(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	db, err := s.openStore(r.Context())
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	rows, err := db.SkillVersionComparison(r.Context(), q.Get("skill"), q.Get("framework"), q.Get("model"))
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
@@ -666,8 +1029,21 @@ type frameworkInfo struct {
 }
 
 type skillInfo struct {
-	Name                 string   `json:"name"`
-	Version              string   `json:"version,omitempty"`
+	Name                 string             `json:"name"`
+	Version              string             `json:"version,omitempty"`
+	DefaultVersion       string             `json:"default_version,omitempty"`
+	Description          string             `json:"description,omitempty"`
+	InstructionPath      string             `json:"instruction_path,omitempty"`
+	Files                []string           `json:"files,omitempty"`
+	InjectMode           string             `json:"inject_mode,omitempty"`
+	CompatibleFrameworks []string           `json:"compatible_frameworks,omitempty"`
+	CompatibleLanguages  []string           `json:"compatible_languages,omitempty"`
+	Versions             []skillVersionInfo `json:"versions,omitempty"`
+}
+
+type skillVersionInfo struct {
+	Version              string   `json:"version"`
+	Default              bool     `json:"default"`
 	Description          string   `json:"description,omitempty"`
 	InstructionPath      string   `json:"instruction_path,omitempty"`
 	Files                []string `json:"files,omitempty"`
@@ -677,28 +1053,37 @@ type skillInfo struct {
 }
 
 type subjectInfo struct {
-	ID          string   `json:"id"`
-	Kind        string   `json:"kind"`
-	Framework   string   `json:"framework"`
-	Model       string   `json:"model"`
-	Skill       string   `json:"skill"`
-	SandboxMode string   `json:"sandbox_mode,omitempty"`
-	Labels      []string `json:"labels,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
+	ID           string   `json:"id"`
+	Kind         string   `json:"kind"`
+	Framework    string   `json:"framework"`
+	Model        string   `json:"model"`
+	Skill        string   `json:"skill"`
+	SkillVersion string   `json:"skill_version,omitempty"`
+	SandboxMode  string   `json:"sandbox_mode,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
 }
 
 type configResponse struct {
-	Models            []modelInfo     `json:"models"`
-	Frameworks        []frameworkInfo `json:"frameworks,omitempty"`
-	Skills            []skillInfo     `json:"skills,omitempty"`
-	Subjects          []subjectInfo   `json:"subjects,omitempty"`
-	Languages         []string        `json:"languages"`
-	Scenarios         []string        `json:"scenarios"`
-	Classes           []string        `json:"classes"`
-	DatasetRoot       string          `json:"dataset_root"`
-	ConfigPath        string          `json:"config_path"`
-	AgentsConfigPath  string          `json:"agents_config_path,omitempty"`
-	AgentsConfigError string          `json:"agents_config_error,omitempty"`
+	Models            []modelInfo                                `json:"models"`
+	Frameworks        []frameworkInfo                            `json:"frameworks,omitempty"`
+	Skills            []skillInfo                                `json:"skills,omitempty"`
+	Subjects          []subjectInfo                              `json:"subjects,omitempty"`
+	Languages         []string                                   `json:"languages"`
+	Scenarios         []string                                   `json:"scenarios"`
+	ScenariosByClass  map[string][]string                        `json:"scenarios_by_class,omitempty"`
+	ProjectsByDataset map[string]map[string][]datasetProjectInfo `json:"projects_by_dataset,omitempty"`
+	Classes           []string                                   `json:"classes"`
+	DatasetRoot       string                                     `json:"dataset_root"`
+	ConfigPath        string                                     `json:"config_path"`
+	AgentsConfigPath  string                                     `json:"agents_config_path,omitempty"`
+	AgentsConfigError string                                     `json:"agents_config_error,omitempty"`
+}
+
+type datasetProjectInfo struct {
+	Name        string   `json:"name"`
+	Languages   []string `json:"languages,omitempty"`
+	SampleCount int      `json:"sample_count"`
 }
 
 type modelsYAML struct {
@@ -801,7 +1186,7 @@ func (s *Server) loadWebCatalog() (webCatalog, error) {
 	}
 	fmt.Printf("[web] agents config loaded: %d subjects, models=%v\n", len(resolved), modelNames)
 	frameworkSeen := map[string]frameworkInfo{}
-	skillSeen := map[string]skillInfo{}
+	skillSeen := map[string]*skillInfo{}
 	subjects := make([]subjectInfo, 0, len(resolved))
 	for _, item := range resolved {
 		if item.Framework.Name != "" {
@@ -822,26 +1207,48 @@ func (s *Server) loadWebCatalog() (webCatalog, error) {
 			}
 		}
 		if item.Skill.Name != "" {
-			skillSeen[item.Skill.Name] = skillInfo{
-				Name:                 item.Skill.Name,
+			info := skillSeen[item.Skill.Name]
+			if info == nil {
+				info = &skillInfo{
+					Name:                 item.Skill.Name,
+					Version:              item.Skill.Version,
+					DefaultVersion:       item.Skill.DefaultVersion,
+					Description:          item.Skill.Description,
+					InstructionPath:      item.Skill.InstructionPath,
+					Files:                append([]string{}, item.Skill.Files...),
+					InjectMode:           item.Skill.InjectMode,
+					CompatibleFrameworks: append([]string{}, item.Skill.CompatibleFrameworks...),
+					CompatibleLanguages:  append([]string{}, item.Skill.CompatibleLanguages...),
+				}
+				skillSeen[item.Skill.Name] = info
+			}
+			if info.DefaultVersion == "" {
+				info.DefaultVersion = item.Skill.DefaultVersion
+			}
+			if info.Version == "" || item.Skill.Version == info.DefaultVersion {
+				info.Version = item.Skill.Version
+			}
+			info.Versions = appendSkillVersionInfo(info.Versions, skillVersionInfo{
 				Version:              item.Skill.Version,
+				Default:              item.Skill.Version != "" && item.Skill.Version == item.Skill.DefaultVersion,
 				Description:          item.Skill.Description,
 				InstructionPath:      item.Skill.InstructionPath,
 				Files:                append([]string{}, item.Skill.Files...),
 				InjectMode:           item.Skill.InjectMode,
 				CompatibleFrameworks: append([]string{}, item.Skill.CompatibleFrameworks...),
 				CompatibleLanguages:  append([]string{}, item.Skill.CompatibleLanguages...),
-			}
+			})
 		}
 		subjects = append(subjects, subjectInfo{
-			ID:          item.Spec.ID,
-			Kind:        item.Spec.Kind,
-			Framework:   item.Spec.Framework,
-			Model:       item.Spec.Model,
-			Skill:       item.Spec.Skill,
-			SandboxMode: item.Framework.SandboxMode,
-			Labels:      append([]string{}, item.Spec.Labels...),
-			Tags:        append([]string{}, item.Spec.Tags...),
+			ID:           item.Spec.ID,
+			Kind:         item.Spec.Kind,
+			Framework:    item.Spec.Framework,
+			Model:        item.Spec.Model,
+			Skill:        item.Spec.Skill,
+			SkillVersion: item.Spec.SkillVersion,
+			SandboxMode:  item.Framework.SandboxMode,
+			Labels:       append([]string{}, item.Spec.Labels...),
+			Tags:         append([]string{}, item.Spec.Tags...),
 		})
 	}
 	catalog.frameworks = make([]frameworkInfo, 0, len(frameworkSeen))
@@ -851,12 +1258,28 @@ func (s *Server) loadWebCatalog() (webCatalog, error) {
 	sort.Slice(catalog.frameworks, func(i, j int) bool { return catalog.frameworks[i].Name < catalog.frameworks[j].Name })
 	catalog.skills = make([]skillInfo, 0, len(skillSeen))
 	for _, v := range skillSeen {
-		catalog.skills = append(catalog.skills, v)
+		sort.Slice(v.Versions, func(i, j int) bool { return v.Versions[i].Version < v.Versions[j].Version })
+		catalog.skills = append(catalog.skills, *v)
 	}
 	sort.Slice(catalog.skills, func(i, j int) bool { return catalog.skills[i].Name < catalog.skills[j].Name })
 	sort.Slice(subjects, func(i, j int) bool { return subjects[i].ID < subjects[j].ID })
 	catalog.subjects = subjects
 	return catalog, nil
+}
+
+func appendSkillVersionInfo(items []skillVersionInfo, item skillVersionInfo) []skillVersionInfo {
+	if strings.TrimSpace(item.Version) == "" {
+		return items
+	}
+	for i := range items {
+		if items[i].Version == item.Version {
+			if item.Default {
+				items[i].Default = true
+			}
+			return items
+		}
+	}
+	return append(items, item)
 }
 
 func deriveModelsFromSubjects(subjectIDs []string, subjects []subjectInfo) []string {
@@ -1190,6 +1613,25 @@ type runAgentSkillCommandRequest struct {
 	Command   string `json:"command"`
 }
 
+type createSkillVersionDraftRequest struct {
+	SourceRunID     string `json:"source_run_id"`
+	BaseVersion     string `json:"base_version"`
+	EvolutionItemID string `json:"evolution_item_id"`
+	Version         string `json:"version"`
+}
+
+type skillVersionManifest struct {
+	SkillName             string    `json:"skill_name"`
+	Version               string    `json:"version"`
+	BaseVersion           string    `json:"base_version,omitempty"`
+	SourceRunID           string    `json:"source_run_id,omitempty"`
+	SourceEvolutionItemID string    `json:"source_evolution_item_id,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
+	Status                string    `json:"status"`
+	Files                 []string  `json:"files"`
+	ContentSHA256         string    `json:"content_sha256"`
+}
+
 func (s *Server) handleAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1246,6 +1688,99 @@ func (s *Server) handleAgentSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"installed": installed,
 		"errors":    errors,
+	})
+}
+
+func (s *Server) handleAgentSkillsSub(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/agents/skills/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[1] == "versions" && parts[2] == "drafts" {
+		s.handleAgentSkillVersionDraft(w, r, parts[0])
+		return
+	}
+	errJSON(w, http.StatusNotFound, "unknown skill endpoint")
+}
+
+func (s *Server) handleAgentSkillVersionDraft(w http.ResponseWriter, r *http.Request, skillName string) {
+	if r.Method != http.MethodPost {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	skillName = sanitizeAgentSkillName(skillName)
+	if skillName == "" || skillName == agentconfig.NoSkill {
+		errJSON(w, http.StatusBadRequest, "valid skill name is required")
+		return
+	}
+	var req createSkillVersionDraftRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	agentsConfigPath := strings.TrimSpace(s.mgr.agentsConfigPath)
+	if agentsConfigPath == "" {
+		errJSON(w, http.StatusBadRequest, "agents config path is not configured")
+		return
+	}
+	version := strings.TrimSpace(req.Version)
+	if version == "" {
+		version = defaultSkillDraftVersion(req.SourceRunID)
+	}
+	version = sanitizeSkillVersion(version)
+	if version == "" {
+		errJSON(w, http.StatusBadRequest, "valid version is required")
+		return
+	}
+	baseVersion := strings.TrimSpace(req.BaseVersion)
+	content, sourceDetail := s.buildSkillDraftContent(skillName, baseVersion, req.SourceRunID, req.EvolutionItemID)
+	baseDir := filepath.Dir(agentsConfigPath)
+	draftDir := filepath.Join(baseDir, "skills", skillName, "versions", version)
+	if _, err := os.Stat(draftDir); err == nil {
+		errJSON(w, http.StatusConflict, "skill version draft already exists: "+version)
+		return
+	}
+	if err := os.MkdirAll(draftDir, 0o755); err != nil {
+		errJSON(w, http.StatusInternalServerError, "create draft dir: "+err.Error())
+		return
+	}
+	instructionPath := filepath.Join(draftDir, "SKILL.md")
+	if err := os.WriteFile(instructionPath, []byte(content), 0o644); err != nil {
+		errJSON(w, http.StatusInternalServerError, "write draft skill: "+err.Error())
+		return
+	}
+	sum := sha256.Sum256([]byte(content))
+	manifest := skillVersionManifest{
+		SkillName:             skillName,
+		Version:               version,
+		BaseVersion:           baseVersion,
+		SourceRunID:           strings.TrimSpace(req.SourceRunID),
+		SourceEvolutionItemID: strings.TrimSpace(req.EvolutionItemID),
+		CreatedAt:             time.Now().UTC(),
+		Status:                "draft",
+		Files:                 []string{"SKILL.md"},
+		ContentSHA256:         hex.EncodeToString(sum[:]),
+	}
+	manifestPath := filepath.Join(draftDir, "skill_version_manifest.json")
+	if err := contracts.WriteJSON(manifestPath, manifest); err != nil {
+		errJSON(w, http.StatusInternalServerError, "write draft manifest: "+err.Error())
+		return
+	}
+	relInstruction, _ := filepath.Rel(baseDir, instructionPath)
+	if err := appendSkillVersionDraftToYAML(agentsConfigPath, skillName, version, baseVersion, filepath.ToSlash(relInstruction), sourceDetail); err != nil {
+		errJSON(w, http.StatusInternalServerError, "update agents config: "+err.Error())
+		return
+	}
+	s.cacheMu.Lock()
+	s.catalogCache = nil
+	s.cacheMu.Unlock()
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"skill_name":     skillName,
+		"version":        version,
+		"base_version":   baseVersion,
+		"draft_dir":      draftDir,
+		"instruction":    instructionPath,
+		"manifest":       manifestPath,
+		"content_sha256": manifest.ContentSHA256,
+		"status":         "draft",
 	})
 }
 
@@ -1491,6 +2026,195 @@ func (s *Server) handleAgentSkillsScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"packages": pkgs, "skill_root": skillRoot})
+}
+
+func (s *Server) buildSkillDraftContent(skillName, baseVersion, sourceRunID, evolutionItemID string) (string, string) {
+	var baseContent string
+	var sourceDetail string
+	if catalog, err := s.loadWebCatalogCached(); err == nil {
+		for _, skill := range catalog.skills {
+			if skill.Name != skillName {
+				continue
+			}
+			for _, version := range skill.Versions {
+				if baseVersion != "" && version.Version != baseVersion {
+					continue
+				}
+				if baseVersion == "" && !version.Default {
+					continue
+				}
+				if raw, err := os.ReadFile(version.InstructionPath); err == nil {
+					baseContent = string(raw)
+				}
+				baseVersion = version.Version
+				break
+			}
+			if baseContent == "" && skill.InstructionPath != "" {
+				if raw, err := os.ReadFile(skill.InstructionPath); err == nil {
+					baseContent = string(raw)
+				}
+			}
+			break
+		}
+	}
+	evolutionText := ""
+	if sourceRunID != "" {
+		analysisPath := filepath.Join(s.outputRoot, "runs", sourceRunID, "analysis", "analysis_report.json")
+		var report contracts.AnalysisReport
+		if err := readJSONFile(analysisPath, &report); err == nil && report.EvolutionPlan != nil {
+			for _, item := range report.EvolutionPlan.Items {
+				if evolutionItemID != "" && item.ID != evolutionItemID {
+					continue
+				}
+				if item.Target != "skill" && evolutionItemID == "" {
+					continue
+				}
+				evolutionText = fmt.Sprintf("来源 run: %s\n来源建议: %s\n原因: %s\n预计影响: %s\n风险: %s\n人工验收: %s\n",
+					sourceRunID, item.Title, item.Reason, strings.Join(item.ExpectedMetrics, ", "), strings.Join(item.Risks, "；"), strings.Join(item.ManualVerification, "；"))
+				sourceDetail = item.Title
+				break
+			}
+		}
+	}
+	if sourceDetail == "" {
+		sourceDetail = "自进化候选版本"
+	}
+	if strings.TrimSpace(baseContent) == "" {
+		baseContent = "# " + skillName + "\n\n请基于目标语言和被测代码生成高质量、可运行、可评测的单元测试。\n"
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(baseContent, "\r\n"))
+	b.WriteString("\n\n## 自进化草稿说明\n\n")
+	if baseVersion != "" {
+		b.WriteString("- 基线版本: " + baseVersion + "\n")
+	}
+	if evolutionText != "" {
+		for _, line := range strings.Split(strings.TrimSpace(evolutionText), "\n") {
+			b.WriteString("- " + line + "\n")
+		}
+	} else if sourceRunID != "" {
+		b.WriteString("- 来源 run: " + sourceRunID + "\n")
+	}
+	b.WriteString("- 状态: draft，需人工审查后再用于正式评测。\n")
+	return b.String(), sourceDetail
+}
+
+func defaultSkillDraftVersion(sourceRunID string) string {
+	stamp := time.Now().UTC().Format("200601021504")
+	sourceRunID = sanitizeSkillVersion(sourceRunID)
+	if sourceRunID != "" {
+		if len(sourceRunID) > 18 {
+			sourceRunID = sourceRunID[:18]
+		}
+		return "v" + stamp + "-" + sourceRunID
+	}
+	return "v" + stamp
+}
+
+func sanitizeSkillVersion(version string) string {
+	version = strings.TrimSpace(version)
+	var b strings.Builder
+	for _, r := range version {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		}
+	}
+	return strings.Trim(b.String(), "-_.")
+}
+
+func appendSkillVersionDraftToYAML(path, skillName, version, baseVersion, instructionPath, description string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("cannot read agents config: %w", err)
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return fmt.Errorf("cannot parse agents config: %w", err)
+	}
+	doc := ensureYAMLDocument(&root)
+	skills := ensureMappingChild(doc, "skills")
+	skillNode := mappingChild(skills, skillName)
+	if skillNode == nil || skillNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("skill %q not found", skillName)
+	}
+	defaultVersion := scalarValue(mappingChild(skillNode, "default_version"))
+	if defaultVersion == "" {
+		defaultVersion = scalarValue(mappingChild(skillNode, "version"))
+	}
+	if defaultVersion == "" {
+		defaultVersion = firstNonEmptyString(baseVersion, "v1")
+	}
+	setMappingChild(skillNode, "default_version", scalarNode(defaultVersion))
+	versions := ensureMappingChild(skillNode, "versions")
+	if mappingChild(versions, defaultVersion) == nil {
+		versions.Content = append(versions.Content, scalarNode(defaultVersion), legacySkillVersionNode(skillNode))
+	}
+	if mappingChild(versions, version) != nil {
+		return fmt.Errorf("skill version %q already exists", version)
+	}
+	versions.Content = append(versions.Content, scalarNode(version), mappingNode(
+		"description", scalarNode(strings.TrimSpace(description)),
+		"instruction_path", scalarNode("./"+strings.TrimPrefix(filepath.ToSlash(instructionPath), "./")),
+		"files", stringSeqNode([]string{"./" + strings.TrimPrefix(filepath.ToSlash(filepath.Dir(instructionPath)), "./") + "/"}),
+	))
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		return fmt.Errorf("cannot encode agents config: %w", err)
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return fmt.Errorf("cannot write agents config: %w", err)
+	}
+	return nil
+}
+
+func legacySkillVersionNode(skillNode *yaml.Node) *yaml.Node {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	for _, key := range []string{"description", "instruction_path", "files", "inject_mode", "compatible_frameworks", "compatible_languages"} {
+		if child := mappingChild(skillNode, key); child != nil {
+			node.Content = append(node.Content, scalarNode(key), cloneYAMLNode(child))
+		}
+	}
+	return node
+}
+
+func cloneYAMLNode(node *yaml.Node) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	cp := *node
+	cp.Content = make([]*yaml.Node, len(node.Content))
+	for i, child := range node.Content {
+		cp.Content[i] = cloneYAMLNode(child)
+	}
+	return &cp
+}
+
+func scalarValue(node *yaml.Node) string {
+	if node == nil {
+		return ""
+	}
+	return strings.TrimSpace(node.Value)
+}
+
+func setMappingChild(parent *yaml.Node, key string, value *yaml.Node) {
+	if parent == nil || parent.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			parent.Content[i+1] = value
+			return
+		}
+	}
+	parent.Content = append(parent.Content, scalarNode(key), value)
+}
+
+func readJSONFile(path string, out any) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
 }
 
 // skillMeta 描述从 SKILL.md 提取的 skill 元信息。
@@ -1856,7 +2580,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Skills:            catalog.skills,
 		Subjects:          catalog.subjects,
 		Languages:         contracts.SupportedLanguages,
-		Scenarios:         contracts.SupportedScenarios,
+		Scenarios:         mergedDatasetScenarios(s.mgr.datasetRoot),
+		ScenariosByClass:  datasetScenariosByClass(s.mgr.datasetRoot),
+		ProjectsByDataset: datasetProjectsByScenario(s.mgr.datasetRoot),
 		Classes:           []string{"self_contained", "repo_level"},
 		DatasetRoot:       s.mgr.datasetRoot,
 		ConfigPath:        s.configPath,
@@ -1880,6 +2606,63 @@ type runSummaryItem struct {
 	IsMergedReport bool              `json:"is_merged_report,omitempty"`
 	SourceRunIDs   []string          `json:"source_run_ids,omitempty"`
 	ResultCount    int               `json:"result_count,omitempty"`
+}
+
+type diskRunSummary struct {
+	RunID          string            `json:"run_id"`
+	Label          string            `json:"label"`
+	CreatedAtUTC   string            `json:"created_at_utc"`
+	StartedAtUTC   string            `json:"started_at_utc"`
+	CompletedAtUTC string            `json:"completed_at_utc"`
+	EndedAtUTC     string            `json:"ended_at_utc"`
+	Spec           contracts.RunSpec `json:"spec"`
+	Backend        string            `json:"backend"`
+	IsMergedReport bool              `json:"is_merged_report"`
+	SourceRunIDs   []string          `json:"source_run_ids"`
+	ResultCount    int               `json:"result_count"`
+}
+
+func decodeDiskRunSummary(data []byte) (diskRunSummary, error) {
+	var raw diskRunSummary
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return raw, err
+	}
+	return raw, nil
+}
+
+func parseDiskRunSummaryTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func diskRunStartedAt(raw diskRunSummary) time.Time {
+	if !raw.Spec.CreatedAtUTC.IsZero() {
+		return raw.Spec.CreatedAtUTC
+	}
+	if t, ok := parseDiskRunSummaryTime(raw.StartedAtUTC); ok {
+		return t
+	}
+	if t, ok := parseDiskRunSummaryTime(raw.CreatedAtUTC); ok {
+		return t
+	}
+	return time.Time{}
+}
+
+func diskRunEndedAt(raw diskRunSummary) *time.Time {
+	for _, value := range []string{raw.CompletedAtUTC, raw.EndedAtUTC, raw.CreatedAtUTC} {
+		if t, ok := parseDiskRunSummaryTime(value); ok {
+			return &t
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -1922,6 +2705,7 @@ func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request) {
 				EndedAt:   entry.EndedAt,
 				Error:     entry.Error,
 				Spec:      entry.Spec,
+				UseDocker: entry.UseDocker,
 			}
 			entry.mu.RUnlock()
 		}
@@ -1947,21 +2731,12 @@ func (s *Server) listRunsFromDisk(w http.ResponseWriter, activeRuns []*RunEntry,
 	pattern := filepath.Join(s.outputRoot, "runs", "*", "run_summary.json")
 	matches, _ := filepath.Glob(pattern)
 	for _, path := range matches {
-		var raw struct {
-			RunID          string            `json:"run_id"`
-			Label          string            `json:"label"`
-			CreatedAtUTC   string            `json:"created_at_utc"`
-			Spec           contracts.RunSpec `json:"spec"`
-			Backend        string            `json:"backend"`
-			IsMergedReport bool              `json:"is_merged_report"`
-			SourceRunIDs   []string          `json:"source_run_ids"`
-			ResultCount    int               `json:"result_count"`
-		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		if err := json.Unmarshal(data, &raw); err != nil {
+		raw, err := decodeDiskRunSummary(data)
+		if err != nil {
 			continue
 		}
 		runID := strings.TrimSpace(raw.RunID)
@@ -1969,12 +2744,12 @@ func (s *Server) listRunsFromDisk(w http.ResponseWriter, activeRuns []*RunEntry,
 			continue
 		}
 		if _, exists := byID[runID]; !exists {
-			t, _ := time.Parse(time.RFC3339Nano, raw.CreatedAtUTC)
 			byID[runID] = runSummaryItem{
 				RunID:          runID,
 				Label:          raw.Label,
 				Status:         StatusCompleted,
-				StartedAt:      t,
+				StartedAt:      diskRunStartedAt(raw),
+				EndedAt:        diskRunEndedAt(raw),
 				Spec:           raw.Spec,
 				UseDocker:      strings.EqualFold(strings.TrimSpace(raw.Backend), "docker"),
 				IsMergedReport: raw.IsMergedReport,
@@ -1995,6 +2770,7 @@ func (s *Server) listRunsFromDisk(w http.ResponseWriter, activeRuns []*RunEntry,
 			EndedAt:   entry.EndedAt,
 			Error:     entry.Error,
 			Spec:      entry.Spec,
+			UseDocker: entry.UseDocker,
 		}
 		entry.mu.RUnlock()
 		byID[entry.RunID] = item
@@ -2026,12 +2802,13 @@ type createRunRequest struct {
 	Languages       []string `json:"languages"`
 	Class           string   `json:"class"`
 	Scenario        string   `json:"scenario"`
+	Project         string   `json:"project"`
 	Level           string   `json:"level"`
 	MaxSamples      int      `json:"max_samples"`
 	Workers         int      `json:"workers"`
 	Mode            string   `json:"mode"`
 	DryRun          bool     `json:"dry_run"`
-	ReuseGenerated  bool     `json:"reuse_generated"`
+	ReuseGenerated  *bool    `json:"reuse_generated"`
 	ReuseEvaluation bool     `json:"reuse_evaluation"`
 	MutationEnabled bool     `json:"mutation_enabled"`
 	MutationTimeout int      `json:"mutation_timeout"`
@@ -2146,12 +2923,13 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		Languages:        req.Languages,
 		DatasetClasses:   classes,
 		DatasetScenario:  req.Scenario,
+		DatasetProject:   req.Project,
 		DatasetLevel:     req.Level,
 		DatasetRoot:      s.mgr.datasetRoot,
 		ConfigPath:       s.configPath,
 		Mode:             contracts.RunMode(mode),
 		DryRun:           req.DryRun,
-		ReuseGenerated:   req.ReuseGenerated,
+		ReuseGenerated:   req.ReuseGenerated == nil || *req.ReuseGenerated,
 		ReuseEvaluation:  req.ReuseEvaluation,
 		DBPath:           s.mgr.dbPath,
 		MutationEnabled:  req.MutationEnabled,
@@ -2195,11 +2973,28 @@ func (s *Server) handleRunSub(w http.ResponseWriter, r *http.Request) {
 		sub = parts[1]
 	}
 
+	if sub == "analysis/jobs" || strings.HasPrefix(sub, "analysis/jobs/") {
+		s.handleRunAnalysisJob(w, r, runID, strings.TrimPrefix(sub, "analysis/jobs"))
+		return
+	}
+	if sub == "analysis/chat" || strings.HasPrefix(sub, "analysis/chat/") {
+		s.handleRunAnalysisChat(w, r, runID, strings.TrimPrefix(sub, "analysis/chat"))
+		return
+	}
+	if sub == "analysis/subjects" {
+		s.handleRunAnalysisSubjects(w, r, runID)
+		return
+	}
+
 	switch sub {
 	case "events":
 		s.handleRunEvents(w, r, runID)
 	case "report":
 		s.handleRunReport(w, r, runID)
+	case "analysis":
+		s.handleRunAnalysis(w, r, runID)
+	case "optimization-plan":
+		s.handleRunOptimizationPlan(w, r, runID)
 	case "report-html":
 		s.handleRunReportHTML(w, r, runID)
 	case "rerun":
@@ -2281,10 +3076,8 @@ func (s *Server) handleRunRerun(w http.ResponseWriter, r *http.Request, runID st
 			errJSON(w, http.StatusNotFound, "run not found or summary missing: "+runID)
 			return
 		}
-		var raw struct {
-			Spec contracts.RunSpec `json:"spec"`
-		}
-		if err := json.Unmarshal(data, &raw); err != nil || raw.Spec.RunID == "" {
+		raw, err := decodeDiskRunSummary(data)
+		if err != nil || raw.Spec.RunID == "" {
 			errJSON(w, http.StatusInternalServerError, "run_summary.json missing spec")
 			return
 		}
@@ -2324,10 +3117,7 @@ func (s *Server) loadRunSpec(runID string) (contracts.RunSpec, error) {
 	// 优先从 run_summary.json 恢复
 	path := filepath.Join(s.outputRoot, "runs", runID, "run_summary.json")
 	if data, err := os.ReadFile(path); err == nil {
-		var raw struct {
-			Spec contracts.RunSpec `json:"spec"`
-		}
-		if err := json.Unmarshal(data, &raw); err == nil && raw.Spec.RunID != "" {
+		if raw, err := decodeDiskRunSummary(data); err == nil && raw.Spec.RunID != "" {
 			return raw.Spec, nil
 		}
 	}
@@ -2390,6 +3180,11 @@ func (s *Server) handleRunReevaluate(w http.ResponseWriter, r *http.Request, run
 		errJSON(w, http.StatusConflict, "Docker image is not ready; reevaluate requires Docker so evaluator tools are complete")
 		return
 	}
+	dockerManifestPath, err := s.mgr.prepareDockerGeneratedManifest(spec)
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "prepare docker manifest failed: "+err.Error())
+		return
+	}
 	// 异步执行评测，避免阻塞 HTTP 响应。
 	// 使用 s.mgr 的 stopCleaner channel 作为取消信号，确保服务器关闭时任务也会终止。
 	reevalCtx, reevalCancel := context.WithCancel(context.Background())
@@ -2403,7 +3198,7 @@ func (s *Server) handleRunReevaluate(w http.ResponseWriter, r *http.Request, run
 			case <-reevalCtx.Done():
 			}
 		}()
-		out, err := runEvaluateInDocker(reevalCtx, runID, spec, s.dockerCfg)
+		out, err := runEvaluateInDocker(reevalCtx, runID, spec, dockerManifestPath, s.dockerCfg)
 		if err != nil {
 			if reevalCtx.Err() != nil {
 				fmt.Printf("[reevaluate] run=%s canceled (server shutdown)\n", runID)
@@ -2415,10 +3210,12 @@ func (s *Server) handleRunReevaluate(w http.ResponseWriter, r *http.Request, run
 		fmt.Printf("[reevaluate] run=%s completed\n", runID)
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"run_id":        runID,
-		"manifest_path": manifestPath,
-		"status":        "reevaluation_started",
-		"message":       "Re-evaluation is running in the background. Check run status for completion.",
+		"run_id":               runID,
+		"manifest_path":        manifestPath,
+		"docker_manifest_path": dockerManifestPath,
+		"evaluation_path":      filepath.Join(s.outputRoot, "runs", runID, "evaluation", "evaluation_result.json"),
+		"status":               "reevaluation_started",
+		"message":              "Re-evaluation is running in the background. Check run status for completion.",
 	})
 }
 
@@ -2644,18 +3441,25 @@ func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request, runID stri
 	}
 	entry, ok := s.mgr.Get(runID)
 	if !ok {
-		spec, err := s.loadRunSpec(runID)
+		summaryPath := filepath.Join(s.outputRoot, "runs", runID, "run_summary.json")
+		data, err := os.ReadFile(summaryPath)
 		if err != nil {
 			errJSON(w, http.StatusNotFound, "run not found: "+runID)
 			return
 		}
-		label := s.loadRunLabel(runID)
+		raw, err := decodeDiskRunSummary(data)
+		if err != nil || raw.Spec.RunID == "" {
+			errJSON(w, http.StatusNotFound, "run not found: "+runID)
+			return
+		}
 		writeJSON(w, http.StatusOK, runDetailResponse{
-			RunID:  runID,
-			Label:  label,
-			Status: StatusCompleted,
-			Spec:   spec,
-			Logs:   []string{},
+			RunID:     runID,
+			Label:     raw.Label,
+			Status:    StatusCompleted,
+			StartedAt: diskRunStartedAt(raw),
+			EndedAt:   diskRunEndedAt(raw),
+			Spec:      raw.Spec,
+			Logs:      []string{},
 		})
 		return
 	}
@@ -2759,6 +3563,133 @@ func (s *Server) handleRunReport(w http.ResponseWriter, r *http.Request, runID s
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
+}
+
+type runAnalysisRequest struct {
+	RuleEnabled        bool                                `json:"rule_enabled"`
+	LLMEnabled         bool                                `json:"llm_enabled"`
+	LLMModel           string                              `json:"llm_model"`
+	Force              bool                                `json:"force"`
+	SkipReportInsights bool                                `json:"skip_report_insights"`
+	SelectedSubjects   []contracts.AnalysisSubjectSelector `json:"selected_subjects"`
+	CompareMode        bool                                `json:"compare_mode"`
+}
+
+func (s *Server) handleRunAnalysis(w http.ResponseWriter, r *http.Request, runID string) {
+	switch r.Method {
+	case http.MethodGet:
+		analysisPath := filepath.Join(s.outputRoot, "runs", runID, "analysis", "analysis_report.json")
+		data, err := os.ReadFile(analysisPath)
+		if err != nil {
+			errJSON(w, http.StatusNotFound, "analysis not available yet")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(data)
+	case http.MethodPost:
+		var req runAnalysisRequest
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		report, err := analyzer.NewService().Analyze(r.Context(), analyzer.Options{
+			RunID:              runID,
+			OutputRoot:         s.outputRoot,
+			ConfigPath:         s.configPath,
+			RuleEnabled:        req.RuleEnabled,
+			LLMEnabled:         req.LLMEnabled,
+			LLMModel:           req.LLMModel,
+			Force:              req.Force,
+			SkipReportInsights: req.SkipReportInsights,
+			SelectedSubjects:   req.SelectedSubjects,
+			CompareMode:        req.CompareMode,
+		})
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	default:
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleRunAnalysisSubjects(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodGet {
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	analysisPath := filepath.Join(s.outputRoot, "runs", runID, "analysis", "analysis_report.json")
+	if data, err := os.ReadFile(analysisPath); err == nil {
+		var report contracts.AnalysisReport
+		if json.Unmarshal(data, &report) == nil {
+			writeJSON(w, http.StatusOK, report.Subjects)
+			return
+		}
+	}
+	evalPath := filepath.Join(s.outputRoot, "runs", runID, "evaluation", "evaluation_result.json")
+	var eval contracts.EvaluationResultSet
+	data, err := os.ReadFile(evalPath)
+	if err != nil || json.Unmarshal(data, &eval) != nil {
+		errJSON(w, http.StatusNotFound, "evaluation not available yet")
+		return
+	}
+	subjects := make([]contracts.AnalysisSubject, 0, len(eval.Results))
+	for _, res := range eval.Results {
+		subjects = append(subjects, contracts.AnalysisSubject{
+			SubjectID:      firstNonEmptyString(res.SubjectID, res.Model),
+			Model:          res.Model,
+			AgentFramework: res.AgentFramework,
+			AgentModel:     res.AgentModel,
+			SkillName:      res.SkillName,
+			Language:       res.Language,
+			SampleID:       res.SampleID,
+			CompilePass:    res.CompilePass,
+			TestPass:       res.TestPass,
+			LineCoverage:   res.LineCoverage,
+			MutationScore:  res.MutationScore,
+		})
+	}
+	writeJSON(w, http.StatusOK, subjects)
+}
+
+func (s *Server) handleRunOptimizationPlan(w http.ResponseWriter, r *http.Request, runID string) {
+	switch r.Method {
+	case http.MethodGet:
+		planPath := filepath.Join(s.outputRoot, "runs", runID, "analysis", "optimization_plan.json")
+		data, err := os.ReadFile(planPath)
+		if err != nil {
+			errJSON(w, http.StatusNotFound, "optimization plan not available yet")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(data)
+	case http.MethodPost:
+		var req runAnalysisRequest
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		plan, err := analyzer.NewService().OptimizePlan(r.Context(), analyzer.OptimizeOptions{
+			RunID:      runID,
+			OutputRoot: s.outputRoot,
+			ConfigPath: s.configPath,
+			LLMEnabled: req.LLMEnabled,
+			LLMModel:   req.LLMModel,
+			Force:      req.Force,
+		})
+		if err != nil {
+			status := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "analysis_report.json not available") {
+				status = http.StatusNotFound
+			}
+			errJSON(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+	default:
+		errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (s *Server) handleRunReportHTML(w http.ResponseWriter, r *http.Request, runID string) {
@@ -3092,10 +4023,10 @@ func normalizeRepoLevelDatasetPackagePath(parts []string) (string, bool) {
 		return "", false
 	}
 	lang := parts[0]
-	if !isSupportedDatasetLanguage(lang) || parts[1] != lang+"_code_files_repo_level" || !isSupportedDatasetScenario(parts[2]) {
+	if !isSupportedDatasetLanguage(lang) || parts[1] != lang+"_code_files_repo_level" || !validDatasetToken(parts[2]) {
 		return "", false
 	}
-	if parts[3] != "workspace" {
+	if parts[3] != "workspace" && !validDatasetToken(parts[3]) {
 		return "", false
 	}
 	for _, part := range parts[4:] {
@@ -3125,6 +4056,174 @@ func isSupportedDatasetLanguage(lang string) bool {
 func isSupportedDatasetScenario(scenario string) bool {
 	switch scenario {
 	case "boundary", "simple_function", "complex_dependency", "interface_mock":
+		return true
+	default:
+		return false
+	}
+}
+
+// mergedDatasetScenarios 返回内置 SupportedScenarios 与从 datasetRoot 实扫到的
+// scenario 目录名的并集，用于前端筛选下拉框动态发现新增数据集（例如 dogfood）。
+//
+// 扫描路径：<datasetRoot>/<lang>/<lang>_code_files_<class>/<scenario>/
+// - lang ∈ contracts.SupportedLanguages
+// - class ∈ {"self_contained", "repo_level"}
+//
+// 任何 IO 错误都被静默忽略，最坏情况下只返回内置列表，保证 UI 可用性。
+func mergedDatasetScenarios(datasetRoot string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, scenarios := range datasetScenariosByClass(datasetRoot) {
+		for _, sc := range scenarios {
+			if !seen[sc] {
+				seen[sc] = true
+				out = append(out, sc)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func datasetScenariosByClass(datasetRoot string) map[string][]string {
+	classes := []string{"self_contained", "repo_level"}
+	seen := map[string]map[string]bool{}
+	out := map[string][]string{}
+	for _, class := range classes {
+		seen[class] = map[string]bool{}
+		out[class] = []string{}
+	}
+	add := func(class, scenario string) {
+		if _, ok := seen[class]; !ok {
+			return
+		}
+		if scenario == "" || strings.HasPrefix(scenario, ".") || seen[class][scenario] {
+			return
+		}
+		seen[class][scenario] = true
+		out[class] = append(out[class], scenario)
+	}
+	for _, sc := range contracts.SupportedScenarios {
+		add("self_contained", sc)
+	}
+	if strings.TrimSpace(datasetRoot) == "" {
+		return out
+	}
+	for _, lang := range contracts.SupportedLanguages {
+		for _, class := range classes {
+			classDir := filepath.Join(datasetRoot, lang, lang+"_code_files_"+class)
+			entries, err := os.ReadDir(classDir)
+			if err != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				add(class, entry.Name())
+			}
+		}
+	}
+	for class := range out {
+		sort.Strings(out[class])
+	}
+	return out
+}
+
+func datasetProjectsByScenario(datasetRoot string) map[string]map[string][]datasetProjectInfo {
+	out := map[string]map[string][]datasetProjectInfo{
+		"repo_level": {},
+	}
+	if strings.TrimSpace(datasetRoot) == "" {
+		return out
+	}
+	type acc struct {
+		name      string
+		languages map[string]bool
+		count     int
+	}
+	byScenario := map[string]map[string]*acc{}
+	for _, lang := range contracts.SupportedLanguages {
+		classDir := filepath.Join(datasetRoot, lang, lang+"_code_files_repo_level")
+		scenarios, err := os.ReadDir(classDir)
+		if err != nil {
+			continue
+		}
+		for _, scenarioEntry := range scenarios {
+			if !scenarioEntry.IsDir() || strings.HasPrefix(scenarioEntry.Name(), ".") {
+				continue
+			}
+			scenario := scenarioEntry.Name()
+			scenarioDir := filepath.Join(classDir, scenario)
+			projects, err := os.ReadDir(scenarioDir)
+			if err != nil {
+				continue
+			}
+			if byScenario[scenario] == nil {
+				byScenario[scenario] = map[string]*acc{}
+			}
+			for _, projectEntry := range projects {
+				if !projectEntry.IsDir() || strings.HasPrefix(projectEntry.Name(), ".") {
+					continue
+				}
+				project := projectEntry.Name()
+				item := byScenario[scenario][project]
+				if item == nil {
+					item = &acc{name: project, languages: map[string]bool{}}
+					byScenario[scenario][project] = item
+				}
+				item.languages[lang] = true
+				item.count += countRepoLevelProjectSamples(filepath.Join(scenarioDir, project), lang)
+			}
+		}
+	}
+	for scenario, projects := range byScenario {
+		items := make([]datasetProjectInfo, 0, len(projects))
+		for _, project := range projects {
+			langs := make([]string, 0, len(project.languages))
+			for lang := range project.languages {
+				langs = append(langs, lang)
+			}
+			sort.Strings(langs)
+			items = append(items, datasetProjectInfo{Name: project.name, Languages: langs, SampleCount: project.count})
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].SampleCount != items[j].SampleCount {
+				return items[i].SampleCount > items[j].SampleCount
+			}
+			return items[i].Name < items[j].Name
+		})
+		out["repo_level"][scenario] = items
+	}
+	return out
+}
+
+func countRepoLevelProjectSamples(projectRoot, lang string) int {
+	count := 0
+	_ = filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != projectRoot && shouldSkipDatasetProjectDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if _, ok := dataset.SynthesizeRepoLevelMeta(path); ok {
+			count++
+		}
+		return nil
+	})
+	return count
+}
+
+func shouldSkipDatasetProjectDir(name string) bool {
+	switch strings.ToLower(name) {
+	case ".git", ".github", ".cache", ".gradle", ".idea", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".vscode",
+		"__pycache__", "artifacts", "benchmark", "benchmarks", "build", "coverage", "dist", "docs",
+		"examples", "_examples", "generated", "htmlcov", "node_modules", "out", "storage", "target",
+		"test", "tests", "testdata", "vendor", "workspace":
 		return true
 	default:
 		return false

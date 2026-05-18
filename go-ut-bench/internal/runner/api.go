@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"go-ut-bench/internal/contracts"
+	"go-ut-bench/internal/dataset"
 )
 
 // apiClient LLM API 客户端
@@ -550,7 +551,7 @@ func validateGeneratedTest(code, language string) error {
 		return fmt.Errorf("empty output")
 	}
 	lower := strings.ToLower(stripped)
-	if strings.Contains(lower, "<think>") || strings.Contains(lower, "</think>") {
+	if containsReasoningTagOutsideLiterals(lower) {
 		return fmt.Errorf("contains leaked reasoning tags")
 	}
 	if strings.EqualFold(language, "python") {
@@ -559,6 +560,87 @@ func validateGeneratedTest(code, language string) error {
 		}
 	}
 	return nil
+}
+
+func containsReasoningTagOutsideLiterals(text string) bool {
+	var out strings.Builder
+	out.Grow(len(text))
+	inLineComment := false
+	inBlockComment := false
+	var quote byte
+	escaped := false
+
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		next := byte(0)
+		if i+1 < len(text) {
+			next = text[i+1]
+		}
+
+		if inLineComment {
+			if ch == '\n' {
+				inLineComment = false
+				out.WriteByte(ch)
+			} else {
+				out.WriteByte(' ')
+			}
+			continue
+		}
+		if inBlockComment {
+			if ch == '*' && next == '/' {
+				out.WriteString("  ")
+				i++
+				inBlockComment = false
+			} else if ch == '\n' {
+				out.WriteByte(ch)
+			} else {
+				out.WriteByte(' ')
+			}
+			continue
+		}
+		if quote != 0 {
+			if ch == '\n' {
+				out.WriteByte(ch)
+			} else {
+				out.WriteByte(' ')
+			}
+			if quote != '`' && ch == '\\' && !escaped {
+				escaped = true
+				continue
+			}
+			if ch == quote && !escaped {
+				quote = 0
+			}
+			escaped = false
+			continue
+		}
+
+		if ch == '/' && next == '/' {
+			out.WriteString("  ")
+			i++
+			inLineComment = true
+			continue
+		}
+		if ch == '/' && next == '*' {
+			out.WriteString("  ")
+			i++
+			inBlockComment = true
+			continue
+		}
+		if ch == '"' || ch == '\'' || ch == '`' {
+			out.WriteByte(' ')
+			quote = ch
+			escaped = false
+			continue
+		}
+		out.WriteByte(ch)
+	}
+
+	cleaned := out.String()
+	return strings.Contains(cleaned, "<think>") ||
+		strings.Contains(cleaned, "</think>") ||
+		strings.Contains(cleaned, "<analysis>") ||
+		strings.Contains(cleaned, "</analysis>")
 }
 
 // trimText 截断文本到指定最大长度
@@ -570,10 +652,21 @@ func validateGeneratedTest(code, language string) error {
 // 返回值:
 //   - string: 截断后的文本
 func trimText(v string, max int) string {
-	if len(v) <= max {
+	if max <= 0 || len(v) <= max {
 		return v
 	}
-	return v[:max]
+	used := 0
+	var b strings.Builder
+	b.Grow(max)
+	for _, r := range v {
+		size := len(string(r))
+		if used+size > max {
+			break
+		}
+		b.WriteRune(r)
+		used += size
+	}
+	return b.String()
 }
 
 // coverageTargetsText 返回覆盖率目标说明文本
@@ -962,6 +1055,7 @@ type repoLevelMetaForRunner struct {
 // 返回值:
 //   - *repoLevelMetaForRunner: 元数据（失败时为 nil）
 func loadRepoLevelMetaForRunner(samplePath string) *repoLevelMetaForRunner {
+	samplePath = normalizeRunnerPathForHost(samplePath)
 	dir := filepath.Dir(samplePath)
 	base := filepath.Base(samplePath)
 	ext := filepath.Ext(base)
@@ -974,19 +1068,30 @@ func loadRepoLevelMetaForRunner(samplePath string) *repoLevelMetaForRunner {
 		metaPath = filepath.Join(dir, name+".meta.json")
 	}
 
-	if _, err := os.Stat(metaPath); err != nil {
-		return nil
+	if raw, err := os.ReadFile(metaPath); err == nil {
+		var meta repoLevelMetaForRunner
+		if err := json.Unmarshal(raw, &meta); err == nil && meta.ModuleImport != "" {
+			return &meta
+		}
 	}
-	raw, err := os.ReadFile(metaPath)
-	if err != nil {
-		return nil
+	if meta, ok := dataset.SynthesizeRepoLevelMeta(samplePath); ok {
+		return &repoLevelMetaForRunner{
+			SampleID:      meta.SampleID,
+			ModuleImport:  meta.ModuleImport,
+			PackageName:   meta.PackageName,
+			TargetFile:    meta.TargetFile,
+			WorkspaceRoot: meta.WorkspaceRoot,
+			Requirements:  meta.Requirements,
+		}
 	}
-	var meta repoLevelMetaForRunner
-	if err := json.Unmarshal(raw, &meta); err != nil {
-		return nil
+	return nil
+}
+
+func normalizeRunnerPathForHost(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
 	}
-	if meta.ModuleImport == "" {
-		return nil
-	}
-	return &meta
+	path = strings.ReplaceAll(path, `\`, "/")
+	return filepath.Clean(filepath.FromSlash(path))
 }

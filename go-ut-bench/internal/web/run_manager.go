@@ -69,6 +69,9 @@ type RunEntry struct {
 const maxRunLogs = 10000
 
 func (r *RunEntry) appendLog(line string) {
+	if shouldSuppressRuntimeLogLine(line) {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.logs = append(r.logs, line)
@@ -81,6 +84,13 @@ func (r *RunEntry) appendLog(line string) {
 		default:
 		}
 	}
+}
+
+func shouldSuppressRuntimeLogLine(line string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(line))
+	return strings.Contains(normalized, "service=bus") &&
+		strings.Contains(normalized, "type=message.part.delta") &&
+		strings.Contains(normalized, "publishing")
 }
 
 // GetLogs returns a snapshot of all captured log lines.
@@ -557,7 +567,11 @@ func (m *RunManager) executeDockerSplit(ctx context.Context, entry *RunEntry, sp
 	// 单独的 evaluate — 容器内评测 + 宿主机报告。
 	if phase == "evaluate" {
 		entry.appendLog(fmt.Sprintf("[%s] phase 1/2: evaluate (docker: %s)", logTS(), m.dockerCfg.EffectiveEvalImage()))
-		if err := runInDocker(ctx, entry, spec, opts, m.dockerCfg); err != nil {
+		evalOpts, err := m.dockerEvaluateOptions(spec, opts)
+		if err != nil {
+			return fmt.Errorf("prepare docker manifest failed: %w", err)
+		}
+		if err := runInDocker(ctx, entry, spec, evalOpts, m.dockerCfg); err != nil {
 			return fmt.Errorf("evaluate phase failed: %w", err)
 		}
 		entry.appendLog(fmt.Sprintf("[%s] evaluate phase completed", logTS()))
@@ -602,11 +616,16 @@ func (m *RunManager) executeDockerSplit(ctx context.Context, entry *RunEntry, sp
 
 	// phase == "full"：进 eval 容器跑 evaluate + report。
 	entry.appendLog(fmt.Sprintf("[%s] phase 2/2: evaluate+report (docker: %s)", logTS(), m.dockerCfg.EffectiveEvalImage()))
+	dockerManifestPath, err := m.prepareDockerGeneratedManifest(spec)
+	if err != nil {
+		return fmt.Errorf("prepare docker manifest failed: %w", err)
+	}
 	evalOpts := orchestrator.Options{
-		Phase:       "evaluate",
-		SourceRunID: spec.RunID,
-		Ingest:      opts.Ingest,
-		DBPath:      opts.DBPath,
+		Phase:        "evaluate",
+		SourceRunID:  spec.RunID,
+		ManifestPath: dockerManifestPath,
+		Ingest:       opts.Ingest,
+		DBPath:       opts.DBPath,
 	}
 	if err := runInDocker(ctx, entry, spec, evalOpts, m.dockerCfg); err != nil {
 		return fmt.Errorf("evaluate phase failed: %w", err)
@@ -624,6 +643,18 @@ func (m *RunManager) executeDockerSplit(ctx context.Context, entry *RunEntry, sp
 	}
 
 	return nil
+}
+
+func (m *RunManager) dockerEvaluateOptions(spec contracts.RunSpec, opts orchestrator.Options) (orchestrator.Options, error) {
+	if strings.TrimSpace(opts.ManifestPath) != "" {
+		return opts, nil
+	}
+	dockerManifestPath, err := m.prepareDockerGeneratedManifest(spec)
+	if err != nil {
+		return opts, err
+	}
+	opts.ManifestPath = dockerManifestPath
+	return opts, nil
 }
 
 func backendLabel(useDocker bool) string {

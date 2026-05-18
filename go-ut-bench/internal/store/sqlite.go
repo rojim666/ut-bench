@@ -146,6 +146,49 @@ type DBGeneratedCaseItem struct {
 	GeneratedAtUTC   string `json:"generated_at_utc,omitempty"`
 }
 
+type GeneratedSetItem struct {
+	GeneratedSetID     string `json:"generated_set_id"`
+	Name               string `json:"name"`
+	Note               string `json:"note,omitempty"`
+	Status             string `json:"status"`
+	SourceRunID        string `json:"source_run_id"`
+	SourceManifestPath string `json:"source_manifest_path,omitempty"`
+	ManifestPath       string `json:"manifest_path,omitempty"`
+	DockerManifestPath string `json:"docker_manifest_path,omitempty"`
+	OutputDir          string `json:"output_dir,omitempty"`
+	ModelSummary       string `json:"model_summary,omitempty"`
+	LanguageSummary    string `json:"language_summary,omitempty"`
+	SampleCount        int    `json:"sample_count"`
+	AcceptedCount      int    `json:"accepted_count"`
+	SuccessCount       int    `json:"success_count"`
+	FailureCount       int    `json:"failure_count"`
+	TotalTokens        *int   `json:"total_tokens,omitempty"`
+	PromptStrategy     string `json:"prompt_strategy,omitempty"`
+	PromptVersionID    string `json:"prompt_version_id,omitempty"`
+	CreatedAtUTC       string `json:"created_at_utc"`
+	UpdatedAtUTC       string `json:"updated_at_utc"`
+}
+
+type GeneratedSetSampleItem struct {
+	GeneratedSetID          string `json:"generated_set_id"`
+	GeneratedCaseID         string `json:"generated_case_id"`
+	RunID                   string `json:"run_id"`
+	Model                   string `json:"model"`
+	Language                string `json:"language"`
+	SampleID                string `json:"sample_id"`
+	SampleUID               string `json:"sample_uid,omitempty"`
+	SamplePath              string `json:"sample_path,omitempty"`
+	GeneratedTestPath       string `json:"generated_test_path,omitempty"`
+	GeneratedTestArtifactID string `json:"generated_test_artifact_id,omitempty"`
+	GeneratedTestSHA256     string `json:"generated_test_sha256,omitempty"`
+	Success                 bool   `json:"success"`
+	Status                  string `json:"status"`
+	Note                    string `json:"note,omitempty"`
+	TagsJSON                string `json:"tags_json,omitempty"`
+	CreatedAtUTC            string `json:"created_at_utc"`
+	UpdatedAtUTC            string `json:"updated_at_utc"`
+}
+
 type DBPromptRenderingItem struct {
 	PromptRenderingID string `json:"prompt_rendering_id"`
 	RunID             string `json:"run_id"`
@@ -297,6 +340,22 @@ type DBEvaluationAssetItem struct {
 	CompilePass              bool   `json:"compile_pass"`
 	Reused                   bool   `json:"reused"`
 	CreatedAtUTC             string `json:"created_at_utc,omitempty"`
+}
+
+type DBSkillVersionComparisonItem struct {
+	SkillName         string  `json:"skill_name"`
+	SkillVersion      string  `json:"skill_version"`
+	Framework         string  `json:"framework,omitempty"`
+	Model             string  `json:"model,omitempty"`
+	SubjectCount      int     `json:"subject_count"`
+	SampleCount       int     `json:"sample_count"`
+	CompilePassRate   float64 `json:"compile_pass_rate"`
+	TestPassRate      float64 `json:"test_pass_rate"`
+	AvgLineCoverage   float64 `json:"avg_line_coverage"`
+	AvgMutationScore  float64 `json:"avg_mutation_score"`
+	AvgTotalTokens    float64 `json:"avg_total_tokens"`
+	AvgRuntimeMS      float64 `json:"avg_runtime_ms"`
+	LatestEvaluatedAt string  `json:"latest_evaluated_at,omitempty"`
 }
 
 // ReusableGeneratedCase 可复用的生成结果（别名，实际定义在 contracts 包）
@@ -582,6 +641,48 @@ func (s *SQLiteStore) Init(ctx context.Context) error {
 			created_db_at_utc TEXT NOT NULL,
 			updated_db_at_utc TEXT NOT NULL,
 			UNIQUE(run_id, model, language, sample_id)
+		);`,
+		`CREATE TABLE IF NOT EXISTS generated_sets (
+			generated_set_id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			note TEXT,
+			status TEXT NOT NULL DEFAULT 'candidate',
+			source_run_id TEXT NOT NULL,
+			source_manifest_path TEXT,
+			manifest_path TEXT,
+			docker_manifest_path TEXT,
+			output_dir TEXT,
+			model_summary TEXT,
+			language_summary TEXT,
+			sample_count INTEGER NOT NULL DEFAULT 0,
+			accepted_count INTEGER NOT NULL DEFAULT 0,
+			success_count INTEGER NOT NULL DEFAULT 0,
+			failure_count INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER,
+			prompt_strategy TEXT,
+			prompt_version_id TEXT,
+			created_at_utc TEXT NOT NULL,
+			updated_at_utc TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS generated_set_samples (
+			generated_set_id TEXT NOT NULL,
+			generated_case_id TEXT NOT NULL,
+			run_id TEXT NOT NULL,
+			model TEXT NOT NULL,
+			language TEXT NOT NULL,
+			sample_id TEXT NOT NULL,
+			sample_uid TEXT,
+			sample_path TEXT,
+			generated_test_path TEXT,
+			generated_test_artifact_id TEXT,
+			generated_test_sha256 TEXT,
+			success INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'accepted',
+			note TEXT,
+			tags_json TEXT,
+			created_at_utc TEXT NOT NULL,
+			updated_at_utc TEXT NOT NULL,
+			PRIMARY KEY(generated_set_id, generated_case_id)
 		);`,
 		`CREATE TABLE IF NOT EXISTS evaluation_envs (
 			env_id TEXT PRIMARY KEY,
@@ -879,6 +980,12 @@ func (s *SQLiteStore) Init(ctx context.Context) error {
 			ON evaluation_results(evaluation_key, updated_db_at_utc)`,
 		`CREATE INDEX IF NOT EXISTS idx_evaluation_results_subject_language_sample
 			ON evaluation_results(subject_id, language, sample_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_generated_sets_source_run
+			ON generated_sets(source_run_id, updated_at_utc)`,
+		`CREATE INDEX IF NOT EXISTS idx_generated_sets_status
+			ON generated_sets(status, updated_at_utc)`,
+		`CREATE INDEX IF NOT EXISTS idx_generated_set_samples_status
+			ON generated_set_samples(generated_set_id, status)`,
 	} {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return err

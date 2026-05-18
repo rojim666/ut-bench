@@ -23,8 +23,10 @@ frameworks:
         preflight:
             python:
                 - command -v opencode
+                - python3 -m pytest --version
             go:
                 - command -v opencode
+                - command -v go
             java:
                 - command -v opencode
             cpp:
@@ -49,6 +51,9 @@ frameworks:
             XDG_DATA_HOME: "{{.ContainerWorkdir}}/.utbench/xdg-data"
             OPENCODE_DISABLE_CLAUDE_CODE: "true"
             OPENCODE_DISABLE_DEFAULT_PLUGINS: "true"
+            # deepsleep 走学校/内网 HTTPS 网关时，Node 版 OpenCode 可能无法验证网关证书。
+            # 如果宿主机提供了 NODE_EXTRA_CA_CERTS 会优先使用；没有 CA 时仅对 deepsleep 放宽校验。
+            NODE_TLS_REJECT_UNAUTHORIZED: "{{if eq .Model \"deepsleep\"}}0{{end}}"
             OPENCODE_CONFIG_CONTENT: |
                 {
                   "$schema": "https://opencode.ai/config.json",
@@ -70,12 +75,21 @@ frameworks:
                 }
         env_from_host:
             - DEEPSEEK_API_KEY
+            - DEEPSLEEP_API_KEY
             - DASHSCOPE_API_KEY
             - MINIMAX_API_KEY
             - MINIMAX2.5_API_KEY
             - VOLCENGINE_API_KEY
             - ARK_API_KEY
             - BIGMODEL_API_KEY
+            - HTTPS_PROXY
+            - HTTP_PROXY
+            - ALL_PROXY
+            - NO_PROXY
+            - NODE_EXTRA_CA_CERTS
+            - SSL_CERT_FILE
+            - REQUESTS_CA_BUNDLE
+            - CURL_CA_BUNDLE
         command: >
             mkdir -p "$XDG_CONFIG_HOME/opencode" "$XDG_DATA_HOME" "{{.ContainerWorkdir}}/.utbench/opencode" && printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$XDG_CONFIG_HOME/opencode/config.json" && PROMPT="$(cat {{.ContainerPrompt}})" && opencode run --print-logs --dangerously-skip-permissions --model utbench/{{.ModelID}} "$PROMPT"
 
@@ -104,8 +118,10 @@ frameworks:
         preflight:
             python:
                 - command -v codebuddy
+                - python3 -m pytest --version
             go:
                 - command -v codebuddy
+                - command -v go
             java:
                 - command -v codebuddy
             cpp:
@@ -182,8 +198,10 @@ frameworks:
         preflight:
             python:
                 - command -v claude
+                - python3 -m pytest --version
             go:
                 - command -v claude
+                - command -v go
             java:
                 - command -v claude
             cpp:
@@ -276,6 +294,7 @@ frameworks:
                 - command -v codex
             go:
                 - command -v codex
+                - command -v go
             java:
                 - command -v codex
             cpp:
@@ -332,6 +351,7 @@ frameworks:
                 - command -v kilo
             go:
                 - command -v kilo
+                - command -v go
             java:
                 - command -v kilo
             cpp:
@@ -405,6 +425,7 @@ skills:
             - ./skills/qta-ut/references/
             - ./skills/qta-ut/scripts/
         compatible_frameworks:
+            - opencode
             - codebuddy
             - claudecode
             - codex

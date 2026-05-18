@@ -14,8 +14,8 @@ import (
 // datasetManifest 数据集清单结构
 // 定义清单文件格式，包含级别和样本列表
 type datasetManifest struct {
-	Level   string `json:"level"`   // 数据集级别（如 l1、l2）
-	Samples []struct {              // 样本列表
+	Level   string     `json:"level"` // 数据集级别（如 l1、l2）
+	Samples []struct { // 样本列表
 		ID       string                 `json:"id"`       // 样本唯一标识
 		Language string                 `json:"language"` // 编程语言
 		Category contracts.DatasetClass `json:"category"` // 数据集类别
@@ -51,12 +51,12 @@ func loadManifest(path string, datasetRoot string) (datasetManifest, error) {
 		if !filepath.IsAbs(sample.Path) {
 			candidate := filepath.Clean(sample.Path)
 			if _, err := os.Stat(candidate); err == nil {
-				sample.Path = candidate
+				sample.Path = absoluteCleanPath(candidate)
 			} else {
 				sample.Path = filepath.Join(datasetRoot, sample.Path)
 			}
 		}
-		sample.Path = filepath.Clean(sample.Path)
+		sample.Path = absoluteCleanPath(sample.Path)
 		sample.Language = strings.ToLower(strings.TrimSpace(sample.Language))
 		sample.Scenario = strings.TrimSpace(sample.Scenario)
 	}

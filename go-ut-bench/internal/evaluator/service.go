@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"go-ut-bench/internal/contracts"
+	"go-ut-bench/internal/dataset"
 	"go-ut-bench/internal/obs"
 	"go-ut-bench/internal/store"
 )
@@ -33,7 +34,7 @@ type Service struct {
 // 限制同时清理的目录数量为2，避免系统资源占用过高
 var cleanupSemaphore = make(chan struct{}, 2)
 
-const evaluatorVersion = "utbench-evaluator.v1"
+const evaluatorVersion = "utbench-evaluator.v4"
 const defaultScorePolicyVersion = "default-v2"
 
 // Output 评测操作的输出结果
@@ -116,6 +117,8 @@ func (s *Service) Evaluate(ctx context.Context, spec contracts.RunSpec, manifest
 		c.ResponsePath = toSlashCrossPlatform(c.ResponsePath)
 		c.MetadataPath = toSlashCrossPlatform(c.MetadataPath)
 		c.TracePath = toSlashCrossPlatform(c.TracePath)
+		c.RawTracePath = toSlashCrossPlatform(c.RawTracePath)
+		c.TrajectoryPath = toSlashCrossPlatform(c.TrajectoryPath)
 		c.WorkspaceDiffPath = toSlashCrossPlatform(c.WorkspaceDiffPath)
 	}
 
@@ -334,6 +337,13 @@ func (s *Service) Evaluate(ctx context.Context, spec contracts.RunSpec, manifest
 
 func (s *Service) evaluateOne(ctx context.Context, spec contracts.RunSpec, item contracts.GeneratedCase, evaluationEnvFingerprint string, reused *store.ReusableEvaluationResult, setPhase func(string)) (result contracts.EvaluationResult) {
 	start := time.Now()
+	strategy := resolveEvaluationStrategy(item)
+	fileModule := dataset.ResolveFileModule(contracts.SampleRef{
+		ID:       item.SampleID,
+		Language: item.Language,
+		Category: datasetClassForEvaluation(strategy.DatasetMode),
+		Path:     item.SamplePath,
+	}, item.GeneratedTestPath)
 	row := contracts.EvaluationResult{
 		Model:                    item.Model,
 		SubjectID:                item.SubjectID,
@@ -345,16 +355,25 @@ func (s *Service) evaluateOne(ctx context.Context, spec contracts.RunSpec, item 
 		Language:                 item.Language,
 		SampleID:                 item.SampleID,
 		SampleUID:                item.SampleUID,
+		DatasetMode:              string(strategy.DatasetMode),
+		GenerationStrategy:       string(strategy.GenerationStrategy),
+		EvaluationStrategy:       string(strategy.EvaluationStrategy),
+		FileModule:               fileModule,
 		GeneratedTestPath:        item.GeneratedTestPath,
 		SourcePath:               item.SamplePath,
 		PromptTokens:             item.PromptTokens,
 		CompletionTokens:         item.CompletionTokens,
 		TotalTokens:              item.TotalTokens,
+		RawInputTokens:           item.RawInputTokens,
+		CacheReadInputTokens:     item.CacheReadInputTokens,
+		CacheCreationInputTokens: item.CacheCreationInputTokens,
 		TokenSource:              item.TokenSource,
 		EstimatedCostUSD:         item.EstimatedCostUSD,
 		CostSource:               item.CostSource,
 		Truncated:                item.Truncated,
 		TracePath:                item.TracePath,
+		RawTracePath:             item.RawTracePath,
+		TrajectoryPath:           item.TrajectoryPath,
 		WorkspaceDiffPath:        item.WorkspaceDiffPath,
 		SandboxProvider:          item.SandboxProvider,
 		SandboxFingerprint:       item.SandboxFingerprint,
@@ -374,7 +393,11 @@ func (s *Service) evaluateOne(ctx context.Context, spec contracts.RunSpec, item 
 	if !item.Success {
 		row.CompilePass = false
 		if item.Error != nil {
-			row.CompileError = "generation failed: " + item.Error.Message
+			if item.Error.Kind != "" {
+				row.CompileError = "generation failed (" + item.Error.Kind + "): " + item.Error.Message
+			} else {
+				row.CompileError = "generation failed: " + item.Error.Message
+			}
 		} else {
 			row.CompileError = "generation failed"
 		}
@@ -443,6 +466,13 @@ func evaluationStatus(row contracts.EvaluationResult) string {
 	return "PASS"
 }
 
+func datasetClassForEvaluation(mode contracts.DatasetMode) contracts.DatasetClass {
+	if mode == contracts.DatasetModeProjectLevel {
+		return contracts.DatasetClassRepoLevel
+	}
+	return contracts.DatasetClassSelfContained
+}
+
 // countSuccessfulResults 统计成功的结果数量
 // 编译通过且测试通过的视为成功
 //
@@ -474,11 +504,18 @@ func applyReusableEvaluation(row *contracts.EvaluationResult, reused store.Reusa
 	reusedRow.Language = current.Language
 	reusedRow.SampleID = current.SampleID
 	reusedRow.SampleUID = current.SampleUID
+	reusedRow.DatasetMode = current.DatasetMode
+	reusedRow.GenerationStrategy = current.GenerationStrategy
+	reusedRow.EvaluationStrategy = current.EvaluationStrategy
+	reusedRow.FileModule = current.FileModule
 	reusedRow.GeneratedTestPath = current.GeneratedTestPath
 	reusedRow.SourcePath = current.SourcePath
 	reusedRow.PromptTokens = current.PromptTokens
 	reusedRow.CompletionTokens = current.CompletionTokens
 	reusedRow.TotalTokens = current.TotalTokens
+	reusedRow.RawInputTokens = current.RawInputTokens
+	reusedRow.CacheReadInputTokens = current.CacheReadInputTokens
+	reusedRow.CacheCreationInputTokens = current.CacheCreationInputTokens
 	reusedRow.TokenSource = current.TokenSource
 	reusedRow.EstimatedCostUSD = current.EstimatedCostUSD
 	reusedRow.CostSource = current.CostSource
@@ -617,9 +654,6 @@ func classifyFailureOrigin(row contracts.EvaluationResult) (string, string) {
 			return "dataset", shortFailureReason(msg)
 		}
 	}
-	if generatedTestDidNotPass(row) {
-		return "model", ""
-	}
 	for _, msg := range []string{row.CompileError, row.TestError, row.CoverageError, row.MutationError} {
 		if msg == "" {
 			continue
@@ -627,11 +661,28 @@ func classifyFailureOrigin(row contracts.EvaluationResult) (string, string) {
 		if isEnvironmentFailureMessage(msg) {
 			return "environment", shortFailureReason(msg)
 		}
+		if isRepoLevelNotImplementedMessage(msg) {
+			return "tool", shortFailureReason(msg)
+		}
+	}
+	if generatedTestDidNotPass(row) {
+		return "model", ""
+	}
+	for _, msg := range []string{row.CompileError, row.TestError, row.CoverageError, row.MutationError} {
+		if msg == "" {
+			continue
+		}
 		if isToolFailureMessage(msg) {
 			return "tool", shortFailureReason(msg)
 		}
 	}
 	return "model", ""
+}
+
+func isRepoLevelNotImplementedMessage(msg string) bool {
+	msg = strings.ToLower(msg)
+	return strings.Contains(msg, "repo_level project evaluation is not implemented yet") ||
+		strings.Contains(msg, "repo_level mutation is not implemented yet")
 }
 
 // generatedTestDidNotPass 检查生成的测试是否未通过
@@ -687,6 +738,17 @@ func isEnvironmentFailureMessage(msg string) bool {
 	if strings.Contains(msg, "pitest") || strings.Contains(msg, "junit 5 plugin") {
 		return false
 	}
+	if strings.Contains(msg, "pluginresolutionexception") ||
+		strings.Contains(msg, "pluginincompatibleexception") ||
+		strings.Contains(msg, "could not resolve dependencies") ||
+		strings.Contains(msg, "failed to read artifact descriptor") ||
+		strings.Contains(msg, "one of its dependencies could not be resolved") ||
+		strings.Contains(msg, "could not find artifact") ||
+		strings.Contains(msg, "sample_env_prepare_error") ||
+		strings.Contains(msg, "sandbox_preflight_error") ||
+		strings.Contains(msg, "sandbox preflight failed") {
+		return true
+	}
 	return strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "access is denied") ||
 		strings.Contains(msg, "executable file not found") ||
@@ -715,6 +777,13 @@ func isToolFailureMessage(msg string) bool {
 	return strings.Contains(msg, "coverage json failed") ||
 		strings.Contains(msg, "coverage files empty") ||
 		strings.Contains(msg, "stats file not found") ||
+		strings.Contains(msg, "pitest dependency install failed") ||
+		strings.Contains(msg, "pluginresolutionexception") ||
+		strings.Contains(msg, "pluginincompatibleexception") ||
+		strings.Contains(msg, "could not resolve dependencies") ||
+		strings.Contains(msg, "failed to read artifact descriptor") ||
+		strings.Contains(msg, "one of its dependencies could not be resolved") ||
+		strings.Contains(msg, "could not find artifact") ||
 		strings.Contains(msg, "gremlins no results to report") ||
 		strings.Contains(msg, "no gremlins output found") ||
 		strings.Contains(msg, "go-mutesting no results to report") ||
@@ -727,7 +796,9 @@ func isToolFailureMessage(msg string) bool {
 		strings.Contains(msg, "pitest could not run any tests") ||
 		strings.Contains(msg, "pitest no killed/survived results") ||
 		strings.Contains(msg, "pitest requires junit 5 plugin") ||
-		strings.Contains(msg, "pitest junit 5 plugin is not installed")
+		strings.Contains(msg, "pitest junit 5 plugin is not installed") ||
+		strings.Contains(msg, "repo_level project evaluation is not implemented yet") ||
+		strings.Contains(msg, "repo_level mutation is not implemented yet")
 }
 
 func shortFailureReason(msg string) string {
@@ -862,6 +933,7 @@ func cleanupWorkspaceAsync(workdir, model, language, sampleID string, logger *ob
 // 返回值:
 //   - bool: 是否为仓库级别样本
 func isRepoLevelSample(samplePath string) bool {
+	samplePath = normalizeEvalPathForHost(samplePath)
 	dir := filepath.Dir(samplePath)
 	base := filepath.Base(samplePath)
 	ext := filepath.Ext(base)
@@ -881,10 +953,12 @@ func isRepoLevelSample(samplePath string) bool {
 			}
 		}
 	}
-	return false
+	_, ok := dataset.SynthesizeRepoLevelMeta(samplePath)
+	return ok
 }
 
 func loadRepoLevelMeta(samplePath string) *contracts.RepoLevelMeta {
+	samplePath = normalizeEvalPathForHost(samplePath)
 	sampleDir := filepath.Dir(samplePath)
 	entryBase := filepath.Base(samplePath)
 	entryExt := filepath.Ext(entryBase)
@@ -916,6 +990,12 @@ func loadRepoLevelMeta(samplePath string) *contracts.RepoLevelMeta {
 			return &meta
 		}
 	}
+	if meta, ok := dataset.SynthesizeRepoLevelMeta(samplePath); ok {
+		if strings.HasPrefix(meta.WorkspaceRoot, ".") {
+			meta.WorkspaceRoot = filepath.Join(dir, meta.WorkspaceRoot)
+		}
+		return meta
+	}
 	return nil
 }
 
@@ -928,6 +1008,9 @@ func preparePythonRepoLevelWorkspace(testPath string, samplePath string) (string
 	if workspaceRoot == "" {
 		return "", "", "", "", "repo_level workspace_root not set in metadata"
 	}
+	if strings.TrimSpace(meta.TargetFile) == "" {
+		return "", "", "", "", "repo_level target_file not set in metadata"
+	}
 	if _, err := os.Stat(workspaceRoot); err != nil {
 		return "", "", "", "", "repo_level workspace not found: " + workspaceRoot
 	}
@@ -936,22 +1019,81 @@ func preparePythonRepoLevelWorkspace(testPath string, samplePath string) (string
 	if err != nil {
 		return "", "", "", "", "failed to read generated test: " + err.Error()
 	}
-	testsDir := filepath.Join(workspaceRoot, "tests")
+	tmpdir, err := os.MkdirTemp("", "utbench_python_repo_eval_")
+	if err != nil {
+		return "", "", "", "", "failed to create temp dir: " + err.Error()
+	}
+	skip := func(rel string) bool {
+		relSlash := filepath.ToSlash(rel)
+		base := strings.ToLower(filepath.Base(relSlash))
+		switch base {
+		case ".git", ".cache", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".venv", "venv", "env",
+			"__pycache__", "build", "dist", "htmlcov", ".hypothesis":
+			return true
+		}
+		if strings.HasSuffix(base, ".egg-info") || strings.HasPrefix(base, ".coverage") {
+			return true
+		}
+		return false
+	}
+	if err := copyTreeFiltered(workspaceRoot, tmpdir, skip); err != nil {
+		_ = os.RemoveAll(tmpdir)
+		return "", "", "", "", "failed to copy workspace: " + err.Error()
+	}
+	if err := ensurePythonRepoLevelGeneratedFiles(tmpdir); err != nil {
+		_ = os.RemoveAll(tmpdir)
+		return "", "", "", "", "failed to prepare generated project files: " + err.Error()
+	}
+	if _, err := os.Stat(filepath.Join(tmpdir, filepath.FromSlash(meta.TargetFile))); err != nil {
+		_ = os.RemoveAll(tmpdir)
+		return "", "", "", "", "target_file not found in workspace: " + meta.TargetFile
+	}
+	testsDir := filepath.Join(tmpdir, "tests")
 	if err := os.MkdirAll(testsDir, 0o755); err != nil {
+		_ = os.RemoveAll(tmpdir)
 		return "", "", "", "", "failed to create tests dir: " + err.Error()
 	}
 	testDest := filepath.Join(testsDir, testFileName)
 	if err := os.WriteFile(testDest, generatedSrc, 0o644); err != nil {
+		_ = os.RemoveAll(tmpdir)
 		return "", "", "", "", "failed to write test file: " + err.Error()
 	}
 	testName := filepath.Join("tests", testFileName)
-	return workspaceRoot, testName, meta.PackageName, meta.TargetFile, ""
+	return tmpdir, testName, meta.PackageName, meta.TargetFile, ""
+}
+
+func ensurePythonRepoLevelGeneratedFiles(workdir string) error {
+	pyproject := filepath.Join(workdir, "pyproject.toml")
+	raw, err := os.ReadFile(pyproject)
+	if err != nil {
+		return nil
+	}
+	re := regexp.MustCompile(`(?m)(?:^|\.)version-file\s*=\s*["']([^"']+)["']`)
+	for _, match := range re.FindAllStringSubmatch(string(raw), -1) {
+		if len(match) < 2 {
+			continue
+		}
+		rel := filepath.Clean(filepath.FromSlash(match[1]))
+		if rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			continue
+		}
+		path := filepath.Join(workdir, rel)
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte("__version__ = \"0.0.0\"\n"), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func executePythonTestsInWorkspace(workdir, testName, packageName string, timeoutSeconds int) (bool, string, int) {
 	py := pythonExecutable()
-	env := os.Environ()
-	env = append(env, "PYTHONPATH="+workdir)
+	env := pythonWorkspaceEnv(workdir)
 	runCtx, cancel := context.WithTimeout(context.Background(), normalizedTimeout(timeoutSeconds))
 	defer cancel()
 	started := time.Now()
@@ -976,8 +1118,7 @@ func collectPythonCoverageInWorkspace(workdir, testName, packageName, targetFile
 		return 0, 0, "failed to get absolute path: " + err.Error()
 	}
 	jsonPath := filepath.Join(absWorkdir, ".coverage.utbench.json")
-	env := os.Environ()
-	env = append(env, "PYTHONPATH="+absWorkdir)
+	env := pythonWorkspaceEnv(absWorkdir)
 	env = append(env, "COVERAGE_FILE="+filepath.Join(absWorkdir, ".coverage.utbench"))
 	runCtx, cancelRun := context.WithTimeout(context.Background(), normalizedTimeout(timeoutSeconds))
 	defer cancelRun()
@@ -1019,6 +1160,57 @@ func collectPythonCoverageInWorkspace(workdir, testName, packageName, targetFile
 		return line, branch, ""
 	}
 	return 0, 0, "coverage files empty"
+}
+
+func pythonWorkspaceEnv(workdir string) []string {
+	env := os.Environ()
+	absWorkdir, err := filepath.Abs(workdir)
+	if err != nil {
+		absWorkdir = workdir
+	}
+	entries := []string{absWorkdir}
+	srcDir := filepath.Join(absWorkdir, "src")
+	if info, err := os.Stat(srcDir); err == nil && info.IsDir() {
+		entries = append(entries, srcDir)
+	}
+	return prependPathEnv(env, "PYTHONPATH", entries...)
+}
+
+func prependPathEnv(env []string, key string, entries ...string) []string {
+	cleaned := make([]string, 0, len(entries))
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		cleaned = append(cleaned, entry)
+	}
+	if len(cleaned) == 0 {
+		return env
+	}
+	prefix := key + "="
+	added := strings.Join(cleaned, string(os.PathListSeparator))
+	out := make([]string, 0, len(env)+1)
+	set := false
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			current := strings.TrimPrefix(entry, prefix)
+			if strings.TrimSpace(current) != "" {
+				out = append(out, prefix+added+string(os.PathListSeparator)+current)
+			} else {
+				out = append(out, prefix+added)
+			}
+			set = true
+			continue
+		}
+		out = append(out, entry)
+	}
+	if !set {
+		out = append(out, prefix+added)
+	}
+	return out
 }
 
 func pythonCompileCheck(path string) (bool, string) {
@@ -1694,4 +1886,12 @@ func sha256String(value string) string {
 // 因此需要显式替换以确保跨平台一致性。
 func toSlashCrossPlatform(path string) string {
 	return strings.ReplaceAll(path, `\`, "/")
+}
+
+func normalizeEvalPathForHost(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return filepath.Clean(filepath.FromSlash(toSlashCrossPlatform(path)))
 }

@@ -264,8 +264,11 @@
                     <select class="input-base text-[12px]" x-model="combo.model" @change="onAutomationCombinationModelChange()">
                       <template x-for="m in _comboModels(combo.framework)" :key="m"><option :value="m" x-text="comboModelOptionLabel(m)"></option></template>
                     </select>
-                    <select class="input-base text-[12px]" x-model="combo.skill">
+                    <select class="input-base text-[12px]" x-model="combo.skill" @change="onAutomationCombinationSkillChange(combo)">
                       <template x-for="sk in _comboSkills(combo.framework)" :key="sk"><option :value="sk" x-text="sk"></option></template>
+                    </select>
+                    <select class="input-base text-[12px]" x-model="combo.skill_version" :disabled="combo.skill === 'no_skill'" @change="refreshAutomationJSONFromPlan()">
+                      <template x-for="v in _comboSkillVersions(combo.framework, combo.skill)" :key="v"><option :value="v" x-text="v"></option></template>
                     </select>
                     <code x-text="buildSubjectId(combo)"></code>
                     <button type="button" class="btn-ghost py-1 px-2" :disabled="(automationPlan.combinations || []).length <= 1" @click="removeAutomationCombination(idx)">×</button>
@@ -275,21 +278,21 @@
               <div class="automation-plan-hint mt-3">
                 <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">已选 Subject <span x-text="automationSubjectCount"></span></span>
                 <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">有效被测对象 <span x-text="automationExecutionTargetCount"></span></span>
-                <span x-text="automationSubjectCount ? '计划会按这些 Subject 定时运行，模型配置由 Subject 自动补齐。' : '未选择 Subject 时可使用下面的模型 Baseline。'"></span>
+                <span>计划会按这些 Subject 定时运行，模型配置由 Subject 自动补齐。</span>
               </div>
             </section>
 
             <section class="automation-subsection" x-show="automationPlan.phase === 'full' || automationPlan.phase === 'generate'">
-              <div class="section-title">模型 Baseline / 兼容回退</div>
-              <div x-show="automationSubjectCount > 0" class="agent-muted mb-3">当前已选择 Subject 组合，模型配置会随 Subject 自动补齐；Baseline 勾选只在未选择 Subject 时启用。</div>
+              <div class="section-title">模型检测</div>
+              <div class="agent-muted mb-3">检测已注册模型的 API Key 配置状态；执行对象请在上方 Subject 组合中选择。</div>
               <div class="flex flex-wrap gap-2.5">
                 <template x-for="m in config?.models ?? []" :key="m.name">
-                  <label :class="(automationPlan.models || []).includes(m.name) ? 'active' : ''" class="chip" :style="automationSubjectCount > 0 ? 'opacity:.55;pointer-events:none' : ''">
-                    <input type="checkbox" :value="m.name" x-model="automationPlan.models" class="w-3.5 h-3.5" :disabled="automationSubjectCount > 0">
+                  <div class="chip" :class="m.api_key_set ? 'active' : ''" :title="m.api_key_set ? 'API Key 已配置' : 'API Key 未配置: ' + m.api_key_env">
                     <span class="inline-block w-2 h-2 rounded-full shrink-0" :style="m.api_key_set ? 'background:var(--green)' : 'background:var(--red)'"></span>
                     <span x-text="m.name" class="font-medium"></span>
                     <span x-text="m.model_id" class="text-[11px]" style="color:var(--fg-muted)"></span>
-                  </label>
+                    <span class="text-[11px]" :style="m.api_key_set ? 'color:var(--green)' : 'color:var(--red)'" x-text="m.api_key_set ? '可用' : '缺密钥'"></span>
+                  </div>
                 </template>
               </div>
             </section>
@@ -311,7 +314,7 @@
               <div class="grid grid-cols-3 gap-3">
                 <div>
                   <label class="label-text">类型</label>
-                  <select x-model="automationPlan.class" class="input-base">
+                    <select x-model="automationPlan.class" class="input-base" @change="normalizeAutomationDatasetScenario()">
                     <option value="">全部</option>
                     <template x-for="c in config?.classes ?? []" :key="c"><option :value="c" x-text="c"></option></template>
                   </select>
@@ -320,7 +323,7 @@
                   <label class="label-text">场景</label>
                   <select x-model="automationPlan.scenario" class="input-base">
                     <option value="">全部场景</option>
-                    <template x-for="sc in config?.scenarios ?? []" :key="sc"><option :value="sc" x-text="sc"></option></template>
+                    <template x-for="sc in datasetScenariosForClass(automationPlan.class)" :key="sc"><option :value="sc" x-text="sc"></option></template>
                   </select>
                 </div>
                 <div><label class="label-text">等级</label><input x-model="automationPlan.level" type="text" placeholder="l1, l2..." class="input-base"></div>

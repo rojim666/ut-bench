@@ -89,8 +89,8 @@
           <div class="skill-detail-body" x-show="skillDetail">
             <div class="skill-detail-grid">
               <div class="skill-detail-item">
-                <div class="agent-muted">版本</div>
-                <div x-text="skillDetail?.version || '-'"></div>
+                <div class="agent-muted">默认版本</div>
+                <div x-text="skillDetail?.default_version || skillDetail?.version || '-'"></div>
               </div>
               <div class="skill-detail-item">
                 <div class="agent-muted">注入模式</div>
@@ -103,6 +103,15 @@
               <div class="skill-detail-item wide">
                 <div class="agent-muted">指令路径</div>
                 <code class="text-[11px]" x-text="skillDetail?.instruction_path || '-'"></code>
+              </div>
+              <div class="skill-detail-item wide">
+                <div class="agent-muted">版本列表</div>
+                <div class="flex flex-wrap gap-1.5 mt-1" x-show="(skillDetail?.versions ?? []).length">
+                  <template x-for="v in (skillDetail?.versions ?? [])" :key="v.version">
+                    <span class="tag-pill" x-text="v.version + (v.is_default ? ' default' : '')"></span>
+                  </template>
+                </div>
+                <span x-show="!(skillDetail?.versions ?? []).length">-</span>
               </div>
               <div class="skill-detail-item wide">
                 <div class="agent-muted">关联文件</div>

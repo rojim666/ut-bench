@@ -351,6 +351,12 @@ func buildSummary(rows []contracts.EvaluationResult) contracts.ReportSummary {
 	total := len(rows)
 	eligibleTotal := 0
 	excludedTotal := 0
+	rawCompilePass := 0
+	rawSampleTestPass := 0
+	rawTestCasePassTotal := 0
+	rawTestCaseTotal := 0
+	rawFallbackCasePass := 0
+	rawFallbackCaseTotal := 0
 	compilePass := 0
 	sampleTestPass := 0
 	testCasePassTotal := 0
@@ -365,6 +371,21 @@ func buildSummary(rows []contracts.EvaluationResult) contracts.ReportSummary {
 	assertDensityCnt := 0
 
 	for _, row := range rows {
+		if row.CompilePass {
+			rawCompilePass++
+		}
+		if row.TestPass != nil && *row.TestPass {
+			rawSampleTestPass++
+		}
+		if row.TestPassCount != nil && row.TestTotalCount != nil {
+			rawTestCasePassTotal += *row.TestPassCount
+			rawTestCaseTotal += *row.TestTotalCount
+		} else if row.TestPass != nil {
+			rawFallbackCaseTotal++
+			if *row.TestPass {
+				rawFallbackCasePass++
+			}
+		}
 		if !isScoreEligible(row) {
 			excludedTotal++
 			continue
@@ -403,21 +424,31 @@ func buildSummary(rows []contracts.EvaluationResult) contracts.ReportSummary {
 		testCasePassTotal += fallbackCasePass
 		testCaseTotal += fallbackCaseTotal
 	}
+	if rawFallbackCaseTotal > 0 {
+		rawTestCasePassTotal += rawFallbackCasePass
+		rawTestCaseTotal += rawFallbackCaseTotal
+	}
 
 	return contracts.ReportSummary{
-		TotalSamples:        total,
-		EligibleSamples:     eligibleTotal,
-		ExcludedSamples:     excludedTotal,
-		CompilePassCount:    compilePass,
-		CompilePassRate:     rate(compilePass, eligibleTotal),
-		TestPassCount:       sampleTestPass,
-		TestPassRate:        rate(sampleTestPass, eligibleTotal),
-		SampleTestPassCount: sampleTestPass,
-		SampleTestPassRate:  rate(sampleTestPass, eligibleTotal),
-		TestCasePassCount:   testCasePassTotal,
-		TestCasePassRate:    rate(testCasePassTotal, testCaseTotal),
-		AvgLineCoverage:     avg(lineSum, lineCnt),
-		AvgMutationScore:    avg(mutationSum, mutationCnt),
-		AvgAssertionDensity: avg(assertDensitySum, assertDensityCnt),
+		TotalSamples:         total,
+		EligibleSamples:      eligibleTotal,
+		ExcludedSamples:      excludedTotal,
+		RawCompilePassCount:  rawCompilePass,
+		RawCompilePassRate:   rate(rawCompilePass, total),
+		RawTestPassCount:     rawSampleTestPass,
+		RawTestPassRate:      rate(rawSampleTestPass, total),
+		RawTestCasePassCount: rawTestCasePassTotal,
+		RawTestCasePassRate:  rate(rawTestCasePassTotal, rawTestCaseTotal),
+		CompilePassCount:     compilePass,
+		CompilePassRate:      rate(compilePass, eligibleTotal),
+		TestPassCount:        sampleTestPass,
+		TestPassRate:         rate(sampleTestPass, eligibleTotal),
+		SampleTestPassCount:  sampleTestPass,
+		SampleTestPassRate:   rate(sampleTestPass, eligibleTotal),
+		TestCasePassCount:    testCasePassTotal,
+		TestCasePassRate:     rate(testCasePassTotal, testCaseTotal),
+		AvgLineCoverage:      avg(lineSum, lineCnt),
+		AvgMutationScore:     avg(mutationSum, mutationCnt),
+		AvgAssertionDensity:  avg(assertDensitySum, assertDensityCnt),
 	}
 }

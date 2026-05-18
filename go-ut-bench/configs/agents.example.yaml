@@ -22,6 +22,7 @@ frameworks:
         - command -v opencode
       go:
         - command -v opencode
+        - command -v go
       java:
         - command -v opencode
       cpp:
@@ -108,6 +109,7 @@ frameworks:
         - command -v codebuddy
       go:
         - command -v codebuddy
+        - command -v go
       java:
         - command -v codebuddy
       cpp:
@@ -190,6 +192,7 @@ frameworks:
         - command -v claude
       go:
         - command -v claude
+        - command -v go
       java:
         - command -v claude
       cpp:
@@ -313,6 +316,7 @@ skills:
       - ./skills/qta-ut/references/
       - ./skills/qta-ut/scripts/
     compatible_frameworks:
+      - opencode
       - codebuddy
       - claudecode
       - codex

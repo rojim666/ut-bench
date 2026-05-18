@@ -679,6 +679,9 @@ func collectJavaMutation(ctx context.Context, workdir, className string, timeout
 	}
 
 	if stats.Killed+stats.Survived <= 0 {
+		if stats.NoTests+stats.Timeout+stats.Skipped+stats.Suspicious > 0 {
+			return 0, stats, ""
+		}
 		return 0, stats, formatMutationToolError("pitest", "pitest no killed/survived results", runErr, runOut, nil, nil)
 	}
 

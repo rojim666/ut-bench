@@ -12,14 +12,15 @@ type RunSpec struct {
 	Languages        []string  `json:"languages"`                    // 要评测的编程语言，如["python", "go"]
 	DatasetClasses   []string  `json:"dataset_classes"`              // 数据集类别，如["self_contained", "repo_level"]
 	DatasetScenario  string    `json:"dataset_scenario,omitempty"`   // 数据集场景过滤（可选），如"boundary"
+	DatasetProject   string    `json:"dataset_project,omitempty"`    // repo_level 项目过滤（可选），如"gson"
 	DatasetLevel     string    `json:"dataset_level,omitempty"`      // 数据集级别（可选），如"l1"
 	DatasetRoot      string    `json:"dataset_root"`                 // 数据集根目录路径
 	DatasetManifest  string    `json:"dataset_manifest,omitempty"`   // 数据集清单文件路径（可选）
 	ConfigPath       string    `json:"config_path"`                  // 模型配置文件路径
 	Mode             RunMode   `json:"mode"`                         // 运行模式：full或incremental
 	DryRun           bool      `json:"dry_run"`                      // 是否为试运行模式（不调用真实API）
-	ReuseGenerated   bool      `json:"reuse_generated,omitempty"`    // 是否允许复用数据库中同prompt/源码/模型的历史生成结果
-	ReuseEvaluation  bool      `json:"reuse_evaluation,omitempty"`   // 是否允许复用数据库中同生成产物/评测环境的历史评测结果
+	ReuseGenerated   bool      `json:"reuse_generated"`              // 是否允许复用数据库中同prompt/源码/模型的历史生成结果
+	ReuseEvaluation  bool      `json:"reuse_evaluation"`             // 是否允许复用数据库中同生成产物/评测环境的历史评测结果
 	DBPath           string    `json:"db_path,omitempty"`            // SQLite数据库路径，用于复用和入库
 	ResetCheckpoint  bool      `json:"reset_checkpoint"`             // 是否重置checkpoint，强制重新运行
 	MutationEnabled  bool      `json:"mutation_enabled"`             // 是否启用变异测试
@@ -35,19 +36,21 @@ type RunSpec struct {
 // SubjectSpec 定义一个可评测对象：framework + model + optional skill。
 // Model API 基线使用 framework=model_api, kind=model_api, skill=no_skill。
 type SubjectSpec struct {
-	ID        string   `json:"subject_id"`
-	Kind      string   `json:"kind"`
-	Framework string   `json:"framework"`
-	Model     string   `json:"model"`
-	Skill     string   `json:"skill"`
-	Labels    []string `json:"labels,omitempty"`
-	Tags      []string `json:"tags,omitempty"`
+	ID           string   `json:"subject_id"`
+	Kind         string   `json:"kind"`
+	Framework    string   `json:"framework"`
+	Model        string   `json:"model"`
+	Skill        string   `json:"skill"`
+	SkillVersion string   `json:"skill_version,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
 }
 
 // SkillSpec 定义通用能力包，不绑定具体 Agent 的原生 skill 机制。
 type SkillSpec struct {
 	Name                 string   `json:"name"`
 	Version              string   `json:"version,omitempty"`
+	DefaultVersion       string   `json:"default_version,omitempty"`
 	Description          string   `json:"description,omitempty"`
 	InstructionPath      string   `json:"instruction_path,omitempty"`
 	Files                []string `json:"files,omitempty"`
@@ -77,4 +80,19 @@ type RepoLevelMeta struct {
 	TargetFile    string   `json:"target_file"`            // 待测试的目标文件，相对于workspace_root
 	WorkspaceRoot string   `json:"workspace_root"`         // 工作区根目录
 	Requirements  []string `json:"requirements,omitempty"` // 依赖的Python包列表
+}
+
+// FileModule 是项目级样本在生成/评测阶段共用的文件模块契约。
+// repo_level 评测不再把整个项目当成一个样本，而是把 workspace 中的
+// target_file 解析为一个可生成、可落盘、可评测的模块。
+type FileModule struct {
+	DatasetMode       string `json:"dataset_mode,omitempty"`        // single_file / project_level
+	WorkspaceRoot     string `json:"workspace_root,omitempty"`      // 工作区根目录
+	TargetFile        string `json:"target_file,omitempty"`         // 相对 workspace 根的目标文件
+	TargetFileAbs     string `json:"target_file_abs,omitempty"`     // 目标文件绝对路径
+	PackageDir        string `json:"package_dir,omitempty"`         // 目标文件所在包/目录
+	PackageName       string `json:"package_name,omitempty"`        // Go package / Python package / Java package 等
+	ModuleImport      string `json:"module_import,omitempty"`       // 模块导入路径
+	GeneratedTestFile string `json:"generated_test_file,omitempty"` // 建议写入 workspace 的测试文件名
+	GeneratedTestPath string `json:"generated_test_path,omitempty"` // artifacts 中生成测试文件路径
 }

@@ -1,0 +1,5 @@
+./automation.go
+./ingest.go
+./list.go
+./query.go
+./sqlite.go

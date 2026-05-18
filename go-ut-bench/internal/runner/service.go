@@ -3,13 +3,13 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +21,7 @@ import (
 	"go-ut-bench/internal/agentconfig"
 	"go-ut-bench/internal/contracts"
 	"go-ut-bench/internal/ctrl"
+	"go-ut-bench/internal/dataset"
 	"go-ut-bench/internal/obs"
 )
 
@@ -261,6 +262,7 @@ func (s *Service) Generate(ctx context.Context, spec contracts.RunSpec, samples 
 			Truncated:        item.Truncated,
 			LatencyMS:        item.LatencyMS,
 			Tokens:           tokens,
+			CacheReadTokens:  ptrIntValue(item.CacheReadInputTokens),
 			SubjectID:        item.SubjectID,
 			SubjectKind:      item.SubjectKind,
 			AgentFramework:   item.AgentFramework,
@@ -386,10 +388,9 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 	respPath := filepath.Join(metaRoot, fmt.Sprintf("%s_%s_%s.response.json", model, sample.Language, sample.ID))
 	promptPath := ""
 	promptPathCandidate := filepath.Join(promptRoot, "rendered", model, sample.Language, fmt.Sprintf("%s.prompt.txt", sample.ID))
-	promptMode := string(PromptModeFullFile)
-	if loadRepoLevelMetaForRunner(sample.Path) != nil {
-		promptMode = string(PromptModeRepoLevel)
-	}
+	strategy := resolveGenerationStrategy(sample)
+	promptMode := string(strategy.PromptMode)
+	fileModule := dataset.ResolveFileModule(sample, testPath)
 
 	if spec.Mode == contracts.RunModeIncremental {
 		if _, err := os.Stat(testPath); err == nil {
@@ -398,46 +399,54 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 				respPath = ""
 			}
 			return contracts.GeneratedCase{
-				Model:             model,
-				SubjectID:         subject.ID,
-				SubjectKind:       subject.Kind,
-				AgentFramework:    subject.Framework,
-				AgentModel:        subject.Model,
-				SkillName:         subject.Skill,
-				SkillVersion:      skillVersion,
-				Language:          sample.Language,
-				SampleID:          sample.ID,
-				SamplePath:        sample.Path,
-				PromptVersionID:   promptVersionID,
-				PromptMode:        promptMode,
-				GeneratedTestPath: testPath,
-				ResponsePath:      respPath,
-				MetadataPath:      "",
-				LatencyMS:         latency,
-				GeneratedAtUTC:    time.Now().UTC(),
-				Success:           true,
+				Model:              model,
+				SubjectID:          subject.ID,
+				SubjectKind:        subject.Kind,
+				AgentFramework:     subject.Framework,
+				AgentModel:         subject.Model,
+				SkillName:          subject.Skill,
+				SkillVersion:       skillVersion,
+				Language:           sample.Language,
+				SampleID:           sample.ID,
+				SamplePath:         sample.Path,
+				PromptVersionID:    promptVersionID,
+				PromptMode:         promptMode,
+				DatasetMode:        string(strategy.DatasetMode),
+				GenerationStrategy: string(strategy.GenerationStrategy),
+				EvaluationStrategy: string(strategy.EvaluationStrategy),
+				FileModule:         fileModule,
+				GeneratedTestPath:  testPath,
+				ResponsePath:       respPath,
+				MetadataPath:       "",
+				LatencyMS:          latency,
+				GeneratedAtUTC:     time.Now().UTC(),
+				Success:            true,
 			}
 		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(testPath), 0o755); err != nil {
 		return contracts.GeneratedCase{
-			Model:             model,
-			SubjectID:         subject.ID,
-			SubjectKind:       subject.Kind,
-			AgentFramework:    subject.Framework,
-			AgentModel:        subject.Model,
-			SkillName:         subject.Skill,
-			SkillVersion:      skillVersion,
-			Language:          sample.Language,
-			SampleID:          sample.ID,
-			SamplePath:        sample.Path,
-			PromptVersionID:   promptVersionID,
-			PromptMode:        promptMode,
-			GeneratedTestPath: testPath,
-			ResponsePath:      "",
-			GeneratedAtUTC:    time.Now().UTC(),
-			Success:           false,
+			Model:              model,
+			SubjectID:          subject.ID,
+			SubjectKind:        subject.Kind,
+			AgentFramework:     subject.Framework,
+			AgentModel:         subject.Model,
+			SkillName:          subject.Skill,
+			SkillVersion:       skillVersion,
+			Language:           sample.Language,
+			SampleID:           sample.ID,
+			SamplePath:         sample.Path,
+			PromptVersionID:    promptVersionID,
+			PromptMode:         promptMode,
+			DatasetMode:        string(strategy.DatasetMode),
+			GenerationStrategy: string(strategy.GenerationStrategy),
+			EvaluationStrategy: string(strategy.EvaluationStrategy),
+			FileModule:         fileModule,
+			GeneratedTestPath:  testPath,
+			ResponsePath:       "",
+			GeneratedAtUTC:     time.Now().UTC(),
+			Success:            false,
 			Error: &contracts.ErrorInfo{
 				Kind:      "write_error",
 				Message:   err.Error(),
@@ -464,6 +473,15 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 	} else {
 		if plan != nil {
 			promptMode = plan.PromptMode
+			if promptMode == string(PromptModeRepoLevel) {
+				strategy = generationStrategySpec{
+					DatasetMode:              contracts.DatasetModeProjectLevel,
+					GenerationStrategy:       contracts.GenerationStrategyProjectLevel,
+					EvaluationStrategy:       contracts.EvaluationStrategyProjectLevel,
+					PromptMode:               PromptModeRepoLevel,
+					RequireGeneratedTestFile: false,
+				}
+			}
 			promptPath = plan.PromptPath
 			renderedPrompt = plan.RenderedPrompt
 			identity = plan.Identity
@@ -471,21 +489,25 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		}
 		if plan != nil && plan.ReadError != nil {
 			return contracts.GeneratedCase{
-				Model:             model,
-				SubjectID:         subject.ID,
-				SubjectKind:       subject.Kind,
-				AgentFramework:    subject.Framework,
-				AgentModel:        subject.Model,
-				SkillName:         subject.Skill,
-				SkillVersion:      skillVersion,
-				Language:          sample.Language,
-				SampleID:          sample.ID,
-				SamplePath:        sample.Path,
-				PromptVersionID:   promptVersionID,
-				PromptMode:        promptMode,
-				GeneratedTestPath: testPath,
-				GeneratedAtUTC:    time.Now().UTC(),
-				Success:           false,
+				Model:              model,
+				SubjectID:          subject.ID,
+				SubjectKind:        subject.Kind,
+				AgentFramework:     subject.Framework,
+				AgentModel:         subject.Model,
+				SkillName:          subject.Skill,
+				SkillVersion:       skillVersion,
+				Language:           sample.Language,
+				SampleID:           sample.ID,
+				SamplePath:         sample.Path,
+				PromptVersionID:    promptVersionID,
+				PromptMode:         promptMode,
+				DatasetMode:        string(strategy.DatasetMode),
+				GenerationStrategy: string(strategy.GenerationStrategy),
+				EvaluationStrategy: string(strategy.EvaluationStrategy),
+				FileModule:         fileModule,
+				GeneratedTestPath:  testPath,
+				GeneratedAtUTC:     time.Now().UTC(),
+				Success:            false,
 				Error: &contracts.ErrorInfo{
 					Kind:      "sample_read_error",
 					Message:   plan.ReadError.Error(),
@@ -532,6 +554,16 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 			if plan != nil && plan.Reused != nil {
 				reused := *plan.Reused
 				if copyErr := copyFile(reused.GeneratedTestPath, testPath); copyErr == nil {
+					reusedCode := ""
+					if raw, readErr := os.ReadFile(testPath); readErr == nil {
+						reusedCode = string(raw)
+					}
+					reusePromptTokens, reuseCompletionTokens, reuseTotalTokens, reuseTokenSource, reuseEstimatedCost, reuseCostSource :=
+						finalizeGenerationTokenAccounting(target.model, renderedPrompt, reusedCode, reused.PromptTokens, reused.CompletionTokens, reused.TotalTokens, reused.TokenSource, reused.EstimatedCostUSD, reused.CostSource)
+					reuseReason := plan.ReuseReason
+					if reuseReason == "" {
+						reuseReason = "generation_key_match"
+					}
 					metadataPath := filepath.Join(metaRoot, fmt.Sprintf("%s_%s_%s.metadata.json", model, sample.Language, sample.ID))
 					metadata := map[string]any{
 						"model":                        model,
@@ -548,6 +580,10 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						"prompt_strategy":              PromptStrategy(),
 						"prompt_version_id":            promptVersionID,
 						"prompt_mode":                  promptMode,
+						"dataset_mode":                 string(strategy.DatasetMode),
+						"generation_strategy":          string(strategy.GenerationStrategy),
+						"evaluation_strategy":          string(strategy.EvaluationStrategy),
+						"file_module":                  fileModule,
 						"prompt_path":                  promptPath,
 						"scenario":                     sample.Scenario,
 						"generated_test_path":          testPath,
@@ -568,12 +604,20 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						"reused":                       true,
 						"reuse_stage":                  "generation",
 						"reuse_key":                    identity.GenerationKey,
-						"reuse_reason":                 "generation_key_match",
+						"reuse_reason":                 reuseReason,
 						"reused_from_run_id":           reused.RunID,
 						"reused_from_case_id":          reused.GeneratedCaseID,
 						"reused_generated_test_sha256": reused.GeneratedTestSHA256,
-						"created_at_utc":               time.Now().UTC(),
-						"success":                      true,
+						"tokens": map[string]any{
+							"prompt_tokens":      reusePromptTokens,
+							"completion_tokens":  reuseCompletionTokens,
+							"total_tokens":       reuseTotalTokens,
+							"token_source":       reuseTokenSource,
+							"estimated_cost_usd": reuseEstimatedCost,
+							"cost_source":        reuseCostSource,
+						},
+						"created_at_utc": time.Now().UTC(),
+						"success":        true,
 					}
 					_ = contracts.WriteJSON(metadataPath, metadata)
 					s.logger.Info("reuse generated test", "subject", model, "language", sample.Language, "sample_id", sample.ID, "from_run", reused.RunID)
@@ -591,11 +635,17 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						SamplePath:               sample.Path,
 						PromptVersionID:          promptVersionID,
 						PromptMode:               promptMode,
+						DatasetMode:              string(strategy.DatasetMode),
+						GenerationStrategy:       string(strategy.GenerationStrategy),
+						EvaluationStrategy:       string(strategy.EvaluationStrategy),
+						FileModule:               fileModule,
 						PromptPath:               promptPath,
 						GeneratedTestPath:        testPath,
 						ResponsePath:             reused.ResponsePath,
 						MetadataPath:             metadataPath,
 						TracePath:                reused.TracePath,
+						RawTracePath:             reused.RawTracePath,
+						TrajectoryPath:           reused.TrajectoryPath,
 						WorkspaceDiffPath:        reused.WorkspaceDiffPath,
 						SandboxProvider:          frameworkSandboxProvider(target.subject.Framework),
 						SandboxFingerprint:       reused.SandboxFingerprint,
@@ -612,22 +662,28 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						Reused:                   true,
 						ReuseStage:               "generation",
 						ReuseKey:                 identity.GenerationKey,
-						ReuseReason:              "generation_key_match",
+						ReuseReason:              reuseReason,
 						ReusedFromRunID:          reused.RunID,
 						ReusedFromCaseID:         reused.GeneratedCaseID,
 						LatencyMS:                int(time.Since(started).Milliseconds()),
-						PromptTokens:             reused.PromptTokens,
-						CompletionTokens:         reused.CompletionTokens,
-						TotalTokens:              reused.TotalTokens,
-						TokenSource:              reused.TokenSource,
-						EstimatedCostUSD:         reused.EstimatedCostUSD,
-						CostSource:               reused.CostSource,
+						PromptTokens:             reusePromptTokens,
+						CompletionTokens:         reuseCompletionTokens,
+						TotalTokens:              reuseTotalTokens,
+						TokenSource:              reuseTokenSource,
+						EstimatedCostUSD:         reuseEstimatedCost,
+						CostSource:               reuseCostSource,
 						GeneratedAtUTC:           time.Now().UTC(),
 						Success:                  true,
 					}
 				}
 			} else if reused, ok, reuseErr := reuseStore.FindReusableGeneratedAsset(ctx, identity.GenerationKey); reuseErr == nil && ok {
 				if copyErr := copyFile(reused.GeneratedTestPath, testPath); copyErr == nil {
+					reusedCode := ""
+					if raw, readErr := os.ReadFile(testPath); readErr == nil {
+						reusedCode = string(raw)
+					}
+					reusePromptTokens, reuseCompletionTokens, reuseTotalTokens, reuseTokenSource, reuseEstimatedCost, reuseCostSource :=
+						finalizeGenerationTokenAccounting(target.model, renderedPrompt, reusedCode, reused.PromptTokens, reused.CompletionTokens, reused.TotalTokens, reused.TokenSource, reused.EstimatedCostUSD, reused.CostSource)
 					metadataPath := filepath.Join(metaRoot, fmt.Sprintf("%s_%s_%s.metadata.json", model, sample.Language, sample.ID))
 					metadata := map[string]any{
 						"model":                        model,
@@ -644,6 +700,10 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						"prompt_strategy":              PromptStrategy(),
 						"prompt_version_id":            promptVersionID,
 						"prompt_mode":                  promptMode,
+						"dataset_mode":                 string(strategy.DatasetMode),
+						"generation_strategy":          string(strategy.GenerationStrategy),
+						"evaluation_strategy":          string(strategy.EvaluationStrategy),
+						"file_module":                  fileModule,
 						"prompt_path":                  promptPath,
 						"scenario":                     sample.Scenario,
 						"generated_test_path":          testPath,
@@ -668,8 +728,16 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						"reused_from_run_id":           reused.RunID,
 						"reused_from_case_id":          reused.GeneratedCaseID,
 						"reused_generated_test_sha256": reused.GeneratedTestSHA256,
-						"created_at_utc":               time.Now().UTC(),
-						"success":                      true,
+						"tokens": map[string]any{
+							"prompt_tokens":      reusePromptTokens,
+							"completion_tokens":  reuseCompletionTokens,
+							"total_tokens":       reuseTotalTokens,
+							"token_source":       reuseTokenSource,
+							"estimated_cost_usd": reuseEstimatedCost,
+							"cost_source":        reuseCostSource,
+						},
+						"created_at_utc": time.Now().UTC(),
+						"success":        true,
 					}
 					_ = contracts.WriteJSON(metadataPath, metadata)
 					s.logger.Info("reuse generated test", "subject", model, "language", sample.Language, "sample_id", sample.ID, "from_run", reused.RunID)
@@ -687,11 +755,17 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						SamplePath:               sample.Path,
 						PromptVersionID:          promptVersionID,
 						PromptMode:               promptMode,
+						DatasetMode:              string(strategy.DatasetMode),
+						GenerationStrategy:       string(strategy.GenerationStrategy),
+						EvaluationStrategy:       string(strategy.EvaluationStrategy),
+						FileModule:               fileModule,
 						PromptPath:               promptPath,
 						GeneratedTestPath:        testPath,
 						ResponsePath:             reused.ResponsePath,
 						MetadataPath:             metadataPath,
 						TracePath:                reused.TracePath,
+						RawTracePath:             reused.RawTracePath,
+						TrajectoryPath:           reused.TrajectoryPath,
 						WorkspaceDiffPath:        reused.WorkspaceDiffPath,
 						SandboxProvider:          frameworkSandboxProvider(target.subject.Framework),
 						SandboxFingerprint:       reused.SandboxFingerprint,
@@ -712,12 +786,12 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 						ReusedFromRunID:          reused.RunID,
 						ReusedFromCaseID:         reused.GeneratedCaseID,
 						LatencyMS:                int(time.Since(started).Milliseconds()),
-						PromptTokens:             reused.PromptTokens,
-						CompletionTokens:         reused.CompletionTokens,
-						TotalTokens:              reused.TotalTokens,
-						TokenSource:              reused.TokenSource,
-						EstimatedCostUSD:         reused.EstimatedCostUSD,
-						CostSource:               reused.CostSource,
+						PromptTokens:             reusePromptTokens,
+						CompletionTokens:         reuseCompletionTokens,
+						TotalTokens:              reuseTotalTokens,
+						TokenSource:              reuseTokenSource,
+						EstimatedCostUSD:         reuseEstimatedCost,
+						CostSource:               reuseCostSource,
 						GeneratedAtUTC:           time.Now().UTC(),
 						Success:                  true,
 					}
@@ -731,8 +805,11 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		trace = subjectTrace
 		agentSummary = agentSmry
 		truncated = isTruncated
+		promptTokens = pTok
+		completionTokens = cTok
+		totalTokens = tTok
 		if genErr != nil {
-			_ = contracts.WriteJSON(respPath, map[string]any{"error": genErr, "truncated": truncated, "trace_path": trace.TracePath, "workspace_diff_path": trace.WorkspaceDiffPath})
+			_ = contracts.WriteJSON(respPath, map[string]any{"error": genErr, "truncated": truncated, "trace_path": trace.TracePath, "raw_trace_path": trace.RawTracePath, "trajectory_path": trace.TrajectoryPath, "workspace_diff_path": trace.WorkspaceDiffPath})
 			return contracts.GeneratedCase{
 				Model:                    model,
 				SubjectID:                subject.ID,
@@ -747,6 +824,10 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 				SamplePath:               sample.Path,
 				PromptVersionID:          promptVersionID,
 				PromptMode:               promptMode,
+				DatasetMode:              string(strategy.DatasetMode),
+				GenerationStrategy:       string(strategy.GenerationStrategy),
+				EvaluationStrategy:       string(strategy.EvaluationStrategy),
+				FileModule:               fileModule,
 				PromptPath:               promptPath,
 				GeneratedTestPath:        testPath,
 				ResponsePath:             respPath,
@@ -754,10 +835,15 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 				PromptTokens:             promptTokens,
 				CompletionTokens:         completionTokens,
 				TotalTokens:              totalTokens,
+				RawInputTokens:           trace.RawInputTokens,
+				CacheReadInputTokens:     trace.CacheReadTokens,
+				CacheCreationInputTokens: trace.CacheCreateTokens,
 				TokenSource:              trace.TokenSource,
 				EstimatedCostUSD:         trace.EstimatedCostUSD,
 				CostSource:               trace.CostSource,
 				TracePath:                trace.TracePath,
+				RawTracePath:             trace.RawTracePath,
+				TrajectoryPath:           trace.TrajectoryPath,
 				WorkspaceDiffPath:        trace.WorkspaceDiffPath,
 				SandboxProvider:          trace.SandboxProvider,
 				SandboxFingerprint:       trace.SandboxFingerprint,
@@ -779,10 +865,18 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		}
 		content = generated
 		rawResponse = response
-		promptTokens = pTok
-		completionTokens = cTok
-		totalTokens = tTok
 		latencyMS = latency
+	}
+
+	promptTokens, completionTokens, totalTokens, trace.TokenSource, trace.EstimatedCostUSD, trace.CostSource =
+		finalizeGenerationTokenAccounting(target.model, renderedPrompt, content, promptTokens, completionTokens, totalTokens, trace.TokenSource, trace.EstimatedCostUSD, trace.CostSource)
+	if rawResponse != nil {
+		rawResponse["token_source"] = trace.TokenSource
+		rawResponse["estimated_cost_usd"] = trace.EstimatedCostUSD
+		rawResponse["cost_source"] = trace.CostSource
+		rawResponse["prompt_tokens"] = promptTokens
+		rawResponse["completion_tokens"] = completionTokens
+		rawResponse["total_tokens"] = totalTokens
 	}
 
 	if err := os.WriteFile(testPath, []byte(content), 0o644); err != nil {
@@ -797,8 +891,14 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 			Language:           sample.Language,
 			SampleID:           sample.ID,
 			SamplePath:         sample.Path,
+			DatasetMode:        string(strategy.DatasetMode),
+			GenerationStrategy: string(strategy.GenerationStrategy),
+			EvaluationStrategy: string(strategy.EvaluationStrategy),
+			FileModule:         fileModule,
 			GeneratedTestPath:  testPath,
 			TracePath:          trace.TracePath,
+			RawTracePath:       trace.RawTracePath,
+			TrajectoryPath:     trace.TrajectoryPath,
 			WorkspaceDiffPath:  trace.WorkspaceDiffPath,
 			SandboxProvider:    trace.SandboxProvider,
 			SandboxFingerprint: trace.SandboxFingerprint,
@@ -833,11 +933,17 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		"prompt_strategy":            PromptStrategy(),
 		"prompt_version_id":          promptVersionID,
 		"prompt_mode":                promptMode,
+		"dataset_mode":               string(strategy.DatasetMode),
+		"generation_strategy":        string(strategy.GenerationStrategy),
+		"evaluation_strategy":        string(strategy.EvaluationStrategy),
+		"file_module":                fileModule,
 		"prompt_path":                promptPath,
 		"scenario":                   sample.Scenario,
 		"generated_test_path":        testPath,
 		"response_path":              respPath,
 		"trace_path":                 trace.TracePath,
+		"raw_trace_path":             trace.RawTracePath,
+		"trajectory_path":            trace.TrajectoryPath,
 		"workspace_diff_path":        trace.WorkspaceDiffPath,
 		"sandbox_provider":           trace.SandboxProvider,
 		"sandbox_fingerprint":        trace.SandboxFingerprint,
@@ -856,12 +962,15 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		"generation_env_fingerprint": identity.GenerationEnvFingerprint,
 		"latency_ms":                 latencyForMeta,
 		"tokens": map[string]any{
-			"prompt_tokens":      promptTokens,
-			"completion_tokens":  completionTokens,
-			"total_tokens":       totalTokens,
-			"token_source":       trace.TokenSource,
-			"estimated_cost_usd": trace.EstimatedCostUSD,
-			"cost_source":        trace.CostSource,
+			"prompt_tokens":               promptTokens,
+			"completion_tokens":           completionTokens,
+			"total_tokens":                totalTokens,
+			"raw_input_tokens":            trace.RawInputTokens,
+			"cache_read_input_tokens":     trace.CacheReadTokens,
+			"cache_creation_input_tokens": trace.CacheCreateTokens,
+			"token_source":                trace.TokenSource,
+			"estimated_cost_usd":          trace.EstimatedCostUSD,
+			"cost_source":                 trace.CostSource,
 		},
 		"truncated":      truncated,
 		"created_at_utc": time.Now().UTC(),
@@ -887,6 +996,10 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		SamplePath:               sample.Path,
 		PromptVersionID:          promptVersionID,
 		PromptMode:               promptMode,
+		DatasetMode:              string(strategy.DatasetMode),
+		GenerationStrategy:       string(strategy.GenerationStrategy),
+		EvaluationStrategy:       string(strategy.EvaluationStrategy),
+		FileModule:               fileModule,
 		PromptPath:               promptPath,
 		GeneratedTestPath:        testPath,
 		ResponsePath:             respPath,
@@ -895,10 +1008,15 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		PromptTokens:             promptTokens,
 		CompletionTokens:         completionTokens,
 		TotalTokens:              totalTokens,
+		RawInputTokens:           trace.RawInputTokens,
+		CacheReadInputTokens:     trace.CacheReadTokens,
+		CacheCreationInputTokens: trace.CacheCreateTokens,
 		TokenSource:              trace.TokenSource,
 		EstimatedCostUSD:         trace.EstimatedCostUSD,
 		CostSource:               trace.CostSource,
 		TracePath:                trace.TracePath,
+		RawTracePath:             trace.RawTracePath,
+		TrajectoryPath:           trace.TrajectoryPath,
 		WorkspaceDiffPath:        trace.WorkspaceDiffPath,
 		SandboxProvider:          trace.SandboxProvider,
 		SandboxFingerprint:       trace.SandboxFingerprint,
@@ -990,23 +1108,53 @@ func sha256Bytes(data []byte) string {
 // 返回值:
 //   - error: 复制失败时的错误
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	info, err := os.Stat(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	out, err := os.Create(dst)
+	raw, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
+	if shouldNormalizeShellScript(src) {
+		raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+		raw = bytes.ReplaceAll(raw, []byte("\r"), []byte("\n"))
 	}
-	return out.Close()
+	mode := info.Mode().Perm()
+	if mode == 0 {
+		mode = 0o644
+	}
+	return os.WriteFile(dst, raw, mode)
+}
+
+func shouldNormalizeShellScript(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".sh")
+}
+
+func finalizeGenerationTokenAccounting(
+	model modelConfig,
+	prompt string,
+	generated string,
+	promptTokens *int,
+	completionTokens *int,
+	totalTokens *int,
+	tokenSource string,
+	estimatedCost *float64,
+	costSource string,
+) (*int, *int, *int, string, *float64, string) {
+	trace := AgentTrace{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+		TokenSource:      tokenSource,
+		EstimatedCost:    estimatedCost,
+		CostSource:       costSource,
+	}
+	finalizeAgentAccounting(&trace, prompt, generated, model)
+	return trace.PromptTokens, trace.CompletionTokens, trace.TotalTokens, trace.TokenSource, trace.EstimatedCost, trace.CostSource
 }
 
 // sanitizeIdentifier 将字符串规范化为合法标识符
@@ -1084,10 +1232,12 @@ func buildCheckpointPath(spec contracts.RunSpec, subjects []subjectTarget) strin
 	sort.Strings(langs)
 
 	scope := fmt.Sprintf(
-		"subjects=%s;langs=%s;class=%s;level=%s;manifest=%s;max=%d;dataset=%s;agents=%s",
+		"subjects=%s;langs=%s;class=%s;scenario=%s;project=%s;level=%s;manifest=%s;max=%d;dataset=%s;agents=%s",
 		strings.Join(subjectIDs, ","),
 		strings.Join(langs, ","),
 		strings.Join(spec.DatasetClasses, ","),
+		spec.DatasetScenario,
+		spec.DatasetProject,
 		spec.DatasetLevel,
 		spec.DatasetManifest,
 		spec.MaxSamples,
@@ -1200,6 +1350,13 @@ func trimErrorMsg(msg string, max int) string {
 		return msg
 	}
 	return msg[:max] + "..."
+}
+
+func ptrIntValue(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // errorMsgSafe 安全提取错误消息

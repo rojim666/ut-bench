@@ -395,6 +395,7 @@ function renderScenarioTable(items) {
 function renderErrorTable(items) {
   const body = document.getElementById('error-analysis-body');
   const empty = document.getElementById('error-analysis-empty');
+  if (!body || !empty) return;
   body.innerHTML = items.map(item => '<tr><td>' + safeText(stageLabel(item.stage)) + '</td><td>' + safeText(errorTypeLabel(item.errorType)) + '</td><td>' + item.count + '</td><td>' + safeText(item.exampleModel) + '</td><td>' + safeText(item.exampleSample) + '</td></tr>').join('');
   empty.style.display = items.length ? 'none' : 'block';
 }
@@ -406,8 +407,10 @@ function buildPieData(items, field) {
 }
 
 function upsertChart(instance, canvasId, type, labels, values, colors) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return instance || null;
   if (instance) instance.destroy();
-  return new Chart(document.getElementById(canvasId), {
+  return new Chart(canvas, {
     type,
     data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: chartLegendBottomOptions() } }
@@ -557,17 +560,17 @@ function initRawColumnToggles() {
 
 function normalizedAssertionDensity(value) {
   const raw = Number(value || 0);
-  return Math.max(0, Math.min(1, raw / 5));
+  const A_SAT = 3.0;
+  return Math.max(0, Math.min(1, raw / A_SAT));
 }
 
 function qualityScore(item) {
-  return (
-    Number(item.compile_pass_rate || 0) * 0.25 +
-    Number(item.avg_test_pass_rate || 0) * 0.30 +
-    Number(item.avg_line_coverage || 0) * 0.15 +
-    Number(item.avg_mutation_score || 0) * 0.25 +
-    normalizedAssertionDensity(item.avg_assertion_density) * 0.05
-  ) * 100;
+  const c = Number(item.compile_pass_rate || 0);
+  const p = Number(item.avg_test_pass_rate || 0);
+  const v = Number(item.avg_line_coverage || 0);
+  const m = Number(item.avg_mutation_score || 0);
+  const aNorm = normalizedAssertionDensity(item.avg_assertion_density);
+  return c * p * (v * 0.20 + aNorm * 0.20 + m * 0.60) * 100;
 }
 
 function modelColor(index) {

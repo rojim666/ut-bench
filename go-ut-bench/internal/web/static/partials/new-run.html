@@ -84,18 +84,18 @@
           </div>
 
           <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
-            <div class="section-title">模型 Baseline / 兼容回退</div>
-            <div x-show="selectedSubjectCount > 0" class="text-[12px] mb-3" style="color:var(--fg-muted)">
-              当前已选择 Subject 组合，模型配置会随 Subject 自动补齐；Baseline 勾选只在未选择 Subject 时启用。
+            <div class="section-title">模型检测</div>
+            <div class="text-[12px] mb-3" style="color:var(--fg-muted)">
+              检测已注册模型的 API Key 配置状态；执行对象请在上方 Subject 组合中选择。
             </div>
             <div class="flex flex-wrap gap-2.5">
               <template x-for="m in config?.models ?? []" :key="m.name">
-                <label :class="form.models.includes(m.name) ? 'active' : ''" class="chip" :style="selectedSubjectCount > 0 ? 'opacity:.55;pointer-events:none' : ''" :title="selectedSubjectCount > 0 ? 'Subject 模式下无需手动勾选模型' : (m.api_key_set ? 'API Key 已配置' : 'API Key 未配置: ' + m.api_key_env)">
-                  <input type="checkbox" :value="m.name" x-model="form.models" class="w-3.5 h-3.5" :disabled="selectedSubjectCount > 0">
+                <div class="chip" :class="m.api_key_set ? 'active' : ''" :title="m.api_key_set ? 'API Key 已配置' : 'API Key 未配置: ' + m.api_key_env">
                   <span class="inline-block w-2 h-2 rounded-full shrink-0" :style="m.api_key_set ? 'background:var(--green)' : 'background:var(--red)'"></span>
                   <span x-text="m.name" class="font-medium"></span>
                   <span x-text="m.model_id" class="text-[11px]" style="color:var(--fg-muted)"></span>
-                </label>
+                  <span class="text-[11px]" :style="m.api_key_set ? 'color:var(--green)' : 'color:var(--red)'" x-text="m.api_key_set ? '可用' : '缺密钥'"></span>
+                </div>
               </template>
             </div>
             <div x-show="(config?.models ?? []).some(m => !m.api_key_set)" class="mt-2 text-[11px]" style="color:var(--yellow)">
@@ -115,25 +115,39 @@
           </div>
           <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
             <div class="section-title">数据集筛选</div>
-            <div class="grid grid-cols-3 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div>
                 <label class="label-text">类型</label>
-                <select x-model="form.class" class="input-base">
+                <select x-model="form.class" class="input-base" @change="normalizeDatasetScenario()">
                   <option value="">全部</option>
                   <template x-for="c in config?.classes ?? []" :key="c"><option :value="c" x-text="c"></option></template>
                 </select>
               </div>
               <div>
                 <label class="label-text">场景</label>
-                <select x-model="form.scenario" class="input-base">
+                <select x-model="form.scenario" class="input-base" @change="normalizeDatasetProject()">
                   <option value="">全部场景</option>
-                  <template x-for="sc in config?.scenarios ?? []" :key="sc"><option :value="sc" x-text="sc"></option></template>
+                  <template x-for="sc in datasetScenariosForClass(form.class)" :key="sc"><option :value="sc" x-text="sc"></option></template>
+                </select>
+              </div>
+              <div x-show="form.class === 'repo_level'">
+                <label class="label-text">项目</label>
+                <select x-model="form.project" class="input-base" :disabled="!form.scenario">
+                  <option value="">全部项目</option>
+                  <template x-for="p in datasetProjectsForSelection()" :key="p.name">
+                    <option :value="p.name" x-text="datasetProjectLabel(p)"></option>
+                  </template>
                 </select>
               </div>
               <div>
                 <label class="label-text">等级</label>
-                <input x-model="form.level" type="text" placeholder="l1, l2..." class="input-base">
+                <input x-model="form.level" type="text" placeholder="l1, l2..." class="input-base" :disabled="form.class === 'repo_level'">
               </div>
+            </div>
+            <div x-show="form.class === 'repo_level'" class="mt-3 text-[12px] rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border);color:var(--fg-muted)">
+              <span x-show="!form.scenario">项目级数据集先选择场景，再选择具体项目；不选项目时会评测该场景下所有项目。</span>
+              <span x-show="form.scenario && !form.project">当前场景包含 <b style="color:var(--fg)" x-text="datasetProjectsForSelection().length"></b> 个项目，预计可展开 <b style="color:var(--fg)" x-text="datasetProjectsForSelection().reduce((n,p)=>n+Number(p.sample_count||0),0)"></b> 个文件模块。</span>
+              <span x-show="form.project">当前项目可展开 <b style="color:var(--fg)" x-text="selectedDatasetProjectSampleCount"></b> 个文件模块；样本上限会作用在展开后的 target files 上。</span>
             </div>
           </div>
           <div class="form-section">

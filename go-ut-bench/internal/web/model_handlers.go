@@ -368,7 +368,16 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request, name string
 		errJSON(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	in.Name = name
+	oldName := strings.TrimSpace(name)
+	newName := strings.TrimSpace(in.Name)
+	if newName == "" {
+		newName = oldName
+	}
+	if strings.Contains(newName, "/") {
+		errJSON(w, http.StatusBadRequest, "invalid model name")
+		return
+	}
+	in.Name = newName
 	modelsMu.Lock()
 	defer modelsMu.Unlock()
 	root, err := readModelsRoot(s.configPath)
@@ -377,9 +386,18 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 	models := ensureModelsMap(root)
-	if _, exists := models[name]; !exists {
-		errJSON(w, http.StatusNotFound, "model not found: "+name)
+	node, exists := models[oldName]
+	if !exists {
+		errJSON(w, http.StatusNotFound, "model not found: "+oldName)
 		return
+	}
+	if newName != oldName {
+		if _, exists := models[newName]; exists {
+			errJSON(w, http.StatusConflict, "model already exists: "+newName)
+			return
+		}
+		models[newName] = node
+		delete(models, oldName)
 	}
 	normalizeModelEntry(&in)
 	upsertModelNode(models, in)
@@ -391,7 +409,7 @@ func (s *Server) updateModel(w http.ResponseWriter, r *http.Request, name string
 		errJSON(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"name": name, "status": "updated"})
+	writeJSON(w, http.StatusOK, map[string]string{"name": newName, "old_name": oldName, "status": "updated"})
 }
 
 func (s *Server) deleteModel(w http.ResponseWriter, _ *http.Request, name string) {

@@ -130,7 +130,7 @@ func populateMutationResult(row *contracts.EvaluationResult, score float64, stat
 	} else {
 		row.MutationScore = &score
 	}
-	if stats.Total > 0 {
+	if stats.Total > 0 || (mutationErr == "" && strings.TrimSpace(tool) != "") {
 		total := stats.Total
 		killed := stats.Killed
 		survived := stats.Survived
@@ -173,6 +173,7 @@ func (s *Service) evalWithLanguageEvaluator(
 	langEval LanguageEvaluator,
 ) {
 	lang := strings.ToLower(item.Language)
+	strategy := resolveEvaluationStrategy(item)
 
 	// 1. PrepareWorkspace
 	setPhase(lang + ".prepare")
@@ -185,9 +186,30 @@ func (s *Service) evalWithLanguageEvaluator(
 	if ws.ShouldCleanup {
 		defer cleanupWorkspaceAsync(ws.Workdir, item.Model, item.Language, item.SampleID, s.logger)
 	}
+	if ws.Extra["isRepoLevel"] == "true" {
+		s.logger.Debug("repo_level evaluation workspace",
+			"model", item.Model,
+			"language", item.Language,
+			"sample_id", item.SampleID,
+			"workdir", ws.Workdir,
+			"package_dir", ws.Extra["packageDir"],
+			"target_file", ws.Extra["targetFile"],
+			"generated_test", ws.TestPath,
+			"dataset_mode", string(strategy.DatasetMode),
+			"evaluation_strategy", string(strategy.EvaluationStrategy),
+		)
+	}
 
 	// 2. CompileCheck
 	setPhase(lang + ".compile")
+	if ws.Extra["isRepoLevel"] == "true" {
+		s.logger.Debug("repo_level compile command",
+			"model", item.Model,
+			"language", item.Language,
+			"sample_id", item.SampleID,
+			"command", repoLevelCommandPreview(lang, "compile", ws),
+		)
+	}
 	compilePass, compileErr := langEval.CompileCheck(ws)
 	row.CompilePass = compilePass
 	if !compilePass {
@@ -201,6 +223,14 @@ func (s *Service) evalWithLanguageEvaluator(
 		testTimeout = defaultTestTimeoutSeconds
 	}
 	setPhase(lang + ".test")
+	if ws.Extra["isRepoLevel"] == "true" {
+		s.logger.Debug("repo_level test command",
+			"model", item.Model,
+			"language", item.Language,
+			"sample_id", item.SampleID,
+			"command", repoLevelCommandPreview(lang, "test", ws),
+		)
+	}
 	pass, testOutput, runtimeMs := langEval.ExecuteTests(ws, testTimeout)
 	row.TestPass = &pass
 	if !pass && testOutput != "" {
@@ -253,4 +283,34 @@ func (s *Service) evalWithLanguageEvaluator(
 			row.MutationTool = langEval.MutationTool()
 		}
 	}
+}
+
+func repoLevelCommandPreview(lang, phase string, ws *WorkspaceContext) string {
+	switch lang {
+	case "go":
+		pkg := ws.Extra["packageDir"]
+		if pkg == "" || pkg == "." {
+			pkg = "."
+		} else if !strings.HasPrefix(pkg, "./") && !strings.HasPrefix(pkg, "../") {
+			pkg = "./" + pkg
+		}
+		if phase == "compile" {
+			return "go test -c -o compile_check_output.test " + pkg
+		}
+		return "go test -v " + pkg
+	case "python":
+		if ws.TestPath != "" {
+			return "python -m pytest " + ws.TestPath
+		}
+	case "java":
+		module := ws.Extra["moduleDir"]
+		if phase == "compile" {
+			return "mvn " + strings.Join(javaMavenArgsForModule(module, "-DskipTests", "test-compile"), " ")
+		}
+		if testClass := ws.Extra["testClassName"]; testClass != "" {
+			return "mvn " + strings.Join(javaMavenArgsForModule(module, "-Dtest="+testClass, "-DfailIfNoTests=false", "-Dsurefire.failIfNoSpecifiedTests=false", "test"), " ")
+		}
+		return "mvn " + strings.Join(javaMavenArgsForModule(module, "test"), " ")
+	}
+	return lang + "." + phase
 }

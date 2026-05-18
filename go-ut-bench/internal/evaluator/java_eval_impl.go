@@ -17,6 +17,31 @@ func init() {
 type JavaEvaluator struct{}
 
 func (e *JavaEvaluator) PrepareWorkspace(item contracts.GeneratedCase) (*WorkspaceContext, error) {
+	if isRepoLevelSample(item.SamplePath) {
+		workdir, testRel, moduleDir, className, testClassName, prepErr := prepareJavaRepoLevelWorkspace(item.GeneratedTestPath, item.SamplePath)
+		if workdir == "" {
+			return nil, errors.New(prepErr)
+		}
+		packageName := ""
+		targetFile := ""
+		if meta := loadRepoLevelMeta(item.SamplePath); meta != nil {
+			packageName = meta.PackageName
+			targetFile = meta.TargetFile
+		}
+		return &WorkspaceContext{
+			Workdir:  workdir,
+			TestPath: testRel,
+			Extra: map[string]string{
+				"isRepoLevel":   "true",
+				"moduleDir":     moduleDir,
+				"className":     className,
+				"testClassName": testClassName,
+				"packageName":   packageName,
+				"targetFile":    targetFile,
+			},
+			ShouldCleanup: true,
+		}, nil
+	}
 	workdir, testFileName, _, className := prepareJavaWorkspace(item.GeneratedTestPath, item.SamplePath)
 	if workdir == "" {
 		// prepareJavaWorkspace 在失败时将错误信息存在 testFileName 中
@@ -31,10 +56,16 @@ func (e *JavaEvaluator) PrepareWorkspace(item contracts.GeneratedCase) (*Workspa
 }
 
 func (e *JavaEvaluator) CompileCheck(ws *WorkspaceContext) (bool, string) {
+	if ws.Extra["isRepoLevel"] == "true" {
+		return javaCompileCheckRepoLevel(ws.Workdir, ws.Extra["moduleDir"])
+	}
 	return javaCompileCheck(ws.Workdir)
 }
 
 func (e *JavaEvaluator) ExecuteTests(ws *WorkspaceContext, timeoutSeconds int) (bool, string, int) {
+	if ws.Extra["isRepoLevel"] == "true" {
+		return executeJavaTestsRepoLevel(ws.Workdir, ws.Extra["moduleDir"], ws.Extra["testClassName"], timeoutSeconds)
+	}
 	return executeJavaTestsWithTimeout(ws.Workdir, timeoutSeconds)
 }
 
@@ -43,6 +74,9 @@ func (e *JavaEvaluator) ParseTestCounts(testOutput string) (*int, *int) {
 }
 
 func (e *JavaEvaluator) EstimateAssertionDensity(workdir, testPath string) (int, int, float64) {
+	if raw, err := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(testPath))); err == nil {
+		return estimateJavaAssertionDensity(string(raw))
+	}
 	fullPath := filepath.Join(workdir, "src", "test", "java", testPath)
 	raw, err := os.ReadFile(fullPath)
 	if err != nil {
@@ -56,11 +90,17 @@ func (e *JavaEvaluator) CollectCoverage(ws *WorkspaceContext, testPassed bool, t
 	if className == "" {
 		return 0, 0, ""
 	}
+	if ws.Extra["isRepoLevel"] == "true" {
+		return collectJavaCoverageRepoLevel(ws.Workdir, ws.Extra["moduleDir"], className, ws.Extra["testClassName"], timeoutSeconds)
+	}
 	return collectJavaCoverage(ws.Workdir, className)
 }
 
 func (e *JavaEvaluator) CollectMutation(ctx context.Context, ws *WorkspaceContext, input MutationInput) (float64, mutationStats, string) {
 	className := ws.Extra["className"]
+	if ws.Extra["isRepoLevel"] == "true" {
+		return collectJavaMutationRepoLevel(ctx, ws.Workdir, ws.Extra["moduleDir"], className, ws.Extra["packageName"], ws.Extra["testClassName"], input.TimeoutSeconds, input.TestPassRate, input.TestPassed, input.TestTotal)
+	}
 	return collectJavaMutation(ctx, ws.Workdir, className, input.TimeoutSeconds, input.TestPassRate, input.TestPassed, input.TestTotal)
 }
 

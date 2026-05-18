@@ -5,6 +5,7 @@
       { id:'dashboard', icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>', label:'总览' },
       { id:'new-run',   icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>', label:'新建任务' },
       { id:'runs',      icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>', label:'任务列表' },
+      { id:'generated-sets', icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z"/><path d="M4 7v5c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/><path d="M4 12v5c0 1.7 3.6 3 8 3s8-1.3 8-3v-5"/></svg>', label:'生成集' },
       { id:'automations', icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M4 4l3 3"/><path d="M20 4l-3 3"/></svg>', label:'定时任务' },
       { id:'agents',    icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12h6"/><path d="M12 9v6"/></svg>', label:'Agent 接入' },
       { id:'database',  icon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>', label:'数据库' },
@@ -16,6 +17,13 @@
     runsLoading: false,
     runFilter: '',
     statusFilter: '',
+    generatedSets: [],
+    generatedSetsLoading: false,
+    generatedSetStatusFilter: '',
+    generatedSetSaving: false,
+    generatedSetEvaluating: '',
+    selectedGeneratedSet: null,
+    generatedSetSamples: [],
     // 评测资产（磁盘扫描视图，区别于内存中的 runs / DB 入库的 db*）
     assets: [],
     assetsLoading: false,
@@ -62,6 +70,7 @@
       skill_root: '',
       names: [],
     },
+    skillDraftCreating: {},
     // Skill 详情/对比
     skillDetailOpen: false,
     skillDetail: null,
@@ -136,10 +145,10 @@
     dbReportFilter: { run_id:'' },
     dbRunArtifactFilter: { run_id:'' },
     form: {
-      run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill'}], languages:[], class:'self_contained', scenario:'', level:'',
+      run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill',skill_version:''}], languages:[], class:'self_contained', scenario:'', level:'',
       max_samples:1, workers:4, mode:'full', phase:'full', source_run_id:'', manifest_path:'', evaluation_path:'',
       dry_run:false, reuse_generated:true, reuse_evaluation:false, mutation_enabled:true,
-      mutation_timeout:360, mutation_policy:'warn', ingest:true, use_docker:true,
+      mutation_timeout:1800, mutation_policy:'warn', ingest:true, use_docker:true,
     },
     env: null,
     envChecking: false,
@@ -160,10 +169,12 @@
     },
     get activeBuildDockerfile() {
       if (this.buildTarget === 'agent') return 'docker/agents/Dockerfile'
+      if (this.buildFastMode) return 'Dockerfile.app'
       return 'Dockerfile'
     },
     buildModalOpen: false,
     buildTarget: 'eval',
+    buildFastMode: false,
     buildId: '',
     buildStatus: '',
     buildLogs: [],
@@ -183,6 +194,36 @@
     currentRun: null,
     currentLogs: [],
     currentReport: null,
+    currentAnalysis: null,
+    currentOptimizationPlan: null,
+    analysisLoading: false,
+    analysisGenerating: false,
+    optimizationLoading: false,
+    optimizationGenerating: false,
+    analysisOptions: { rule_enabled: false, llm_enabled: true, llm_model: '', force: true },
+    analysisFilters: { source: '', severity: '', category: '', subject: '' },
+    analysisSubjectOptions: [],
+    analysisSelection: [],
+    analysisShowSelectedOnly: false,
+    analysisJob: null,
+    analysisJobTimer: null,
+    analysisChatSessions: [],
+    analysisChatSession: null,
+    analysisChatInput: '',
+    analysisChatStreaming: false,
+    analysisChatError: '',
+    analysisChatController: null,
+    analysisChatForceNew: false,
+    analysisFocus: null,
+    analysisDetailOpen: false,
+    analysisDetail: null,
+    _evidenceMap: null,
+    _subjectMap: null,
+    _selectionSet: null,
+    _cachedRootCauses: null,
+    _rootCausesDirty: true,
+    analysisSubjectLimit: 50,
+    analysisFindingsLimit: 50,
     detailTab: 'logs',
     sseSource: null,
     runActionBusy: '',
@@ -192,6 +233,7 @@
     modelsLoading: false,
     modelFormOpen: false,
     modelFormMode: 'create', // create | edit
+    modelFormOriginalName: '',
     modelForm: {
       name: '', enabled: true, provider: '', model_id: '',
       api_endpoint: '', anthropic_endpoint: '',
@@ -222,6 +264,7 @@
       await this.loadModels()
       await this.loadEnv()
       await this.loadRuns()
+      await this.loadGeneratedSets()
       await this.loadDatabase()
       await this.loadAutomations()
       this._startTimers()
@@ -253,6 +296,7 @@
       this._stopTimers()
       this._timerRuns = setInterval(() => {
         if (this.page === 'dashboard' || this.page === 'runs' || this.page === 'run-detail') this.loadRuns()
+        if (this.page === 'generated-sets') this.loadGeneratedSets()
       }, 4000)
       this._timerDb = setInterval(() => {
         if (this.page === 'database') this.loadDatabase()
@@ -272,7 +316,13 @@
     },
 
     async loadConfig() {
-      try { const r = await fetch('/api/config', { cache: 'no-store' }); this.config = await r.json(); this._comboKey++ }
+      try {
+        const r = await fetch('/api/config', { cache: 'no-store' })
+        this.config = await r.json()
+        this.normalizeDatasetScenario()
+        this.normalizeAutomationDatasetScenario()
+        this._comboKey++
+      }
       catch(e) { console.error('config', e) }
     },
 
@@ -438,7 +488,7 @@
       this._toastTimer = setTimeout(() => { this.toast = '' }, ms)
     },
 
-    openBuildImage(target = 'eval') {
+    openBuildImage(target = 'eval', fast = false) {
       const nextTarget = target || 'eval'
       if (this.buildTarget !== nextTarget) {
         this.buildId = ''
@@ -447,6 +497,7 @@
         this.buildError = ''
       }
       this.buildTarget = nextTarget
+      this.buildFastMode = nextTarget === 'eval' && !!fast
       this.buildModalOpen = true
       this.reattachBuild(this.buildTarget)
     },
@@ -509,6 +560,7 @@
           if (preferredTarget && data.target && data.target !== preferredTarget && !active) return
           this.buildId = data.build_id
           this.buildTarget = data.target || this.buildTarget || 'eval'
+          this.buildFastMode = this.buildTarget === 'eval' && data.dockerfile === 'Dockerfile.app'
           this.buildStatus = data.status
           this.buildError = data.error || ''
           const detail = await fetch('/api/env/build-image/' + this.buildId)
@@ -521,7 +573,9 @@
     async startBuild() {
       this.buildLogs = []; this.buildError = ''; this.buildStatus = 'pending'
       try {
-        const r = await fetch('/api/env/build-image?target=' + encodeURIComponent(this.buildTarget || 'eval'), { method: 'POST' })
+        const params = new URLSearchParams({ target: this.buildTarget || 'eval' })
+        if (this.buildFastMode) params.set('fast', '1')
+        const r = await fetch('/api/env/build-image?' + params.toString(), { method: 'POST' })
         const data = await r.json()
         if (!r.ok) { this.buildError = data.error || '启动失败'; this.buildStatus = 'failed'; return }
         this.buildId = data.build_id; this.buildStatus = data.status; this.buildTarget = data.target || this.buildTarget || 'eval'; this.startBuildSSE(this.buildId)
@@ -562,10 +616,11 @@
       this.runsLoading = true
       try {
         const r = await fetch('/api/runs')
-        this.runs = await r.json()
+        const rows = await r.json()
+        this.runs = Array.isArray(rows) ? rows.map(run => this.normalizeRunForUI(run)) : []
         if (this.currentRun) {
           const updated = this.runs.find(r => r.run_id === this.currentRun.run_id)
-          if (updated) { this.currentRun.status = updated.status; this.currentRun.ended_at = updated.ended_at; this.currentRun.error = updated.error }
+          if (updated) this.currentRun = this.normalizeRunForUI({ ...this.currentRun, ...updated })
         }
         this.autoSelectPinnedReport()
       } catch(e) { console.error('runs', e) }
@@ -739,7 +794,13 @@
     get selectedScenarioCount() {
       if (this.form.phase !== 'full' && this.form.phase !== 'generate') return 0
       if (this.form.scenario) return 1
-      return (this.config?.scenarios ?? []).length || 4
+      return this.datasetScenariosForClass(this.form.class).length || 4
+    },
+
+    get selectedProjectCount() {
+      if (this.form.class !== 'repo_level') return 0
+      if (this.form.project) return 1
+      return this.datasetProjectsForSelection().length || 0
     },
 
     get selectedLanguageCount() {
@@ -751,11 +812,11 @@
     },
 
     get selectedModelCount() {
-      return this.form.models.length
+      return 0
     },
 
     get selectedExecutionTargetCount() {
-      return this.selectedSubjectCount || this.selectedModelCount
+      return this.selectedSubjectCount
     },
 
     get selectedFrameworkCount() {
@@ -770,10 +831,7 @@
       if (this.selectedSubjectCount > 0) {
         return `将按 ${this.selectedSubjectCount} 个 subject 下发任务；模型列表只用于补齐这些 subject 所引用的模型配置。`
       }
-      if (this.selectedModelCount > 0) {
-        return '当前未选择 subject，将按纯模型 baseline 执行。'
-      }
-      return '添加组合或退回到纯模型 baseline。'
+      return '请至少添加一个 Subject 组合。'
     },
 
     get estimatedTaskCount() {
@@ -808,6 +866,133 @@
       } finally {
         this.dbLoading = false
       }
+    },
+
+    get filteredGeneratedSets() {
+      const status = this.generatedSetStatusFilter || ''
+      return (this.generatedSets || []).filter(s => !status || s.status === status)
+    },
+
+    async loadGeneratedSets() {
+      this.generatedSetsLoading = true
+      try {
+        const q = new URLSearchParams()
+        if (this.generatedSetStatusFilter) q.set('status', this.generatedSetStatusFilter)
+        q.set('limit', '100')
+        const r = await fetch('/api/generated-sets?' + q.toString(), { cache: 'no-store' })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.generatedSets = Array.isArray(data) ? data : []
+        if (this.selectedGeneratedSet?.generated_set_id) {
+          const fresh = this.generatedSets.find(s => s.generated_set_id === this.selectedGeneratedSet.generated_set_id)
+          if (fresh) this.selectedGeneratedSet = { ...this.selectedGeneratedSet, ...fresh }
+        }
+      } catch(e) {
+        this.showToast('加载生成集失败：' + (e.message || String(e)), 'err')
+      } finally {
+        this.generatedSetsLoading = false
+      }
+    },
+
+    async openGeneratedSet(id) {
+      if (!id) return
+      try {
+        const r = await fetch('/api/generated-sets/' + encodeURIComponent(id), { cache: 'no-store' })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.selectedGeneratedSet = data.set || null
+        this.generatedSetSamples = Array.isArray(data.samples) ? data.samples : []
+        this.goto('generated-sets')
+      } catch(e) {
+        this.showToast('打开生成集失败：' + (e.message || String(e)), 'err', 6000)
+      }
+    },
+
+    async promoteRunToGeneratedSet(runID) {
+      if (!runID || this.generatedSetSaving) return
+      const defaultName = this.currentRun?.label || `生成集 ${runID}`
+      const name = prompt('生成集名称：', defaultName)
+      if (name === null) return
+      const note = prompt('生成集备注：', `来源 run: ${runID}`)
+      if (note === null) return
+      this.generatedSetSaving = true
+      try {
+        const r = await fetch('/api/generated-sets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ run_id: runID, name: name.trim() || defaultName, note: note.trim(), status: 'candidate' }),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.showToast(`已保存生成集：${data.accepted_count || 0}/${data.sample_count || 0} 可复用`, 'ok', 6000)
+        await this.loadGeneratedSets()
+        await this.openGeneratedSet(data.generated_set_id)
+      } catch(e) {
+        this.showToast('保存生成集失败：' + (e.message || String(e)), 'err', 6000)
+      } finally {
+        this.generatedSetSaving = false
+      }
+    },
+
+    async updateGeneratedSet() {
+      const set = this.selectedGeneratedSet
+      if (!set?.generated_set_id || this.generatedSetSaving) return
+      this.generatedSetSaving = true
+      try {
+        const r = await fetch('/api/generated-sets/' + encodeURIComponent(set.generated_set_id), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: set.name || '', note: set.note || '', status: set.status || 'candidate' }),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.selectedGeneratedSet = data
+        this.showToast('生成集备注已保存', 'ok')
+        await this.loadGeneratedSets()
+      } catch(e) {
+        this.showToast('保存生成集失败：' + (e.message || String(e)), 'err')
+      } finally {
+        this.generatedSetSaving = false
+      }
+    },
+
+    async evaluateGeneratedSet(set = this.selectedGeneratedSet) {
+      if (!set?.generated_set_id || this.generatedSetEvaluating) return
+      if ((set.accepted_count || 0) <= 0) {
+        this.showToast('这个生成集没有可复用的成功生成样本', 'warn', 5000)
+        return
+      }
+      if (!confirm(`从生成集「${set.name || set.generated_set_id}」启动复评？将复用已生成测试代码，只运行评测和报告。`)) return
+      this.generatedSetEvaluating = set.generated_set_id
+      try {
+        const r = await fetch('/api/generated-sets/' + encodeURIComponent(set.generated_set_id) + '/evaluate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            use_docker: true,
+            workers: this.form.workers || 4,
+            mutation_enabled: true,
+            mutation_timeout: this.form.mutation_timeout || 1800,
+            mutation_policy: this.form.mutation_policy || 'warn',
+            reuse_evaluation: false,
+            ingest: true,
+          }),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.showToast('生成集复评已启动：' + data.run_id, 'ok', 6000)
+        await this.loadRuns()
+        await this.openRun(data.run_id)
+      } catch(e) {
+        this.showToast('启动生成集复评失败：' + (e.message || String(e)), 'err', 6000)
+      } finally {
+        this.generatedSetEvaluating = ''
+      }
+    },
+
+    generatedSetStatusText(status) {
+      const map = { candidate:'候选', accepted:'已确认', archived:'归档' }
+      return map[status] || status || '候选'
     },
 
     async loadAutomations() {
@@ -990,13 +1175,14 @@
         source_run_id: this.form.source_run_id || '',
         manifest_path: this.form.manifest_path || '',
         evaluation_path: this.form.evaluation_path || '',
-        combinations: [{ _id: 1, framework: 'model_api', model: defaultModel, skill: 'no_skill' }],
+        combinations: [{ _id: 1, framework: 'model_api', model: defaultModel, skill: 'no_skill', skill_version: '' }],
         models: [],
         languages: this.form.languages?.length ? [...this.form.languages] : ['python'],
         class: this.form.class || 'self_contained',
         scenario: this.form.scenario || '',
+        project: this.form.project || '',
         level: this.form.level || '',
-        max_samples: this.form.max_samples || 1,
+        max_samples: this.form.max_samples || 10,
         workers: this.form.workers || 4,
         dry_run: false,
         reuse_generated: true,
@@ -1022,11 +1208,12 @@
         source_run_id: opts.source_run_id || '',
         manifest_path: opts.manifest_path || '',
         evaluation_path: opts.evaluation_path || '',
-        combinations: combos.length ? combos : [{ _id: 1, framework: 'model_api', model: models[0] || this._comboModels('model_api')[0] || '', skill: 'no_skill' }],
+        combinations: combos.length ? combos : [{ _id: 1, framework: 'model_api', model: models[0] || this._comboModels('model_api')[0] || '', skill: 'no_skill', skill_version: '' }],
         models: combos.length ? [] : models,
         languages: Array.isArray(spec.languages) ? spec.languages : [],
         class: Array.isArray(spec.dataset_classes) ? spec.dataset_classes.join(',') : '',
         scenario: spec.dataset_scenario || '',
+        project: spec.dataset_project || '',
         level: spec.dataset_level || '',
         max_samples: Number(spec.max_samples || 0),
         workers: Number(spec.workers || 0),
@@ -1043,7 +1230,13 @@
     comboFromSubjectId(subject, id) {
       const parts = String(subject || '').split('__')
       if (parts.length < 3) return null
-      return { _id: id, framework: parts[0] || 'model_api', model: parts[1] || '', skill: parts.slice(2).join('__') || 'no_skill' }
+      let skillParts = parts.slice(2)
+      let skillVersion = ''
+      if (skillParts.length > 1 && /^v[0-9a-z_.-]+$/i.test(skillParts[skillParts.length - 1] || '')) {
+        skillVersion = skillParts.pop()
+      }
+      const skill = skillParts.join('__') || 'no_skill'
+      return { _id: id, framework: parts[0] || 'model_api', model: parts[1] || '', skill, skill_version: skill === 'no_skill' ? '' : skillVersion }
     },
 
     buildAutomationRunSpecFromPlan() {
@@ -1057,10 +1250,11 @@
         languages: p.languages || [],
         dataset_classes: String(p.class || '').split(',').map(s => s.trim()).filter(Boolean),
         dataset_scenario: p.scenario || '',
+        dataset_project: p.project || '',
         dataset_level: p.level || '',
         mode: p.mode || 'full',
         dry_run: !!p.dry_run,
-        reuse_generated: !!p.reuse_generated,
+        reuse_generated: p.reuse_generated !== false,
         reuse_evaluation: !!p.reuse_evaluation,
         mutation_enabled: !!p.mutation_enabled,
         mutation_timeout_seconds: Number(p.mutation_timeout || 1800),
@@ -1091,6 +1285,62 @@
       return out.length ? out : subjects.map(s => String(s).split('__')[1]).filter(Boolean)
     },
 
+    datasetScenariosForClass(className) {
+      const cls = String(className || '').trim()
+      const byClass = this.config?.scenarios_by_class || {}
+      if (cls && Array.isArray(byClass[cls])) return byClass[cls]
+      if (cls) return []
+      return this.config?.scenarios ?? []
+    },
+
+    datasetProjectsFor(className, scenario) {
+      const cls = String(className || '').trim()
+      const sc = String(scenario || '').trim()
+      if (cls !== 'repo_level' || !sc) return []
+      const byClass = this.config?.projects_by_dataset || {}
+      const byScenario = byClass[cls] || {}
+      return Array.isArray(byScenario[sc]) ? byScenario[sc] : []
+    },
+
+    datasetProjectsForSelection() {
+      return this.datasetProjectsFor(this.form.class, this.form.scenario)
+    },
+
+    datasetProjectLabel(item) {
+      if (!item) return ''
+      const langs = Array.isArray(item.languages) && item.languages.length ? ` · ${item.languages.join(',')}` : ''
+      const count = Number(item.sample_count || 0)
+      return `${item.name}${count ? ` (${count})` : ''}${langs}`
+    },
+
+    selectedDatasetProjectInfo() {
+      return this.datasetProjectsForSelection().find(p => p.name === this.form.project) || null
+    },
+
+    get selectedDatasetProjectSampleCount() {
+      return Number(this.selectedDatasetProjectInfo()?.sample_count || 0)
+    },
+
+    normalizeDatasetScenario() {
+      const scenarios = this.datasetScenariosForClass(this.form.class)
+      if (this.form.scenario && !scenarios.includes(this.form.scenario)) this.form.scenario = ''
+      this.normalizeDatasetProject()
+    },
+
+    normalizeDatasetProject() {
+      if (this.form.class !== 'repo_level') {
+        this.form.project = ''
+        return
+      }
+      const projects = this.datasetProjectsForSelection().map(p => p.name)
+      if (this.form.project && !projects.includes(this.form.project)) this.form.project = ''
+    },
+
+    normalizeAutomationDatasetScenario() {
+      const scenarios = this.datasetScenariosForClass(this.automationPlan?.class)
+      if (this.automationPlan?.scenario && !scenarios.includes(this.automationPlan.scenario)) this.automationPlan.scenario = ''
+    },
+
     refreshAutomationJSONFromPlan() {
       this.automationForm.run_spec_json = JSON.stringify(this.buildAutomationRunSpecFromPlan(), null, 2)
       this.automationForm.orchestrator_options_json = JSON.stringify(this.buildAutomationOptionsFromPlan(), null, 2)
@@ -1101,18 +1351,18 @@
     },
 
     get automationModelCount() {
-      return (this.automationPlan.models || []).length
+      return 0
     },
 
     get automationExecutionTargetCount() {
-      return this.automationSubjectCount || this.automationModelCount
+      return this.automationSubjectCount
     },
 
     get automationScenarioCount() {
       const p = this.automationPlan || {}
       if (p.phase !== 'full' && p.phase !== 'generate') return 0
       if (p.scenario) return 1
-      return (this.config?.scenarios ?? []).length || 4
+      return this.datasetScenariosForClass(p.class).length || 4
     },
 
     get automationEstimatedTaskCount() {
@@ -1135,7 +1385,7 @@
       const defaultModel = models.includes('deepseek-v4-flash') ? 'deepseek-v4-flash' : (models[0] || '')
       if (!Array.isArray(this.automationPlan.combinations)) this.automationPlan.combinations = []
       this.automationPlan.models = []
-      this.automationPlan.combinations.push({ _id: ++this._comboSeq, framework: 'model_api', model: defaultModel, skill: 'no_skill' })
+      this.automationPlan.combinations.push({ _id: ++this._comboSeq, framework: 'model_api', model: defaultModel, skill: 'no_skill', skill_version: '' })
     },
 
     removeAutomationCombination(idx) {
@@ -1150,10 +1400,17 @@
       if (!models.includes(combo.model)) combo.model = models[0] || ''
       const skills = this._comboSkills(combo.framework)
       if (!skills.includes(combo.skill)) combo.skill = 'no_skill'
+      this.normalizeComboSkillVersion(combo)
       this.automationPlan.models = []
     },
 
     onAutomationCombinationModelChange() {
+      this.automationPlan.models = []
+    },
+
+    onAutomationCombinationSkillChange(combo) {
+      if (!combo) return
+      this.normalizeComboSkillVersion(combo)
       this.automationPlan.models = []
     },
 
@@ -1218,7 +1475,7 @@
       try {
         const p = this.automationPlan || {}
         if (p.phase === 'generate' || p.phase === 'full') {
-          if (!this.automationExecutionTargetCount) throw new Error('请至少选择一个 Subject 或模型')
+          if (!this.automationExecutionTargetCount) throw new Error('请至少选择一个 Subject')
           if (!(p.languages || []).length) throw new Error('请至少选择一种语言')
         }
         if (p.phase === 'evaluate' && !p.source_run_id && !p.manifest_path) {
@@ -2110,13 +2367,14 @@
       if (id === 'agents') { this.loadAPIKeys(); this.loadModels(); this.loadEnv() }
       if (id === 'automations') this.loadAutomations()
       if (id === 'database') this.loadDBTabData()
+      if (id === 'generated-sets') this.loadGeneratedSets()
       if (id === 'environment') {
         if (!this.environment) this.loadEnvironment()
         this.loadAPIKeys()
       }
     },
     get pageTitle() {
-      const map = { dashboard:'总览', 'new-run':'新建任务', runs:'任务列表', automations:'定时任务', agents:'Agent 接入', database:'数据库', 'run-detail':'任务详情', environment:'环境检查', models:'模型管理' }
+      const map = { dashboard:'总览', 'new-run':'新建任务', runs:'任务列表', 'generated-sets':'生成集', automations:'定时任务', agents:'Agent 接入', database:'数据库', 'run-detail':'任务详情', environment:'环境检查', models:'模型管理' }
       return map[this.page] ?? ''
     },
 
@@ -2125,6 +2383,24 @@
       if (subjects.length) return subjects.join(', ')
       const models = run?.spec?.models ?? []
       return models.length ? models.join(', ') : '—'
+    },
+
+    runModelSummary(run) {
+      const models = run?.spec?.models ?? []
+      if (models.length) return models.join(', ')
+      const subjects = run?.spec?.subjects ?? []
+      const derived = [...new Set(subjects.map(s => String(s || '').split('__')[1]).filter(Boolean))]
+      return derived.length ? derived.join(', ') : '—'
+    },
+
+    normalizeRunForUI(run) {
+      const spec = { ...(run?.spec || {}) }
+      for (const key of ['models', 'subjects', 'languages', 'dataset_classes']) {
+        if (!Array.isArray(spec[key])) spec[key] = []
+      }
+      if (spec.reuse_generated === undefined) spec.reuse_generated = true
+      if (spec.reuse_evaluation === undefined) spec.reuse_evaluation = false
+      return { ...(run || {}), spec }
     },
 
     // ─── Agent 接入管理 ─────────────────────────────────────
@@ -2216,6 +2492,7 @@
         framework: subject.framework || 'model_api',
         model: subject.model || '',
         skill: subject.skill || 'no_skill',
+        skill_version: subject.skill_version || '',
       }]
       this.form.models = []
       if (subject.sandbox_mode === 'docker') this.form.use_docker = true
@@ -2661,6 +2938,33 @@
       }
     },
 
+    async createSkillDraftVersion(skill) {
+      if (!skill?.name || this.skillDraftCreating[skill.name]) return
+      this.skillDraftCreating = { ...this.skillDraftCreating, [skill.name]: true }
+      try {
+        const r = await fetch(`/api/agents/skills/${encodeURIComponent(skill.name)}/versions/drafts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source_run_id: this.currentRun?.run_id || '',
+            base_version: skill.default_version || skill.version || '',
+          }),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.showToast(`已生成 Skill 草稿版本 ${data.version || ''}`, 'ok')
+        await this.loadConfig()
+        const refreshed = (this.config?.skills || []).find(s => s.name === skill.name)
+        if (refreshed && this.skillDetail?.name === skill.name) this.skillDetail = refreshed
+      } catch (e) {
+        this.showToast('生成 Skill 草稿失败：' + (e.message || String(e)), 'err', 6000)
+      } finally {
+        const next = { ...this.skillDraftCreating }
+        delete next[skill.name]
+        this.skillDraftCreating = next
+      }
+    },
+
     toggleSkillSelection(name) {
       const idx = this.selectedSkillNames.indexOf(name)
       if (idx >= 0) this.selectedSkillNames.splice(idx, 1)
@@ -2704,6 +3008,7 @@
 
     openAddModel() {
       this.modelFormMode = 'create'
+      this.modelFormOriginalName = ''
       this.modelForm = {
         name: '', enabled: true, provider: '', model_id: '',
         api_endpoint: '', anthropic_endpoint: '',
@@ -2716,6 +3021,7 @@
 
     openEditModel(m) {
       this.modelFormMode = 'edit'
+      this.modelFormOriginalName = m.name
       this.modelForm = {
         name: m.name, enabled: !!m.enabled, provider: m.provider || '',
         model_id: m.model_id || '', api_endpoint: m.api_endpoint || '',
@@ -2727,12 +3033,13 @@
       this.modelFormOpen = true
     },
 
-    closeModelForm() { this.modelFormOpen = false },
+    closeModelForm() { this.modelFormOpen = false; this.modelFormOriginalName = '' },
 
     async saveModel() {
       this.modelFormError = ''
       const f = this.modelForm
-      if (!f.name.trim()) { this.modelFormError = '模型名称必填'; return }
+      f.name = (f.name || '').trim()
+      if (!f.name) { this.modelFormError = '模型名称必填'; return }
       if (!f.provider.trim()) { this.modelFormError = '提供商必填'; return }
       if (!f.model_id.trim()) { this.modelFormError = '模型 ID 必填'; return }
       if (!f.api_endpoint.trim()) { this.modelFormError = 'API 端点必填'; return }
@@ -2742,11 +3049,20 @@
         if (this.modelFormMode === 'create') {
           r = await fetch('/api/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         } else {
-          r = await fetch('/api/models/' + encodeURIComponent(f.name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          const originalName = this.modelFormOriginalName || f.name
+          r = await fetch('/api/models/' + encodeURIComponent(originalName), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         }
         const data = await r.json()
         if (!r.ok) { this.modelFormError = data.error || '保存失败'; return }
+        if (this.modelFormMode === 'edit' && this.modelFormOriginalName && this.modelFormOriginalName !== f.name) {
+          const nextResults = { ...this.modelTestResults }
+          if (nextResults[this.modelFormOriginalName] && !nextResults[f.name]) nextResults[f.name] = { ...nextResults[this.modelFormOriginalName], name: f.name }
+          delete nextResults[this.modelFormOriginalName]
+          this.modelTestResults = nextResults
+          this.form.models = this.form.models.map(m => m === this.modelFormOriginalName ? f.name : m)
+        }
         this.modelFormOpen = false
+        this.modelFormOriginalName = ''
         this.showToast(this.modelFormMode === 'create' ? '模型已添加' : '模型已更新', 'ok')
         await this.loadModels()
         await this.loadConfig() // 刷新新建任务页面的可选模型列表
@@ -2875,7 +3191,7 @@
         const data = await r.json()
         if (!r.ok) { this.showToast('重新评测失败：' + (data.error || 'HTTP ' + r.status), 'err', 6000); return }
         this.currentReport = null
-        this.showToast('evaluator 重新运行完成：' + data.evaluation_path, 'ok', 6000)
+        this.showToast('evaluator 重新运行已启动：' + (data.evaluation_path || ''), 'ok', 6000)
         await this.refreshDetail()
       } catch (e) {
         this.showToast('重新评测失败：' + e.message, 'err', 6000)
@@ -2944,7 +3260,7 @@
     _comboFrameworks() {
       const seen = new Set()
       const fws = []
-      // model_api 作为 baseline 始终在第一位
+      // model_api 作为纯 API Subject 始终在第一位
       fws.push({ value: 'model_api', label: 'model_api（纯 API）' }); seen.add('model_api')
       for (const fw of (this.config?.frameworks ?? [])) {
         if (!seen.has(fw.name)) { fws.push({ value: fw.name, label: fw.name }); seen.add(fw.name) }
@@ -2972,6 +3288,43 @@
       }
       return skills
     },
+    _skillConfig(name) {
+      return (this.config?.skills ?? []).find(sk => sk.name === name) || null
+    },
+    _comboSkillVersions(framework, skill) {
+      if (!skill || skill === 'no_skill') return []
+      const sk = this._skillConfig(skill)
+      if (!sk) return []
+      const frameworks = sk.compatible_frameworks || []
+      if (frameworks.length && !frameworks.includes(framework)) return []
+      const versions = Array.isArray(sk.versions) ? sk.versions.map(v => v.version || v.name || '').filter(Boolean) : []
+      if (versions.length) return [...new Set(versions)]
+      return sk.version ? [sk.version] : []
+    },
+    defaultSkillVersion(framework, skill) {
+      if (!skill || skill === 'no_skill') return ''
+      const sk = this._skillConfig(skill)
+      const versions = this._comboSkillVersions(framework, skill)
+      if (sk?.default_version && versions.includes(sk.default_version)) return sk.default_version
+      if (sk?.version && versions.includes(sk.version)) return sk.version
+      return versions[0] || ''
+    },
+    normalizeComboSkillVersion(combo) {
+      if (!combo) return
+      if (!combo.skill || combo.skill === 'no_skill') {
+        combo.skill = 'no_skill'
+        combo.skill_version = ''
+        return
+      }
+      const versions = this._comboSkillVersions(combo.framework, combo.skill)
+      if (!versions.length) {
+        combo.skill_version = ''
+        return
+      }
+      if (!versions.includes(combo.skill_version)) {
+        combo.skill_version = this.defaultSkillVersion(combo.framework, combo.skill)
+      }
+    },
     comboModelOptionLabel(name) {
       return String(name || '')
     },
@@ -2994,15 +3347,28 @@
         `<option value="${this._escapeHtml(s)}" ${s===current?'selected':''}>${this._escapeHtml(s)}</option>`
       ).join('')
     },
+    renderSkillVersionOptions(framework, skill, current) {
+      const versions = this._comboSkillVersions(framework, skill)
+      if (!versions.length) {
+        return '<option value="">—</option>'
+      }
+      if (!versions.includes(current)) current = this.defaultSkillVersion(framework, skill)
+      return versions.map(v =>
+        `<option value="${this._escapeHtml(v)}" ${v===current?'selected':''}>${this._escapeHtml(v)}</option>`
+      ).join('')
+    },
     renderCombinationRows() {
       const rows = this.form.combinations || []
       return rows.map((combo, idx) => {
+        this.normalizeComboSkillVersion(combo)
         const id = combo._id ?? idx
         const disabled = rows.length <= 1 ? 'disabled' : ''
+        const versionDisabled = combo.skill === 'no_skill' ? 'disabled' : ''
         return `<div class="flex items-center gap-2" data-combo-row="${this._escapeHtml(id)}">
           <select class="input-base text-[12px] flex-1" data-combo-id="${this._escapeHtml(id)}" data-combo-idx="${idx}" data-combo-type="framework">${this.renderFrameworkOptions(combo.framework)}</select>
           <select class="input-base text-[12px] flex-1" data-combo-id="${this._escapeHtml(id)}" data-combo-idx="${idx}" data-combo-type="model">${this.renderModelOptions(combo.framework, combo.model)}</select>
           <select class="input-base text-[12px] flex-1" data-combo-id="${this._escapeHtml(id)}" data-combo-idx="${idx}" data-combo-type="skill">${this.renderSkillOptions(combo.framework, combo.skill)}</select>
+          <select class="input-base text-[12px] w-[108px]" data-combo-id="${this._escapeHtml(id)}" data-combo-idx="${idx}" data-combo-type="skill_version" ${versionDisabled}>${this.renderSkillVersionOptions(combo.framework, combo.skill, combo.skill_version)}</select>
           <span class="font-mono text-[11px] px-2 py-1 rounded" style="background:var(--bg-overlay);color:var(--fg-subtle)">${this._escapeHtml(this.buildSubjectId(combo))}</span>
           <button type="button" data-combo-remove="${this._escapeHtml(id)}" class="text-[12px] px-1.5 py-0.5 rounded" style="color:var(--fg-muted);background:var(--bg-overlay)" ${disabled}>&times;</button>
         </div>`
@@ -3030,7 +3396,10 @@
       const fw = sanitize(combo.framework || 'model_api')
       const model = sanitize(combo.model)
       const skill = sanitize(combo.skill || 'no_skill')
-      return `${fw}__${model}__${skill}`
+      if (skill === 'no_skill') return `${fw}__${model}__${skill}`
+      const version = sanitize(combo.skill_version || this.defaultSkillVersion(combo.framework, combo.skill) || '1')
+      const versionPart = version.startsWith('v') ? version : `v${version}`
+      return `${fw}__${model}__${skill}__${versionPart}`
     },
     addCombination() {
       if (this._comboAddLocked) return
@@ -3039,7 +3408,7 @@
       const models = this._comboModels('model_api')
       const defaultModel = models.includes('deepseek-v4-flash') ? 'deepseek-v4-flash' : (models[0] || '')
       this.form.models = []
-      this.form.combinations.push({ _id: ++this._comboSeq, framework: 'model_api', model: defaultModel, skill: 'no_skill' })
+      this.form.combinations.push({ _id: ++this._comboSeq, framework: 'model_api', model: defaultModel, skill: 'no_skill', skill_version: '' })
     },
     setCombinationValue(rowID, idx, type, value) {
       let combo = null
@@ -3056,6 +3425,9 @@
         combo.model = value
       } else if (type === 'skill') {
         combo.skill = value
+        this.normalizeComboSkillVersion(combo)
+      } else if (type === 'skill_version') {
+        combo.skill_version = value
       }
     },
     onCombinationFrameworkChange(idx) {
@@ -3068,6 +3440,7 @@
       if (!skills.includes(combo.skill)) {
         combo.skill = 'no_skill'
       }
+      this.normalizeComboSkillVersion(combo)
     },
     syncPageVisibility() {
       const pages = ['dashboard', 'new-run', 'runs', 'automations', 'agents', 'database', 'environment', 'models', 'run-detail']
@@ -3110,10 +3483,11 @@
           languages: payload.languages || [],
           dataset_classes: payload.class ? String(payload.class).split(',').map(s => s.trim()).filter(Boolean) : [],
           dataset_scenario: payload.scenario || '',
+          dataset_project: payload.project || '',
           dataset_level: payload.level || '',
           max_samples: payload.max_samples,
           workers: payload.workers,
-          reuse_generated: !!payload.reuse_generated,
+          reuse_generated: payload.reuse_generated !== false,
           reuse_evaluation: !!payload.reuse_evaluation,
           mutation_enabled: !!payload.mutation_enabled,
         },
@@ -3130,7 +3504,7 @@
         .map(c => this.buildSubjectId(c))
       // 只有 generate 和 full 阶段需要被测对象和语言选择
       if (this.form.phase === 'generate' || this.form.phase === 'full') {
-        if (!this.selectedExecutionTargetCount) { this.formError = '请至少选择一个 subject 或模型'; return }
+        if (!this.selectedExecutionTargetCount) { this.formError = '请至少选择一个 subject'; return }
         if (!this.form.languages.length) { this.formError = '请至少选择一种语言'; return }
       }
       // evaluate 阶段需要数据源（source_run_id 或 manifest_path）
@@ -3151,11 +3525,13 @@
       payload.run_id = optimisticRunId
       this.stopSSE()
       this.currentReport = null
+      this.currentAnalysis = null
+      this.currentOptimizationPlan = null
       this.currentLogs = []
       this._logCount = 0
       this.detailTab = 'logs'
       this._resetLogPre()
-      this.currentRun = this.optimisticRunFromPayload(payload, optimisticRunId)
+      this.currentRun = this.normalizeRunForUI(this.optimisticRunFromPayload(payload, optimisticRunId))
       this.page = 'run-detail'
       this.syncPageVisibility()
       try {
@@ -3197,12 +3573,30 @@
     },
 
     async openRun(runId) {
-      this.stopSSE(); this.currentReport = null; this.currentLogs = []; this._logCount = 0; this.detailTab = 'logs'
+      this.stopAnalysisJobPolling()
+      this.stopAnalysisChatStream()
+      this.stopSSE(); this.currentReport = null; this.currentAnalysis = null; this.currentOptimizationPlan = null; this.currentLogs = []; this._logCount = 0; this.detailTab = 'logs'
+      this.analysisSelection = []
+      this._selectionSet = new Set()
+      this._evidenceMap = null
+      this._subjectMap = null
+      this._cachedRootCauses = null
+      this.analysisShowSelectedOnly = false
+      this.analysisJob = null
+      this.analysisChatSessions = []
+      this.analysisChatSession = null
+      this.analysisChatInput = ''
+      this.analysisChatError = ''
+      this.analysisChatForceNew = false
+      this.analysisFocus = null
+      this.analysisDetailOpen = false
+      this.analysisDetail = null
       this._resetLogPre()
       this.page = 'run-detail'
       this.syncPageVisibility()
       const found = this.runs.find(r => r.run_id === runId)
-      this.currentRun = found ? { ...found } : { run_id: runId, status: 'pending', started_at: new Date().toISOString() }
+      this.currentRun = this.normalizeRunForUI(found ? { ...found } : { run_id: runId, status: 'pending', started_at: new Date().toISOString() })
+      this.refreshDetail()
       this.startSSE(runId)
     },
 
@@ -3308,13 +3702,20 @@
     },
 
     stopSSE() { if (this.sseSource) { this.sseSource.close(); this.sseSource = null } },
+    stopAnalysisJobPolling() {
+      if (this.analysisJobTimer) {
+        clearTimeout(this.analysisJobTimer)
+        this.analysisJobTimer = null
+      }
+    },
 
     async refreshDetail() {
       if (!this.currentRun) return
       const r = await fetch(`/api/runs/${this.currentRun.run_id}`)
       if (r.ok) {
         const data = await r.json()
-        this.currentRun.status = data.status; this.currentRun.ended_at = data.ended_at; this.currentRun.error = data.error; this.currentLogs = data.logs ?? []
+        this.currentRun = this.normalizeRunForUI({ ...this.currentRun, ...data })
+        this.currentLogs = data.logs ?? []
         this._setLogPreFromArray(this.currentLogs)
       }
     },
@@ -3325,6 +3726,319 @@
       if (r.ok) {
         this.currentReport = await r.json()
         this.$nextTick(() => { this.renderChart(); this.renderRadar() })
+      }
+    },
+
+    async loadAnalysis(showMissing = false) {
+      if (!this.currentRun) return
+      this.analysisLoading = true
+      try {
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis`, { cache: 'no-store' })
+        if (r.ok) {
+          this.currentAnalysis = await r.json()
+          this.analysisSubjectOptions = this.currentAnalysis.subjects || []
+          this._buildAnalysisIndex()
+          await this.loadOptimizationPlan(false)
+          await this.loadAnalysisChatSessions(false)
+          return
+        }
+        await this.loadAnalysisSubjects()
+        if (showMissing && r.status !== 404) {
+          const data = await r.json().catch(() => ({}))
+          this.showToast('加载分析失败：' + (data.error || 'HTTP ' + r.status), 'err')
+        }
+      } finally {
+        this.analysisLoading = false
+      }
+    },
+
+    async generateAnalysis(force = true) {
+      if (!this.currentRun) return
+      this.analysisGenerating = true
+      this.analysisJob = { status: 'queued', phase: '排队中', selected_count: this.analysisSelection.length, elapsed_ms: 0 }
+      try {
+        const body = {
+          rule_enabled: !!this.analysisOptions.rule_enabled,
+          llm_enabled: !!this.analysisOptions.llm_enabled,
+          llm_model: this.analysisOptions.llm_model || '',
+          force,
+          selected_subjects: this.selectedAnalysisSubjectsPayload(),
+          compare_mode: this.analysisSelection.length > 1,
+        }
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/jobs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.analysisJob = data
+        await this.pollAnalysisJob(data.job_id)
+      } catch(e) {
+        this.showToast('生成分析失败：' + (e.message || String(e)), 'err', 6000)
+        if (this.analysisJob) this.analysisJob = { ...this.analysisJob, status: 'failed', error: e.message || String(e) }
+        this.analysisGenerating = false
+      } finally {
+        this.stopAnalysisJobPolling()
+      }
+    },
+
+    async loadAnalysisSubjects() {
+      if (!this.currentRun) return
+      const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/subjects`, { cache: 'no-store' })
+      if (r.ok) {
+        this.analysisSubjectOptions = await r.json()
+      }
+    },
+
+    async pollAnalysisJob(jobId) {
+      if (!this.currentRun || !jobId) return
+      while (this.currentRun && this.analysisGenerating) {
+        try {
+          const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/jobs/${jobId}`, { cache: 'no-store' })
+          const data = await r.json()
+          if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+          this.analysisJob = data
+          if (data.status === 'succeeded') {
+            this.currentAnalysis = data.report
+            this._buildAnalysisIndex()
+            this.currentOptimizationPlan = null
+            await this.loadAnalysisChatSessions(false)
+            this.analysisGenerating = false
+            this.showToast('AI 分析已生成', data.report?.llm_status?.status === 'degraded' ? 'warn' : 'ok')
+            return
+          }
+          if (data.status === 'failed') {
+            this.analysisGenerating = false
+            this.showToast('生成分析失败：' + (data.error || '未知错误'), 'err', 6000)
+            return
+          }
+          await new Promise(resolve => { this.analysisJobTimer = setTimeout(resolve, 900) })
+          this.analysisJobTimer = null
+        } catch (e) {
+          this.analysisGenerating = false
+          this.showToast('分析状态读取失败：' + (e.message || String(e)), 'err', 6000)
+          return
+        }
+      }
+    },
+
+    async loadAnalysisChatSessions(selectMatching = true) {
+      if (!this.currentRun) return
+      const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/chat/sessions`, { cache: 'no-store' })
+      if (!r.ok) return
+      this.analysisChatSessions = await r.json()
+      if (!selectMatching) return
+      if (this.analysisChatSession && this.analysisChatSessions.some(s => s.session_id === this.analysisChatSession.session_id)) return
+      const selectionKey = this.analysisSelectionKey(this.selectedAnalysisSubjectsPayload())
+      this.analysisChatSession = this.analysisChatSessions.find(s => this.analysisSelectionKey(s.selected_subjects || []) === selectionKey) || this.analysisChatSessions[0] || null
+    },
+
+    async loadAnalysisChatSession(sessionId) {
+      if (!this.currentRun || !sessionId) return null
+      const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/chat/sessions/${sessionId}`, { cache: 'no-store' })
+      if (!r.ok) return null
+      const session = await r.json()
+      this.analysisChatSession = session
+      this.analysisChatForceNew = false
+      const idx = this.analysisChatSessions.findIndex(s => s.session_id === session.session_id)
+      if (idx >= 0) this.analysisChatSessions.splice(idx, 1, session)
+      else this.analysisChatSessions.unshift(session)
+      return session
+    },
+
+    async ensureAnalysisChatSession() {
+      if (!this.currentRun || !this.currentAnalysis) {
+        this.showToast('请先生成 AI 分析报告，再追问助手', 'warn', 5000)
+        return null
+      }
+      const selected = this.selectedAnalysisSubjectsPayload()
+      const selectionKey = this.analysisSelectionKey(selected)
+      const forceNew = !!this.analysisChatForceNew
+      if (!forceNew && this.analysisChatSession && this.analysisSelectionKey(this.analysisChatSession.selected_subjects || []) === selectionKey) {
+        return this.analysisChatSession
+      }
+      const existing = !forceNew && this.analysisChatSessions.find(s => this.analysisSelectionKey(s.selected_subjects || []) === selectionKey)
+      if (existing) {
+        this.analysisChatSession = await this.loadAnalysisChatSession(existing.session_id) || existing
+        return this.analysisChatSession
+      }
+      const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/chat/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selected_subjects: selected, llm_model: this.analysisOptions.llm_model || '' }),
+      })
+      const data = await r.json()
+      if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+      this.analysisChatSession = data
+      this.analysisChatSessions.unshift(data)
+      this.analysisChatForceNew = false
+      return data
+    },
+
+    async sendAnalysisChatMessage() {
+      if (this.analysisChatStreaming) return
+      const content = (this.analysisChatInput || '').trim()
+      if (!content) return
+      this.analysisChatError = ''
+      let session
+      try {
+        session = await this.ensureAnalysisChatSession()
+      } catch (e) {
+        this.showToast('创建追问会话失败：' + (e.message || String(e)), 'err', 6000)
+        return
+      }
+      if (!session) return
+      const localUser = {
+        message_id: 'local-user-' + Date.now(),
+        role: 'user',
+        content,
+        status: 'succeeded',
+        created_at: new Date().toISOString(),
+        selected_subjects: session.selected_subjects || [],
+      }
+      const localAssistant = {
+        message_id: 'local-assistant-' + Date.now(),
+        role: 'assistant',
+        content: '',
+        status: 'running',
+        created_at: new Date().toISOString(),
+        selected_subjects: session.selected_subjects || [],
+      }
+      this.analysisChatSession.messages = [...(this.analysisChatSession.messages || []), localUser, localAssistant]
+      this.analysisChatInput = ''
+      this.analysisChatStreaming = true
+      this.analysisChatController = new AbortController()
+      try {
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/analysis/chat/sessions/${session.session_id}/messages:stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            content,
+            llm_model: this.analysisOptions.llm_model || '',
+            focus_evidence_id: this.analysisFocus?.evidence_id || '',
+            focus_root_cause_id: this.analysisFocus?.root_cause_id || '',
+          }),
+          signal: this.analysisChatController.signal,
+        })
+        if (!r.ok || !r.body) {
+          const data = await r.json().catch(() => ({}))
+          throw new Error(data.error || 'HTTP ' + r.status)
+        }
+        await this.readAnalysisChatStream(r.body, localAssistant)
+        await this.loadAnalysisChatSession(session.session_id)
+      } catch (e) {
+        if (e.name === 'AbortError') {
+          localAssistant.status = 'stopped'
+          localAssistant.error = '已停止生成'
+          await this.loadAnalysisChatSession(session.session_id).catch(() => null)
+        } else {
+          localAssistant.status = 'failed'
+          localAssistant.error = e.message || String(e)
+          this.analysisChatError = localAssistant.error
+        }
+      } finally {
+        this.analysisChatStreaming = false
+        this.analysisChatController = null
+      }
+    },
+
+    async readAnalysisChatStream(body, assistantMsg) {
+      const reader = body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let idx
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, idx)
+          buffer = buffer.slice(idx + 2)
+          this.handleAnalysisChatSSEBlock(block, assistantMsg)
+        }
+      }
+      if (buffer.trim()) this.handleAnalysisChatSSEBlock(buffer, assistantMsg)
+    },
+
+    handleAnalysisChatSSEBlock(block, assistantMsg) {
+      const lines = block.split(/\r?\n/)
+      let event = 'message'
+      let data = ''
+      lines.forEach(line => {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        if (line.startsWith('data:')) data += line.slice(5).trim()
+      })
+      if (!data) return
+      let payload = {}
+      try { payload = JSON.parse(data) } catch { payload = { text: data } }
+      if (event === 'message_start' && payload.message_id) {
+        assistantMsg.message_id = payload.message_id
+      } else if (event === 'delta') {
+        assistantMsg.content += payload.text || ''
+      } else if (event === 'message_end') {
+        assistantMsg.status = 'succeeded'
+        assistantMsg.elapsed_ms = payload.elapsed_ms
+      } else if (event === 'error') {
+        assistantMsg.status = 'failed'
+        assistantMsg.error = payload.error || 'LLM 生成失败'
+        this.analysisChatError = assistantMsg.error
+      }
+    },
+
+    stopAnalysisChatStream() {
+      if (this.analysisChatController) {
+        try { this.analysisChatController.abort() } catch {}
+      }
+      this.analysisChatController = null
+      this.analysisChatStreaming = false
+    },
+
+    async loadOptimizationPlan(showMissing = false) {
+      if (!this.currentRun) return
+      this.optimizationLoading = true
+      try {
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/optimization-plan`, { cache: 'no-store' })
+        if (r.ok) {
+          this.currentOptimizationPlan = await r.json()
+          return
+        }
+        this.currentOptimizationPlan = null
+        if (showMissing && r.status !== 404) {
+          const data = await r.json().catch(() => ({}))
+          this.showToast('加载优化方案失败：' + (data.error || 'HTTP ' + r.status), 'err')
+        }
+      } finally {
+        this.optimizationLoading = false
+      }
+    },
+
+    async generateOptimizationPlan(force = true) {
+      if (!this.currentRun) return
+      if (!this.currentAnalysis) {
+        this.showToast('请先生成 AI 分析，再生成优化方案', 'warn', 5000)
+        return
+      }
+      this.optimizationGenerating = true
+      try {
+        const body = {
+          llm_enabled: !!this.analysisOptions.llm_enabled,
+          llm_model: this.analysisOptions.llm_model || '',
+          force,
+        }
+        const r = await fetch(`/api/runs/${this.currentRun.run_id}/optimization-plan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status)
+        this.currentOptimizationPlan = data
+        this.showToast('优化方案已生成', data.llm_status?.status === 'degraded' ? 'warn' : 'ok')
+      } catch(e) {
+        this.showToast('生成优化方案失败：' + (e.message || String(e)), 'err', 6000)
+      } finally {
+        this.optimizationGenerating = false
       }
     },
 
@@ -3364,10 +4078,12 @@
 
     get reportCards() {
       const s = this.currentReport?.summary ?? {}
+      const compileRate = s.raw_compile_pass_rate ?? s.compile_pass_rate
+      const sampleTestRate = s.raw_test_pass_rate ?? s.sample_test_pass_rate ?? s.test_pass_rate
       return [
         { label:'样本数',  value: s.total_samples ?? 0, color:'kpi-total' },
-        { label:'编译通过率',  value: pct(s.compile_pass_rate), color: pctColor(s.compile_pass_rate) },
-        { label:'样本测试通过率',  value: pct(s.sample_test_pass_rate ?? s.test_pass_rate), color: pctColor(s.sample_test_pass_rate ?? s.test_pass_rate) },
+        { label:'编译通过率',  value: pct(compileRate), color: pctColor(compileRate) },
+        { label:'样本测试通过率',  value: pct(sampleTestRate), color: pctColor(sampleTestRate) },
         { label:'平均行覆盖率', value: pct(s.avg_line_coverage), color: pctColor(s.avg_line_coverage) },
         { label:'平均变异分', value: pct(s.avg_mutation_score), color: pctColor(s.avg_mutation_score) },
       ]
@@ -3394,9 +4110,559 @@
     },
     pct(v) { return pct(v) },
     pctColor(v) { return pctColor(v) },
+    deltaColor(v) { return deltaColor(v) },
+    signedPct(v) { return signedPct(v) },
     metricPct(v) {
       if (v == null) return '—'
       return (v > 1 ? v : v * 100).toFixed(1) + '%'
+    },
+    analysisSubjectKey(s) {
+      return [s?.subject_id || '', s?.sample_id || '', s?.language || ''].join('\u0000')
+    },
+    analysisSelectionKey(items) {
+      return (items || []).map(s => this.analysisSubjectKey(s)).sort().join('\u0001')
+    },
+    analysisSubjectRows() {
+      let rows = this.analysisSubjectOptions?.length ? this.analysisSubjectOptions : (this.currentAnalysis?.subjects || [])
+      if (this.analysisShowSelectedOnly) {
+        rows = rows.filter(s => this.isAnalysisSubjectSelected(s))
+      }
+      return rows
+    },
+    isAnalysisSubjectSelected(s) {
+      if (this._selectionSet) return this._selectionSet.has(this.analysisSubjectKey(s))
+      const key = this.analysisSubjectKey(s)
+      return (this.analysisSelection || []).some(x => this.analysisSubjectKey(x) === key)
+    },
+    toggleAnalysisSubject(s) {
+      const key = this.analysisSubjectKey(s)
+      const idx = this.analysisSelection.findIndex(x => this.analysisSubjectKey(x) === key)
+      if (idx >= 0) {
+        this.analysisSelection.splice(idx, 1)
+        if (this._selectionSet) this._selectionSet.delete(key)
+        this.resetAnalysisChatContext()
+        return
+      }
+      if (this.analysisSelection.length >= 3) {
+        this.showToast('最多选择 3 个对象做横向对比', 'warn', 4000)
+        return
+      }
+      this.analysisSelection.push({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language })
+      if (this._selectionSet) this._selectionSet.add(key)
+      this.resetAnalysisChatContext()
+    },
+    selectedAnalysisSubjectsPayload() {
+      return (this.analysisSelection || []).map(s => ({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language }))
+    },
+    clearAnalysisSelection() {
+      this.analysisSelection = []
+      this._selectionSet = new Set()
+      this.analysisShowSelectedOnly = false
+      this.resetAnalysisChatContext()
+    },
+    selectRecommendedAnalysisSubjects() {
+      const rows = this.analysisSubjectOptions?.length ? this.analysisSubjectOptions : (this.currentAnalysis?.subjects || [])
+      const ranked = [...rows].sort((a, b) => this.analysisSubjectRiskRank(b) - this.analysisSubjectRiskRank(a))
+      this.analysisSelection = ranked.filter(s => this.analysisSubjectRiskRank(s) > 0).slice(0, 3).map(s => ({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language }))
+      this.resetAnalysisChatContext()
+      if (!this.analysisSelection.length) this.showToast('当前没有明显问题项可推荐', 'warn', 4000)
+    },
+    selectBestWorstAnalysisSubjects() {
+      const rows = this.analysisSubjectOptions?.length ? this.analysisSubjectOptions : (this.currentAnalysis?.subjects || [])
+      if (rows.length < 2) {
+        this.showToast('至少需要 2 个对象才能做最好+最差对比', 'warn', 4000)
+        return
+      }
+      const ranked = [...rows].sort((a, b) => this.analysisSubjectQualityScore(b) - this.analysisSubjectQualityScore(a))
+      const picked = [ranked[0], ranked[ranked.length - 1]]
+      this.analysisSelection = picked.filter(Boolean).map(s => ({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language }))
+      this.resetAnalysisChatContext()
+    },
+    selectSameSampleComparison() {
+      const rows = this.analysisSubjectOptions?.length ? this.analysisSubjectOptions : (this.currentAnalysis?.subjects || [])
+      const groups = new Map()
+      rows.forEach(s => {
+        const key = `${s.sample_id || ''}\u0000${s.language || ''}`
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(s)
+      })
+      let bestGroup = []
+      groups.forEach(group => {
+        if (group.length > bestGroup.length) bestGroup = group
+      })
+      if (bestGroup.length < 2) {
+        this.showToast('没有找到同一样本下可对比的多个 Agent', 'warn', 4000)
+        return
+      }
+      const ranked = [...bestGroup].sort((a, b) => this.analysisSubjectRiskRank(b) - this.analysisSubjectRiskRank(a))
+      this.analysisSelection = ranked.slice(0, 3).map(s => ({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language }))
+      this.resetAnalysisChatContext()
+    },
+    selectSameAgentCrossLanguage() {
+      const rows = this.analysisSubjectOptions?.length ? this.analysisSubjectOptions : (this.currentAnalysis?.subjects || [])
+      const groups = new Map()
+      rows.forEach(s => {
+        const key = s.subject_id || ''
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(s)
+      })
+      let bestGroup = []
+      groups.forEach(group => {
+        const langs = new Set(group.map(s => s.language))
+        if (langs.size > 1 && group.length > bestGroup.length) bestGroup = group
+      })
+      if (bestGroup.length < 2) {
+        this.showToast('没有找到同一 Agent 的跨语言结果', 'warn', 4000)
+        return
+      }
+      const ranked = [...bestGroup].sort((a, b) => this.analysisSubjectRiskRank(b) - this.analysisSubjectRiskRank(a))
+      this.analysisSelection = ranked.slice(0, 3).map(s => ({ subject_id: s.subject_id, sample_id: s.sample_id, language: s.language }))
+      this.resetAnalysisChatContext()
+    },
+    resetAnalysisChatContext() {
+      this.analysisChatSession = null
+      this.analysisChatError = ''
+      this.analysisChatForceNew = false
+    },
+    startNewAnalysisChatSession() {
+      if (this.analysisChatStreaming) return
+      this.analysisChatSession = null
+      this.analysisChatInput = ''
+      this.analysisChatError = ''
+      this.analysisChatForceNew = true
+    },
+    analysisSubjectRiskRank(s) {
+      let score = 0
+      if (!s.compile_pass) score += 100
+      if (s.test_pass === false || s.test_pass == null) score += 60
+      if (s.mutation_score == null || this.metricNumber(s.mutation_score) < 60) score += 30
+      if (s.line_coverage != null && this.metricNumber(s.line_coverage) < 70) score += 20
+      if ((s.trace_step_count || 0) === 0) score += 10
+      return score
+    },
+    analysisSubjectQualityScore(s) {
+      let score = 0
+      if (s.compile_pass) score += 100
+      if (s.test_pass === true) score += 100
+      if (s.test_pass === false) score -= 40
+      const mutation = this.metricNumber(s.mutation_score)
+      const coverage = this.metricNumber(s.line_coverage)
+      if (mutation != null) score += mutation
+      if (coverage != null) score += coverage * 0.7
+      if (s.has_source_read) score += 10
+      if (s.has_test_write) score += 10
+      if (s.has_test_execution) score += 15
+      if (s.modified_source) score -= 80
+      score -= (s.policy_command_count || 0) * 8
+      score -= (s.runtime_noise_count || 0) * 2
+      return score
+    },
+    metricNumber(v) {
+      if (v == null) return null
+      return v > 1 ? v : v * 100
+    },
+    analysisSelectionLabel() {
+      if (!this.analysisSelection.length) return '未手动选择，将自动挑选代表性问题项'
+      return this.analysisSelection.map(s => `${s.subject_id} / ${s.sample_id} / ${s.language}`).join('；')
+    },
+    analysisChatSelectionLabel(session = null) {
+      const items = session?.selected_subjects || this.selectedAnalysisSubjectsPayload()
+      if (!items.length) return '当前上下文：自动/全局分析报告'
+      return '当前上下文：' + items.map(s => `${s.subject_id} / ${s.sample_id} / ${s.language}`).join('；')
+    },
+    analysisChatMessages() {
+      return this.analysisChatSession?.messages || []
+    },
+    selectedAnalysisReportSubjects() {
+      const selected = this.currentAnalysis?.selection?.selected_subjects || []
+      if (!selected.length) return this.currentAnalysis?.subjects || []
+      const keys = new Set(selected.map(s => this.analysisSubjectKey(s)))
+      return (this.currentAnalysis?.subjects || []).filter(s => keys.has(this.analysisSubjectKey(s)))
+    },
+    isAnalysisSubjectInReportSelection(s) {
+      return (this.currentAnalysis?.selection?.selected_subjects || []).some(x => this.analysisSubjectKey(x) === this.analysisSubjectKey(s))
+    },
+    analysisJobPhaseLabel() {
+      if (!this.analysisJob) return ''
+      const parts = [this.analysisJob.phase || this.analysisJob.status || '运行中']
+      if (this.analysisJob.elapsed_ms != null) parts.push(this.fmtMs(this.analysisJob.elapsed_ms))
+      parts.push(`已选 ${this.analysisJob.selected_count || 0} 项`)
+      return parts.join(' · ')
+    },
+    analysisModels() {
+      return (this.config?.models || this.models || []).filter(m => m.enabled !== false).map(m => m.name)
+    },
+    analysisFindings(source = '') {
+      let items = this.currentAnalysis?.findings || []
+      if (source) items = items.filter(f => (f.source || 'rule') === source)
+      const filters = this.analysisFilters || {}
+      if (filters.source) items = items.filter(f => (f.source || 'rule') === filters.source)
+      if (filters.severity) items = items.filter(f => f.severity === filters.severity)
+      if (filters.category) items = items.filter(f => f.category === filters.category)
+      if (filters.subject) items = items.filter(f => (f.subject_id || 'global') === filters.subject)
+      return [...items].sort((a, b) => {
+        const srcRank = v => (v || 'rule') === 'llm' ? 0 : ((v || 'rule') === 'rule' ? 1 : 2)
+        const sevRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+        return srcRank(a.source) - srcRank(b.source) || sevRank(a.severity) - sevRank(b.severity) || String(a.subject_id || '').localeCompare(String(b.subject_id || ''))
+      })
+    },
+    analysisRecommendations(source = '') {
+      const items = this.currentAnalysis?.recommendations || []
+      const filtered = source ? items.filter(r => (r.source || 'rule') === source) : items
+      return [...filtered].sort((a, b) => {
+        const srcRank = v => (v || 'rule') === 'llm' ? 0 : ((v || 'rule') === 'rule' ? 1 : 2)
+        const priRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+        return srcRank(a.source) - srcRank(b.source) || priRank(a.priority) - priRank(b.priority)
+      })
+    },
+    reportInsights() {
+      const priRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+      return [...(this.currentAnalysis?.report_insights || [])].sort((a, b) => {
+        return priRank(a.priority) - priRank(b.priority) || String(a.category || '').localeCompare(String(b.category || ''))
+      })
+    },
+    evolutionItems() {
+      const priRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+      return [...(this.currentAnalysis?.evolution_plan?.items || [])].sort((a, b) => {
+        return priRank(a.priority) - priRank(b.priority) || String(a.target || '').localeCompare(String(b.target || ''))
+      })
+    },
+    analysisHealthScore() {
+      const health = this.reportInsights().find(i => i.category === 'health' && i.metrics?.health_score != null)
+      if (health) return Number(health.metrics.health_score) || 0
+      const subjects = this.currentAnalysis?.subjects || []
+      if (!subjects.length) return 0
+      const avg = (field) => {
+        const vals = subjects.map(s => s[field]).filter(v => v != null).map(v => v > 1 ? v : v * 100)
+        return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0
+      }
+      const compile = subjects.filter(s => s.compile_pass).length / subjects.length * 100
+      const tested = subjects.filter(s => s.test_pass === true).length / subjects.length * 100
+      return 0.3 * compile + 0.3 * tested + 0.2 * avg('line_coverage') + 0.2 * avg('mutation_score')
+    },
+    analysisBestWorst() {
+      const subjects = [...(this.currentAnalysis?.subjects || [])]
+      const score = s => {
+        const cov = s.line_coverage == null ? 0 : this.metricNumber(s.line_coverage)
+        const mut = s.mutation_score == null ? 0 : this.metricNumber(s.mutation_score)
+        return (s.compile_pass ? 100 : 0) + (s.test_pass === true ? 100 : 0) + cov * 0.7 + mut
+      }
+      subjects.sort((a, b) => score(b) - score(a))
+      return {
+        best: subjects[0]?.subject_id || '—',
+        worst: subjects[subjects.length - 1]?.subject_id || '—',
+      }
+    },
+    topEvolutionTarget() {
+      const item = this.evolutionItems()[0]
+      return item ? this.optimizationTargetLabel(item.target) : '—'
+    },
+    analysisRootCauses() {
+      if (!this._rootCausesDirty && this._cachedRootCauses) return this._cachedRootCauses
+      const items = this.currentAnalysis?.root_causes
+      let result
+      if (items && items.length) {
+        result = this.mergeAnalysisRootCauses(items).sort((a, b) => {
+          const sevRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+          return sevRank(a.severity) - sevRank(b.severity) || String(a.category || '').localeCompare(String(b.category || ''))
+        })
+      } else {
+        result = this.analysisFindings().filter(f => ['P0', 'P1'].includes(f.severity)).map((f, idx) => ({
+          id: f.id || ('fallback-rc-' + idx),
+          severity: f.severity,
+          category: f.category,
+          title: f.title,
+          detail: f.detail,
+          recommended_action: f.recommendation,
+          affected_subjects: f.subject_id ? [{ subject_id: f.subject_id, sample_id: f.sample_id, language: '' }] : [],
+          evidence_ids: (f.evidence || []).map(e => e.evidence_id).filter(Boolean),
+          related_findings: [f.id].filter(Boolean),
+        }))
+      }
+      this._cachedRootCauses = result
+      this._rootCausesDirty = false
+      return result
+    },
+    mergeAnalysisRootCauses(items) {
+      const sevRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+      const groups = new Map()
+      ;(items || []).forEach((item, idx) => {
+        const key = [item.category || '', item.title || item.id || idx].join('|')
+        if (!groups.has(key)) {
+          const subjSet = new Set()
+          const evSet = new Set()
+          const findSet = new Set()
+          const subjects = [...(item.affected_subjects || [])]
+          const evidences = [...(item.evidence_ids || [])]
+          const findings = [...(item.related_findings || [])]
+          subjects.forEach(s => subjSet.add(this.analysisSubjectKey(s)))
+          evidences.forEach(id => evSet.add(id))
+          findings.forEach(id => findSet.add(id))
+          groups.set(key, {
+            ...item,
+            id: item.id || ('rc-' + idx),
+            affected_subjects: subjects,
+            evidence_ids: evidences,
+            related_findings: findings,
+            _subjSet: subjSet,
+            _evSet: evSet,
+            _findSet: findSet,
+          })
+          return
+        }
+        const g = groups.get(key)
+        if (sevRank(item.severity) < sevRank(g.severity)) g.severity = item.severity
+        if ((item.detail || '').length > (g.detail || '').length) g.detail = item.detail
+        if (!g.recommended_action && item.recommended_action) g.recommended_action = item.recommended_action
+        for (const s of (item.affected_subjects || [])) {
+          const sk = this.analysisSubjectKey(s)
+          if (!g._subjSet.has(sk)) { g._subjSet.add(sk); g.affected_subjects.push(s) }
+        }
+        for (const id of (item.evidence_ids || [])) {
+          if (!g._evSet.has(id)) { g._evSet.add(id); g.evidence_ids.push(id) }
+        }
+        for (const id of (item.related_findings || [])) {
+          if (!g._findSet.has(id)) { g._findSet.add(id); g.related_findings.push(id) }
+        }
+      })
+      return Array.from(groups.values()).map(item => {
+        if ((item.affected_subjects || []).length > 1 && !String(item.detail || '').includes('共 ')) {
+          item.detail = `共 ${item.affected_subjects.length} 个对象出现同类问题。代表性证据：${item.detail || item.title || ''}`
+        }
+        delete item._subjSet
+        delete item._evSet
+        delete item._findSet
+        return item
+      })
+    },
+    _buildAnalysisIndex() {
+      const analysis = this.currentAnalysis
+      this._evidenceMap = new Map()
+      this._subjectMap = new Map()
+      this._cachedRootCauses = null
+      this._rootCausesDirty = true
+      this.analysisSubjectLimit = 50
+      this.analysisFindingsLimit = 50
+      if (!analysis) return
+      for (const e of (analysis.evidence_index || [])) {
+        if (e.evidence_id) this._evidenceMap.set(e.evidence_id, e)
+      }
+      for (const s of (analysis.subjects || [])) {
+        this._subjectMap.set(this.analysisSubjectKey(s), s)
+      }
+      this._rebuildSelectionSet()
+    },
+    _rebuildSelectionSet() {
+      this._selectionSet = new Set((this.analysisSelection || []).map(s => this.analysisSubjectKey(s)))
+    },
+    analysisEvidenceByID(id) {
+      if (!id) return null
+      if (this._evidenceMap) return this._evidenceMap.get(id) || null
+      return (this.currentAnalysis?.evidence_index || []).find(e => e.evidence_id === id) || null
+    },
+    analysisFindingByID(id) {
+      return (this.currentAnalysis?.findings || []).find(f => f.id === id) || null
+    },
+    analysisSubjectBySelector(sel) {
+      if (!sel) return null
+      const key = this.analysisSubjectKey(sel)
+      if (this._subjectMap) {
+        const exact = this._subjectMap.get(key)
+        if (exact) return exact
+        for (const s of this._subjectMap.values()) {
+          if (s.subject_id === sel.subject_id && s.sample_id === sel.sample_id) return s
+        }
+        return null
+      }
+      return (this.currentAnalysis?.subjects || []).find(s => this.analysisSubjectKey(s) === key || (s.subject_id === sel.subject_id && s.sample_id === sel.sample_id)) || null
+    },
+    analysisDetailSubjects() {
+      const detail = this.analysisDetail
+      if (!detail) return []
+      const selectors = detail.root_cause?.affected_subjects?.length
+        ? detail.root_cause.affected_subjects
+        : (detail.report_insight?.affected_subjects?.length
+          ? detail.report_insight.affected_subjects
+          : (detail.subject ? [detail.subject] : (detail.evidence?.subject_id ? [{
+            subject_id: detail.evidence.subject_id,
+            sample_id: detail.evidence.sample_id,
+            language: detail.evidence.language,
+          }] : [])))
+      const seen = new Set()
+      return selectors.map(sel => this.analysisSubjectBySelector(sel) || sel).filter(s => {
+        const key = this.analysisSubjectKey(s)
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+    },
+    analysisStepSummary(step) {
+      if (!step) return ''
+      return [step.text_excerpt, step.input_excerpt, step.output_excerpt].filter(Boolean).join('\n\n') || '无步骤摘要'
+    },
+    analysisStepTone(step) {
+      if (!step) return 'neutral'
+      if (step.success === false || step.exit_code) return 'bad'
+      const text = String([step.kind, step.tool, step.text_excerpt, step.input_excerpt, step.output_excerpt].filter(Boolean).join(' ')).toLowerCase()
+      if (text.includes('error') || text.includes('failed') || text.includes('permission') || text.includes('denied')) return 'bad'
+      if (text.includes('pytest') || text.includes('go test') || text.includes('mvn') || text.includes('ctest')) return 'good'
+      if (text.includes('write') || text.includes('edit')) return 'warn'
+      return 'neutral'
+    },
+    rootCauseOptimizationCount(rc) {
+      if (!rc) return 0
+      const subjects = new Set((rc.affected_subjects || []).map(s => s.subject_id))
+      return (this.currentOptimizationPlan?.items || []).filter(i => {
+        if (!subjects.size) return false
+        return (i.applies_to || []).some(s => subjects.has(s))
+      }).length
+    },
+    openAnalysisRootCause(rc) {
+      if (!rc) return
+      this.analysisFocus = { root_cause_id: rc.id, evidence_id: '' }
+      this.analysisDetail = { type: 'root_cause', root_cause: rc }
+      this.analysisDetailOpen = true
+    },
+    openReportInsight(insight) {
+      if (!insight) return
+      const evID = (insight.evidence_ids || [])[0] || ''
+      this.analysisFocus = { root_cause_id: '', evidence_id: evID }
+      this.analysisDetail = { type: 'report_insight', report_insight: insight }
+      this.analysisDetailOpen = true
+    },
+    openAnalysisSubjectDetail(subject) {
+      if (!subject) return
+      this.analysisFocus = { root_cause_id: '', evidence_id: 'subject-' + [subject.subject_id, subject.sample_id, subject.language].filter(Boolean).join('-') }
+      this.analysisDetail = { type: 'subject', subject }
+      this.analysisDetailOpen = true
+    },
+    openAnalysisEvidence(id, rc = null) {
+      const evidence = this.analysisEvidenceByID(id)
+      if (!evidence) {
+        this.showToast('没有找到证据：' + id, 'warn', 4000)
+        return
+      }
+      this.analysisFocus = { root_cause_id: rc?.id || '', evidence_id: id }
+      this.analysisDetail = { type: 'evidence', evidence, root_cause: rc }
+      this.analysisDetailOpen = true
+    },
+    closeAnalysisDetail() {
+      this.analysisDetailOpen = false
+      this.analysisDetail = null
+    },
+    analysisDetailTitle() {
+      if (this.analysisDetail?.type === 'evidence') return '证据详情'
+      if (this.analysisDetail?.type === 'subject') return 'Agent 完整过程'
+      if (this.analysisDetail?.type === 'report_insight') return '报告洞察'
+      return '根因详情'
+    },
+    analysisDetailSubtitle() {
+      return this.analysisDetail?.root_cause?.title
+        || this.analysisDetail?.report_insight?.title
+        || this.analysisDetail?.evidence?.title
+        || this.analysisDetail?.subject?.subject_id
+        || ''
+    },
+    askAnalysisFocus(question) {
+      this.analysisChatInput = question
+      this.sendAnalysisChatMessage()
+    },
+    quickRootCauseQuestion(rc, kind) {
+      const title = rc?.title || '这个问题'
+      if (kind === 'why') return `请解释「${title}」为什么会发生，按证据链说明。`
+      if (kind === 'compare') return `把「${title}」相关对象和最好对象对比，差异在哪里？`
+      if (kind === 'fix') return `针对「${title}」，应该如何修改 skill/prompt/agent 配置？`
+      return `「${title}」的证据链是否充分？还缺什么证据？`
+    },
+    analysisSubjectBadges(s) {
+      const badges = []
+      badges.push({ label: s.compile_pass ? '编译通过' : '编译失败', tone: s.compile_pass ? 'good' : 'bad' })
+      badges.push({ label: s.test_pass == null ? '测试未执行' : (s.test_pass ? '测试通过' : '测试失败'), tone: s.test_pass === true ? 'good' : 'bad' })
+      if (s.line_coverage != null) badges.push({ label: '覆盖 ' + this.metricPct(s.line_coverage), tone: this.metricNumber(s.line_coverage) >= 70 ? 'good' : 'warn' })
+      if (s.mutation_score != null) badges.push({ label: '变异 ' + this.metricPct(s.mutation_score), tone: this.metricNumber(s.mutation_score) >= 60 ? 'good' : 'warn' })
+      if ((s.trace_step_count || 0) > 0) badges.push({ label: 'Trace ' + s.trace_step_count, tone: 'neutral' })
+      if (s.modified_source) badges.push({ label: '源码污染', tone: 'bad' })
+      if (s.total_tokens && s.total_tokens > 200000) badges.push({ label: 'Token 高', tone: 'warn' })
+      return badges
+    },
+    analysisBadgeStyle(tone) {
+      if (tone === 'good') return 'background:rgba(16,185,129,.10);color:var(--green);border-color:rgba(16,185,129,.28)'
+      if (tone === 'bad') return 'background:var(--error-bg);color:var(--red);border-color:var(--error-border)'
+      if (tone === 'warn') return 'background:var(--warn-bg);color:var(--yellow);border-color:rgba(245,158,11,.28)'
+      return 'background:var(--bg-muted);color:var(--fg-muted);border-color:var(--border)'
+    },
+    optimizationItems(target = '') {
+      let items = this.currentOptimizationPlan?.items || []
+      if (target) items = items.filter(i => i.target === target)
+      return [...items].sort((a, b) => {
+        const srcRank = v => (v || 'rule') === 'llm' ? 0 : ((v || 'rule') === 'rule' ? 1 : 2)
+        const priRank = v => ({ P0:0, P1:1, P2:2, P3:3 })[v] ?? 9
+        return srcRank(a.source) - srcRank(b.source) || priRank(a.priority) - priRank(b.priority) || String(a.target || '').localeCompare(String(b.target || ''))
+      })
+    },
+    optimizationTargets() {
+      const targets = this.currentOptimizationPlan?.summary?.targets || []
+      if (targets.length) return targets
+      return Array.from(new Set((this.currentOptimizationPlan?.items || []).map(i => i.target).filter(Boolean))).sort()
+    },
+    optimizationTargetLabel(target) {
+      return ({
+        skill: 'Skill',
+        prompt: 'Prompt',
+        agent_config: 'Agent 配置',
+        environment: '环境',
+        evaluator: '评测器',
+      })[target] || target || '未分类'
+    },
+    optimizationEvidenceLabel(e) {
+      if (!e) return 'evidence'
+      const parts = []
+      if (e.evidence_id) parts.push(e.evidence_id)
+      if (e.kind) parts.push(e.kind)
+      if (e.subject_id) parts.push(e.subject_id)
+      if (e.step_index) parts.push('#' + e.step_index)
+      return parts.join(' · ') || 'evidence'
+    },
+    optimizationEvidenceKey(e, idx) {
+      return (e?.evidence_id || e?.kind || 'evidence') + '-' + idx
+    },
+    analysisFilterValues(field) {
+      const items = this.currentAnalysis?.findings || []
+      const values = new Set()
+      items.forEach(f => {
+        if (field === 'source') values.add(f.source || 'rule')
+        if (field === 'severity' && f.severity) values.add(f.severity)
+        if (field === 'category' && f.category) values.add(f.category)
+        if (field === 'subject') values.add(f.subject_id || 'global')
+      })
+      return Array.from(values).sort()
+    },
+    analysisEvidenceLabel(e) {
+      if (!e) return 'evidence'
+      const parts = []
+      if (e.evidence_id) parts.push(e.evidence_id)
+      if (e.kind) parts.push(e.kind)
+      if (e.subject_id) parts.push(e.subject_id)
+      if (e.step_index) parts.push('#' + e.step_index)
+      return parts.join(' · ') || 'evidence'
+    },
+    analysisEvidenceKey(e, idx) {
+      return (e?.evidence_id || e?.kind || 'evidence') + '-' + idx
+    },
+    analysisSourceLabel(source) {
+      if ((source || 'rule') === 'llm') return 'LLM 诊断'
+      if ((source || 'rule') === 'rule') return '规则诊断'
+      return source || '未知来源'
+    },
+    analysisSourceBadgeStyle(source) {
+      if ((source || 'rule') === 'llm') return 'background:rgba(14,165,233,.10);color:var(--accent);border-color:rgba(14,165,233,.30)'
+      return 'background:var(--bg-muted);color:var(--fg-muted);border-color:var(--border)'
+    },
+    findingBadgeStyle(sev) {
+      if (sev === 'P0') return 'background:var(--error-bg);color:var(--red);border-color:var(--error-border)'
+      if (sev === 'P1') return 'background:var(--warn-bg);color:var(--yellow);border-color:rgba(245,158,11,.35)'
+      if (sev === 'P2') return 'background:rgba(14,165,233,.10);color:var(--accent);border-color:rgba(14,165,233,.30)'
+      return 'background:var(--bg-muted);color:var(--fg-muted);border-color:var(--border)'
     },
     fmtInt(v) { return (v==null || v===0) ? '—' : Math.round(v).toLocaleString('zh-CN') },
     fmtMs(v) {
@@ -3503,5 +4769,14 @@ function pctColor(v) {
   if (v >= .8) return 'pct-good'
   if (v >= .6) return 'pct-warn'
   return 'pct-bad'
+}
+function deltaColor(v) {
+  if (v==null || v===0) return 'color:var(--fg-muted)'
+  return v > 0 ? 'color:var(--green)' : 'color:var(--red)'
+}
+function signedPct(v) {
+  if (v==null) return '—'
+  const s = (v*100).toFixed(1)
+  return v > 0 ? '+'+s+'%' : s+'%'
 }
 

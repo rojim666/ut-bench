@@ -51,6 +51,54 @@ func TestBuildMutationBreakdown(t *testing.T) {
 	}
 }
 
+func TestBuildZeroMutantSamplesIncludesExplicitAndLegacyZeroStats(t *testing.T) {
+	zero := 0.0
+	totalZero := 0
+	totalNonZero := 3
+	killedZero := 0
+	survivedThree := 3
+	rows := []contracts.EvaluationResult{
+		{
+			Language:       "java",
+			SampleID:       "explicit_zero",
+			SourcePath:     "src/main/java/A.java",
+			MutationScore:  &zero,
+			MutationTotal:  &totalZero,
+			MutationTool:   "pitest",
+			MutationKilled: &killedZero,
+		},
+		{
+			Language:      "java",
+			SampleID:      "legacy_zero",
+			SourcePath:    "src/main/java/B.java",
+			MutationScore: &zero,
+			MutationTool:  "pitest",
+		},
+		{
+			Language:         "java",
+			SampleID:         "survived_mutants",
+			SourcePath:       "src/main/java/C.java",
+			MutationScore:    &zero,
+			MutationTotal:    &totalNonZero,
+			MutationKilled:   &killedZero,
+			MutationSurvived: &survivedThree,
+			MutationTool:     "pitest",
+		},
+	}
+
+	got := buildZeroMutantSamples(rows)
+	if len(got) != 2 {
+		t.Fatalf("expected two zero-mutant samples, got %+v", got)
+	}
+	ids := map[string]bool{}
+	for _, row := range got {
+		ids[row.SampleID] = true
+	}
+	if !ids["explicit_zero"] || !ids["legacy_zero"] || ids["survived_mutants"] {
+		t.Fatalf("unexpected zero-mutant sample ids: %+v", ids)
+	}
+}
+
 func TestBuildSummaryUsesSampleLevelTestPassRateWhenCountsMissing(t *testing.T) {
 	pass := true
 	fail := false
@@ -174,6 +222,9 @@ func TestScoreEligibilityExcludesNonModelFailuresFromRanking(t *testing.T) {
 	if s.CompilePassRate != 1 {
 		t.Fatalf("expected excluded row to be omitted from compile rate, got %v", s.CompilePassRate)
 	}
+	if s.RawCompilePassRate != 0.5 || s.RawTestPassRate != 0.5 {
+		t.Fatalf("expected raw rates to keep all rows, got %+v", s)
+	}
 
 	dims := buildDimensions(rows, nil)
 	if len(dims.ByModel) != 1 || dims.ByModel[0].TotalSamples != 1 || dims.ByModel[0].CompilePassRate != 1 {
@@ -183,6 +234,50 @@ func TestScoreEligibilityExcludesNonModelFailuresFromRanking(t *testing.T) {
 	exclusions := buildScoreExclusions(rows)
 	if len(exclusions) != 1 || exclusions[0].Origin != "environment" || exclusions[0].Count != 1 {
 		t.Fatalf("unexpected exclusions: %+v", exclusions)
+	}
+}
+
+func TestToolMutationFailureStillContributesDisplayMetrics(t *testing.T) {
+	pass := true
+	excluded := false
+	lineCov := 1.0
+	assertDensity := 1.75
+
+	rows := []contracts.EvaluationResult{
+		{
+			Model:            "opencode__deepseek__qta-ut",
+			SubjectID:        "opencode__deepseek__qta-ut",
+			AgentFramework:   "opencode",
+			AgentModel:       "deepseek",
+			SkillName:        "qta-ut",
+			CompilePass:      true,
+			TestPass:         &pass,
+			LineCoverage:     &lineCov,
+			AssertionDensity: &assertDensity,
+			MutationError:    "pitest: Coverage generation minion exited abnormally",
+			FailureOrigin:    "tool",
+			ScoreEligible:    &excluded,
+		},
+	}
+
+	summary := buildSummary(rows)
+	if summary.EligibleSamples != 0 || summary.ExcludedSamples != 1 {
+		t.Fatalf("tool row should stay excluded from score summary, got %+v", summary)
+	}
+
+	dims := buildDimensions(rows, nil)
+	if len(dims.ByModel) != 1 {
+		t.Fatalf("expected tool row in display model dimensions, got %+v", dims.ByModel)
+	}
+	got := dims.ByModel[0]
+	if got.TotalSamples != 1 || got.CompilePassRate != 1 || got.AvgLineCoverage != 1 || got.AvgAssertionDensity != assertDensity {
+		t.Fatalf("unexpected display metrics for tool row: %+v", got)
+	}
+
+	subjects := buildSubjectMetrics(rows)
+	sm := subjects["opencode|deepseek|qta-ut|"]
+	if sm == nil || sm.count != 1 || sm.lineCov() != 1 || sm.assertDensity() != assertDensity {
+		t.Fatalf("expected tool row in subject comparison metrics, got %+v", subjects)
 	}
 }
 

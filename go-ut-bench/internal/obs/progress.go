@@ -20,6 +20,7 @@ type TaskResult struct {
 	Error            string
 	LatencyMS        int
 	Tokens           int
+	CacheReadTokens  int
 	CompilePass      bool
 	TestPass         bool
 	TestPassCount    *int
@@ -284,7 +285,11 @@ func (pr *ProgressReporter) PrintAgentTaskLine(idx, total int, result TaskResult
 
 	// token 信息
 	if result.Tokens > 0 {
-		fmt.Fprintf(w, " | %d tok", result.Tokens)
+		if result.CacheReadTokens > 0 {
+			fmt.Fprintf(w, " | net %d tok,cache %d", result.Tokens, result.CacheReadTokens)
+		} else {
+			fmt.Fprintf(w, " | net %d tok", result.Tokens)
+		}
 	}
 
 	// Agent 追踪摘要（仅 cli_agent 类型）

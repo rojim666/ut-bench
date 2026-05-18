@@ -3,6 +3,7 @@ package agentconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,7 +39,7 @@ skills:
 		"model_api__deepseek__no_skill",
 		"model_api__qwen__no_skill",
 		"aider__deepseek__no_skill",
-		"aider__deepseek__unit_test_skill",
+		"aider__deepseek__unit_test_skill__v1",
 	}
 	for _, id := range want {
 		if !got[id] {
@@ -47,6 +48,96 @@ skills:
 	}
 	if got["aider__qwen__no_skill"] {
 		t.Fatalf("incompatible model should have been filtered")
+	}
+}
+
+func TestLoadSelectedLegacySingleVersionSubject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agents.yaml")
+	raw := `
+models: [deepseek]
+frameworks:
+  aider:
+    kind: cli_agent
+    command: "aider {{.PromptFile}}"
+skills:
+  unit_test_skill:
+    version: "1"
+`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subjects, err := Load(path, []string{"deepseek"}, []string{"aider__deepseek__unit_test_skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subjects) != 1 || subjects[0].Spec.ID != "aider__deepseek__unit_test_skill__v1" || subjects[0].Spec.SkillVersion != "1" {
+		t.Fatalf("unexpected selected legacy subject: %+v", subjects)
+	}
+}
+
+func TestLoadExpandsSkillVersions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agents.yaml")
+	raw := `
+models: [deepseek]
+frameworks:
+  codex:
+    kind: cli_agent
+    command: "codex {{.PromptFile}}"
+skills:
+  qta-ut:
+    default_version: v1
+    compatible_frameworks: [codex]
+    versions:
+      v1:
+        instruction_path: ./skills/qta-ut/v1/SKILL.md
+      v2:
+        description: optimized
+        instruction_path: ./skills/qta-ut/v2/SKILL.md
+`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subjects, err := Load(path, []string{"deepseek"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]ResolvedSubject{}
+	for _, subject := range subjects {
+		got[subject.Spec.ID] = subject
+	}
+	for _, id := range []string{"codex__deepseek__qta-ut__v1", "codex__deepseek__qta-ut__v2"} {
+		if got[id].Spec.ID == "" {
+			t.Fatalf("missing version subject %s in %+v", id, got)
+		}
+	}
+	if got["codex__deepseek__qta-ut__v2"].Spec.SkillVersion != "v2" {
+		t.Fatalf("skill version not propagated: %+v", got["codex__deepseek__qta-ut__v2"])
+	}
+}
+
+func TestLoadSelectedLegacyMultiVersionSubjectIsAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agents.yaml")
+	raw := `
+models: [deepseek]
+frameworks:
+  codex:
+    kind: cli_agent
+    command: "codex {{.PromptFile}}"
+skills:
+  qta-ut:
+    versions:
+      v1: {}
+      v2: {}
+`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path, []string{"deepseek"}, []string{"codex__deepseek__qta-ut"})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguous legacy subject error, got %v", err)
 	}
 }
 

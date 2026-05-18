@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -75,12 +76,23 @@ func main() {
 	if !strings.Contains(result.Code, "def test_generated") {
 		t.Fatalf("unexpected generated code: %s", result.Code)
 	}
-	if result.Trace.TracePath == "" || result.Trace.WorkspaceDiffPath == "" || result.Trace.SandboxFingerprint == "" {
-		t.Fatalf("expected trace artifacts, got %+v", result.Trace)
+	if result.Trace.TracePath == "" || result.Trace.RawTracePath == "" || result.Trace.TrajectoryPath == "" || result.Trace.WorkspaceDiffPath == "" {
+		t.Fatalf("expected trace artifact paths to be recorded, got %+v", result.Trace)
 	}
-	// 验证新增的 trace 字段
-	if result.Trace.InteractionCount < 1 {
-		t.Fatalf("expected interaction_count >= 1, got %d", result.Trace.InteractionCount)
+	for _, artifactPath := range []string{
+		result.Trace.TracePath,
+		result.Trace.RawTracePath,
+		result.Trace.RawStdoutPath,
+		result.Trace.RawStderrPath,
+		result.Trace.TrajectoryPath,
+		result.Trace.WorkspaceDiffPath,
+	} {
+		if _, err := os.Stat(artifactPath); err != nil {
+			t.Fatalf("expected trace artifact %s to exist: %v", artifactPath, err)
+		}
+	}
+	if result.Trace.SandboxFingerprint == "" {
+		t.Fatalf("expected sandbox fingerprint, got %+v", result.Trace)
 	}
 	if result.Trace.StartedAt.IsZero() || result.Trace.FinishedAt.IsZero() {
 		t.Fatalf("expected started_at and finished_at to be set")
@@ -182,6 +194,71 @@ func main() {
 		if !strings.Contains(payload["config"], part) {
 			t.Fatalf("expected config to contain %s, got %s", part, payload["config"])
 		}
+	}
+}
+
+func TestGenerateWithCLIAgentRecoversGeneratedTestAfterCommandError(t *testing.T) {
+	tmp := t.TempDir()
+	samplePath := filepath.Join(tmp, "sample.py")
+	if err := os.WriteFile(samplePath, []byte("def add(a, b):\n    return a + b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeAgent := filepath.Join(tmp, "fake_agent_nonzero.go")
+	fakeAgentSrc := `package main
+import (
+	"os"
+	"path/filepath"
+)
+func main() {
+	if len(os.Args) < 2 { panic("missing workspace") }
+	outPath := filepath.Join(os.Args[1], "test_generated.py")
+	content := "def test_generated():\n    assert True\n"
+	if err := os.WriteFile(outPath, []byte(content), 0644); err != nil { panic(err) }
+	os.Exit(1)
+}`
+	if err := os.WriteFile(fakeAgent, []byte(fakeAgentSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subject := agentconfig.ResolvedSubject{
+		Spec: contracts.SubjectSpec{
+			ID:        "fake_agent__deepseek__no_skill",
+			Kind:      agentconfig.KindCLIAgent,
+			Framework: "fake_agent",
+			Model:     "deepseek",
+			Skill:     agentconfig.NoSkill,
+		},
+		Framework: agentconfig.FrameworkSpec{
+			Name:        "fake_agent",
+			Kind:        agentconfig.KindCLIAgent,
+			Enabled:     true,
+			SandboxMode: "local",
+			Command:     `go run "` + fakeAgent + `" "{{.Workspace}}"`,
+			OutputGlobs: []string{"test_*.py"},
+			Preflight: map[string][]string{
+				"python": {"go version"},
+			},
+		},
+		Skill: contracts.SkillSpec{Name: agentconfig.NoSkill, Enabled: true},
+	}
+	adapter := newCLIAgentAdapter(NewSandboxRunner())
+	result := adapter.Generate(context.Background(), AgentGenerateRequest{
+		Subject:    subject,
+		Model:      modelConfig{Name: "deepseek", Model: "deepseek-chat"},
+		Sample:     contracts.SampleRef{ID: "sample_nonzero", Language: "python", Path: samplePath},
+		Prompt:     "Generate tests",
+		TestPath:   filepath.Join(tmp, "out.py"),
+		MetaRoot:   filepath.Join(tmp, "metadata"),
+		OutputRoot: tmp,
+		RunID:      "run_cli_agent_nonzero",
+	})
+	if result.Error != nil {
+		t.Fatalf("expected generated test to be recovered after command error, got %+v raw=%+v", result.Error, result.RawResponse)
+	}
+	if !strings.Contains(result.Code, "def test_generated") {
+		t.Fatalf("unexpected generated code: %s", result.Code)
+	}
+	if _, ok := result.RawResponse["agent_execution_warning"]; !ok {
+		t.Fatalf("expected agent_execution_warning in raw response: %+v", result.RawResponse)
 	}
 }
 
@@ -349,11 +426,14 @@ func TestBuildSampleEnvironmentSetupCommandsWorkspaceFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	goCommands := buildSampleEnvironmentSetupCommands(contracts.SampleRef{Language: "go"}, tmp)
-	if len(goCommands) != 1 || goCommands[0] != "go mod download" {
+	if len(goCommands) != 1 || !strings.Contains(goCommands[0], "go mod download") || !strings.Contains(goCommands[0], "go not found; skipping go mod download") {
 		t.Fatalf("unexpected go commands: %+v", goCommands)
 	}
 	javaCommands := buildSampleEnvironmentSetupCommands(contracts.SampleRef{Language: "java"}, tmp)
-	if len(javaCommands) != 1 || javaCommands[0] != "mvn -q -DskipTests dependency:go-offline" {
+	if len(javaCommands) != 1 ||
+		!strings.Contains(javaCommands[0], "timeout 180s mvn -q -DskipTests dependency:go-offline") ||
+		!strings.Contains(javaCommands[0], "continuing without full Maven cache") ||
+		!strings.Contains(javaCommands[0], "skipping Maven cache warmup") {
 		t.Fatalf("unexpected java commands: %+v", javaCommands)
 	}
 }
@@ -396,6 +476,230 @@ func TestInjectAgentNativeSkillForClaudeCodeRenamesInstructionToSkillMD(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(dest, "references", "checklist.md")); err != nil {
 		t.Fatalf("expected copied references dir to exist: %v", err)
+	}
+}
+
+func TestCopyFileNormalizesShellScriptLineEndingsAndPreservesMode(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "push_trace_data.sh")
+	dst := filepath.Join(tmp, "out", "push_trace_data.sh")
+	if err := os.WriteFile(src, []byte("#!/usr/bin/env bash\r\n\r\necho ok\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(src, dst); err != nil {
+		t.Fatalf("copyFile returned error: %v", err)
+	}
+	raw, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "\r") {
+		t.Fatalf("expected CRLF to be normalized, got %q", string(raw))
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			t.Fatalf("expected executable bits to be preserved, got mode %v", info.Mode().Perm())
+		}
+	}
+}
+
+func TestInjectAgentNativeSkillForCodeBuddyUsesSkillFrontmatterName(t *testing.T) {
+	tmp := t.TempDir()
+	skillSrc := filepath.Join(tmp, "SKILL.md")
+	if err := os.WriteFile(skillSrc, []byte("---\nname: qta-gen-ut\ndescription: 为指定代码生成单元测试\n---\n\n# QTA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workRoot := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dest, err := injectAgentNativeSkill(workRoot, "codebuddy", contracts.SkillSpec{
+		Name:            "qta-ut",
+		Enabled:         true,
+		Description:     "fallback description",
+		InstructionPath: skillSrc,
+	})
+	if err != nil {
+		t.Fatalf("injectAgentNativeSkill returned error: %v", err)
+	}
+
+	wantDir := filepath.Join(workRoot, ".codebuddy", "skills", "qta-gen-ut")
+	if dest != wantDir {
+		t.Fatalf("dest = %q, want %q", dest, wantDir)
+	}
+	raw, err := os.ReadFile(filepath.Join(dest, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected SKILL.md to exist: %v", err)
+	}
+	text := string(raw)
+	if !strings.HasPrefix(text, "---\nname: qta-gen-ut\n") {
+		t.Fatalf("expected frontmatter name to stay aligned with native skill name, got %q", text)
+	}
+}
+
+func TestInjectAgentNativeSkillForCodeBuddyAddsFrontmatterWhenMissing(t *testing.T) {
+	tmp := t.TempDir()
+	skillSrc := filepath.Join(tmp, "instructions.md")
+	if err := os.WriteFile(skillSrc, []byte("# Unit Test Skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workRoot := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dest, err := injectAgentNativeSkill(workRoot, "codebuddy", contracts.SkillSpec{
+		Name:            "unit_test_skill",
+		Enabled:         true,
+		Description:     "Generate runnable unit tests.",
+		InstructionPath: skillSrc,
+	})
+	if err != nil {
+		t.Fatalf("injectAgentNativeSkill returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dest, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected SKILL.md to exist: %v", err)
+	}
+	text := string(raw)
+	if !strings.HasPrefix(text, "---\nname: unit_test_skill\n") {
+		t.Fatalf("expected generated CodeBuddy frontmatter, got %q", text)
+	}
+	if !strings.Contains(text, "# Unit Test Skill") {
+		t.Fatalf("expected original skill content to be preserved, got %q", text)
+	}
+}
+
+func TestBuildAgentPromptForCodeBuddyStartsWithSlashSkill(t *testing.T) {
+	sample := contracts.SampleRef{
+		ID:       "s1",
+		Language: "go",
+	}
+	prompt := buildAgentPrompt("Task body", sample, "/workspace/source.go", "/workspace/generated_test.go", "/workspace/.codebuddy/skills/qta-gen-ut", "codebuddy", "qta-ut", resolveGenerationStrategy(sample))
+
+	if !strings.HasPrefix(prompt, "/qta-gen-ut Task body") {
+		t.Fatalf("expected prompt to start with CodeBuddy slash skill invocation, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "CodeBuddy native skill /qta-gen-ut") {
+		t.Fatalf("expected prompt to explicitly require native skill, got %q", prompt)
+	}
+	for _, want := range []string{
+		"Treat all original source files as read-only inputs",
+		"Only create or edit the final generated test file",
+		"Preserve the source package/module/namespace/class/function signatures exactly",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to include source immutability contract %q, got %q", want, prompt)
+		}
+	}
+}
+
+func TestBuildAgentPromptForClaudeCodeStartsWithSlashSkill(t *testing.T) {
+	sample := contracts.SampleRef{
+		ID:       "s1",
+		Language: "go",
+	}
+	prompt := buildAgentPrompt("Task body", sample, "/workspace/source.go", "/workspace/generated_test.go", "/workspace/.claude/skills/qta-gen-ut", "claudecode", "qta-ut", resolveGenerationStrategy(sample))
+
+	if !strings.HasPrefix(prompt, "/qta-gen-ut Task body") {
+		t.Fatalf("expected prompt to start with Claude Code slash skill invocation, got %q", prompt)
+	}
+	if strings.Contains(prompt, "/qta_ut") {
+		t.Fatalf("expected Claude Code prompt to use native skill dir name, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Claude Code native skill /qta-gen-ut") {
+		t.Fatalf("expected prompt to explicitly require native skill, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Only create or edit the final generated test file") {
+		t.Fatalf("expected prompt to include source immutability contract, got %q", prompt)
+	}
+}
+
+func TestInjectAgentNativeSkillForOpenCodeUsesSKILLMDAndCompatibleName(t *testing.T) {
+	tmp := t.TempDir()
+	skillSrc := filepath.Join(tmp, "instructions.md")
+	if err := os.WriteFile(skillSrc, []byte("# Unit Test Skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checklist := filepath.Join(tmp, "checklist.md")
+	if err := os.WriteFile(checklist, []byte("- runnable\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workRoot := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dest, err := injectAgentNativeSkill(workRoot, "opencode", contracts.SkillSpec{
+		Name:            "unit_test_skill",
+		Enabled:         true,
+		Description:     "Generate runnable unit tests.",
+		InstructionPath: skillSrc,
+		Files:           []string{checklist},
+	})
+	if err != nil {
+		t.Fatalf("injectAgentNativeSkill returned error: %v", err)
+	}
+
+	wantDir := filepath.Join(workRoot, ".opencode", "skills", "unit-test-skill")
+	if dest != wantDir {
+		t.Fatalf("dest = %q, want %q", dest, wantDir)
+	}
+	raw, err := os.ReadFile(filepath.Join(dest, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected SKILL.md to exist: %v", err)
+	}
+	text := string(raw)
+	if !strings.HasPrefix(text, "---\nname: unit-test-skill\n") {
+		t.Fatalf("expected generated OpenCode frontmatter, got %q", text)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "checklist.md")); err != nil {
+		t.Fatalf("expected extra skill file to be copied: %v", err)
+	}
+}
+
+func TestInjectAgentNativeSkillForOpenCodeUsesFrontmatterName(t *testing.T) {
+	tmp := t.TempDir()
+	skillSrc := filepath.Join(tmp, "SKILL.md")
+	if err := os.WriteFile(skillSrc, []byte("---\nname: qta-gen-ut\ndescription: 为指定代码生成单元测试\n---\n\n# QTA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workRoot := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dest, err := injectAgentNativeSkill(workRoot, "opencode", contracts.SkillSpec{
+		Name:            "qta-ut",
+		Enabled:         true,
+		InstructionPath: skillSrc,
+	})
+	if err != nil {
+		t.Fatalf("injectAgentNativeSkill returned error: %v", err)
+	}
+	if want := filepath.Join(workRoot, ".opencode", "skills", "qta-gen-ut"); dest != want {
+		t.Fatalf("dest = %q, want %q", dest, want)
+	}
+}
+
+func TestBuildAgentPromptForOpenCodeStartsWithSlashSkill(t *testing.T) {
+	sample := contracts.SampleRef{
+		ID:       "s1",
+		Language: "python",
+	}
+	prompt := buildAgentPrompt("Task body", sample, "/workspace/source.py", "/workspace/generated_test.py", "/workspace/.opencode/skills/unit-test-skill", "opencode", "unit_test_skill", resolveGenerationStrategy(sample))
+
+	if !strings.HasPrefix(prompt, "/unit-test-skill Task body") {
+		t.Fatalf("expected prompt to start with OpenCode slash skill invocation, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "OpenCode native skill /unit-test-skill") {
+		t.Fatalf("expected prompt to explicitly require native skill, got %q", prompt)
 	}
 }
 

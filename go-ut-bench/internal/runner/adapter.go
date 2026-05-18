@@ -28,18 +28,21 @@ type AgentGenerateRequest struct {
 
 // AgentGenerateResult 封装一次 Agent 生成任务的全部输出。
 type AgentGenerateResult struct {
-	Code             string
-	RawResponse      map[string]any
-	Trace            AgentTrace
-	LatencyMS        int
-	PromptTokens     *int
-	CompletionTokens *int
-	TotalTokens      *int
-	TokenSource      string
-	EstimatedCostUSD *float64
-	CostSource       string
-	Truncated        bool
-	Error            *contracts.ErrorInfo
+	Code              string
+	RawResponse       map[string]any
+	Trace             AgentTrace
+	LatencyMS         int
+	PromptTokens      *int
+	CompletionTokens  *int
+	TotalTokens       *int
+	RawInputTokens    *int
+	CacheReadTokens   *int
+	CacheCreateTokens *int
+	TokenSource       string
+	EstimatedCostUSD  *float64
+	CostSource        string
+	Truncated         bool
+	Error             *contracts.ErrorInfo
 }
 
 // AgentTrace 记录 Agent 执行的完整操作轨迹。
@@ -63,6 +66,9 @@ type AgentTrace struct {
 	PromptTokens      *int     `json:"prompt_tokens,omitempty"`
 	CompletionTokens  *int     `json:"completion_tokens,omitempty"`
 	TotalTokens       *int     `json:"total_tokens,omitempty"`
+	RawInputTokens    *int     `json:"raw_input_tokens,omitempty"`
+	CacheReadTokens   *int     `json:"cache_read_input_tokens,omitempty"`
+	CacheCreateTokens *int     `json:"cache_creation_input_tokens,omitempty"`
 	TokenSource       string   `json:"token_source,omitempty"`
 	EstimatedCost     *float64 `json:"estimated_cost,omitempty"`
 	CostSource        string   `json:"cost_source,omitempty"`
@@ -89,6 +95,10 @@ type AgentTrace struct {
 	SessionID          string `json:"session_id,omitempty"`
 	SessionExportPath  string `json:"session_export_path,omitempty"`
 	SessionExportError string `json:"session_export_error,omitempty"`
+	RawTracePath       string `json:"raw_trace_path,omitempty"`
+	RawStdoutPath      string `json:"raw_stdout_path,omitempty"`
+	RawStderrPath      string `json:"raw_stderr_path,omitempty"`
+	TrajectoryPath     string `json:"trajectory_path,omitempty"`
 	TracePath          string `json:"trace_path"`
 	WorkspaceDiffPath  string `json:"workspace_diff_path"`
 }

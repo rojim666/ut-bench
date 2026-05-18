@@ -40,6 +40,7 @@ artifacts/*
 !artifacts/.gitkeep
 storage/*
 !storage/.gitkeep
+/datasets/
 *.db
 *.db-shm
 *.db-wal

@@ -20,6 +20,8 @@ type DockerConfig struct {
 	EvalImageName string // e.g. "utbench:latest"
 	ProjectRoot   string // host absolute path of project root (parent of datasets/, artifacts/, configs/)
 	EnvFile       string // optional host path to .env; ignored if empty or missing
+	EvalMemory    string // optional Docker memory limit for eval containers, e.g. "4g"
+	EvalCPUs      string // optional Docker CPU limit for eval containers, e.g. "4"
 }
 
 func (c DockerConfig) EffectiveEvalImage() string {
@@ -115,13 +117,20 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 	if cfg.EnvFile != "" {
 		a = append(a, "--env-file", cfg.EnvFile)
 	}
+	if memory := strings.TrimSpace(cfg.EvalMemory); memory != "" {
+		a = append(a, "--memory", memory, "--memory-swap", memory)
+	}
+	if cpus := strings.TrimSpace(cfg.EvalCPUs); cpus != "" {
+		a = append(a, "--cpus", cpus)
+	}
 
 	// Mounts: datasets (read-only is safer but writable matches current UX),
 	// artifacts, configs, storage. Paths on the container side are fixed and
 	// mirror those used in STARTUP_GUIDE.md.
 	root := strings.TrimRight(cfg.ProjectRoot, `/\`)
+	datasetRoot := resolveDockerHostPath(root, spec.DatasetRoot, "datasets")
 	a = append(a,
-		"-v", root+`/datasets:/app/datasets`,
+		"-v", datasetRoot+`:/app/datasets`,
 		"-v", root+`/artifacts:/app/artifacts`,
 		"-v", root+`/configs:/app/configs`,
 		"-v", root+`/storage:/app/storage`,
@@ -185,6 +194,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if spec.DatasetScenario != "" {
 			a = append(a, "--scenario", spec.DatasetScenario)
 		}
+		if spec.DatasetProject != "" {
+			a = append(a, "--project", spec.DatasetProject)
+		}
 		if spec.DatasetLevel != "" {
 			a = append(a, "--level", spec.DatasetLevel)
 		}
@@ -241,6 +253,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if spec.DatasetScenario != "" {
 			a = append(a, "--scenario", spec.DatasetScenario)
 		}
+		if spec.DatasetProject != "" {
+			a = append(a, "--project", spec.DatasetProject)
+		}
 		if spec.DatasetLevel != "" {
 			a = append(a, "--level", spec.DatasetLevel)
 		}
@@ -265,10 +280,8 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		manifestPath := opts.ManifestPath
 		if manifestPath == "" {
 			manifestPath = path.Join("/app/artifacts", "runs", sourceRunID, "generated", "generated_manifest.json")
-		}
-		// Convert host path to container path if it's absolute
-		if strings.HasPrefix(manifestPath, root) {
-			manifestPath = strings.Replace(manifestPath, root, "/app", 1)
+		} else {
+			manifestPath = dockerContainerPathForMountedFile(root, manifestPath)
 		}
 		a = append(a, "--manifest", manifestPath)
 		if spec.MutationEnabled {
@@ -292,10 +305,8 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		evaluationPath := opts.EvaluationPath
 		if evaluationPath == "" {
 			evaluationPath = path.Join("/app/artifacts", "runs", sourceRunID, "evaluation", "evaluation_result.json")
-		}
-		// Convert host path to container path if it's absolute
-		if strings.HasPrefix(evaluationPath, root) {
-			evaluationPath = strings.Replace(evaluationPath, root, "/app", 1)
+		} else {
+			evaluationPath = dockerContainerPathForMountedFile(root, evaluationPath)
 		}
 		a = append(a, "--evaluation", evaluationPath)
 	}
@@ -303,13 +314,51 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 	return wrapDockerSourceCommand(a, cfg)
 }
 
+func dockerContainerPathForMountedFile(projectRoot, filePath string) string {
+	raw := strings.TrimSpace(filePath)
+	if raw == "" {
+		return filePath
+	}
+	slashRaw := filepath.ToSlash(raw)
+	if strings.HasPrefix(slashRaw, "/app/") {
+		return path.Clean(slashRaw)
+	}
+
+	root := strings.TrimRight(filepath.ToSlash(filepath.Clean(projectRoot)), "/")
+	clean := filepath.Clean(raw)
+	if !filepath.IsAbs(clean) {
+		clean = filepath.Join(projectRoot, clean)
+	}
+	slash := filepath.ToSlash(filepath.Clean(clean))
+	if slash == root {
+		return "/app"
+	}
+	if strings.HasPrefix(slash, root+"/") {
+		return path.Join("/app", slash[len(root)+1:])
+	}
+	return slashRaw
+}
+
+func resolveDockerHostPath(projectRoot, requested, fallbackName string) string {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return strings.TrimRight(projectRoot, `/\`) + `/` + fallbackName
+	}
+	requested = filepath.Clean(requested)
+	if filepath.IsAbs(requested) {
+		return filepath.ToSlash(requested)
+	}
+	return filepath.ToSlash(filepath.Clean(filepath.Join(projectRoot, requested)))
+}
+
 // runEvaluateInDocker runs only the evaluation step inside the utbench container.
 // Unlike runInDocker (which runs the full pipeline), this is a simpler synchronous
 // wrapper that captures output as a string. Used by the reevaluate API handler.
-func runEvaluateInDocker(ctx context.Context, runID string, spec contracts.RunSpec, cfg DockerConfig) (string, error) {
+func runEvaluateInDocker(ctx context.Context, runID string, spec contracts.RunSpec, manifestPath string, cfg DockerConfig) (string, error) {
 	opts := orchestrator.Options{
-		Phase:       "evaluate",
-		SourceRunID: runID,
+		Phase:        "evaluate",
+		SourceRunID:  runID,
+		ManifestPath: manifestPath,
 	}
 	args := buildDockerRunArgs(spec, opts, cfg)
 	cmd := exec.CommandContext(ctx, "docker", args...)
@@ -329,7 +378,7 @@ func wrapDockerSourceCommand(args []string, cfg DockerConfig) []string {
 	if imageIdx < 0 || imageIdx == len(args)-1 {
 		return args
 	}
-	// Dockerfile ENTRYPOINT 已设置为 ["./utbench"]，命令从子命令开始即可
+	// Dockerfile ENTRYPOINT 使用 /app/utbench，命令从子命令开始即可。
 	out := append([]string{}, args[:imageIdx]...)
 	out = append(out, cfg.EffectiveEvalImage())
 	out = append(out, args[imageIdx+1:]...)
@@ -340,6 +389,12 @@ func buildDockerBaseArgs(cfg DockerConfig) []string {
 	a := []string{"run", "--rm"}
 	if cfg.EnvFile != "" && fileExists(cfg.EnvFile) {
 		a = append(a, "--env-file", cfg.EnvFile)
+	}
+	if memory := strings.TrimSpace(cfg.EvalMemory); memory != "" {
+		a = append(a, "--memory", memory, "--memory-swap", memory)
+	}
+	if cpus := strings.TrimSpace(cfg.EvalCPUs); cpus != "" {
+		a = append(a, "--cpus", cpus)
 	}
 	root := strings.TrimRight(cfg.ProjectRoot, `/\`)
 	return append(a,

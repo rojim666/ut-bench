@@ -231,14 +231,19 @@ func (s *Service) Run(ctx context.Context, spec contracts.RunSpec, opts Options)
 	// Write run_summary.json (use current run's directory, not source)
 	runDir := filepath.Join(spec.OutputRoot, "runs", spec.RunID)
 	runSummaryPath := filepath.Join(runDir, "run_summary.json")
+	completedAt := time.Now().UTC()
 	summaryData := map[string]any{
-		"schema_version": contracts.SchemaVersion,
-		"run_id":         spec.RunID,
-		"created_at_utc": time.Now().UTC(),
-		"spec":           spec,
-		"phase":          phase,
-		"ingested":       ingested,
-		"db_path":        dbPath,
+		"schema_version":   contracts.SchemaVersion,
+		"run_id":           spec.RunID,
+		"created_at_utc":   completedAt,
+		"completed_at_utc": completedAt,
+		"spec":             spec,
+		"phase":            phase,
+		"ingested":         ingested,
+		"db_path":          dbPath,
+	}
+	if !spec.CreatedAtUTC.IsZero() {
+		summaryData["started_at_utc"] = spec.CreatedAtUTC
 	}
 	if result.ManifestPath != "" {
 		summaryData["manifest_path"] = result.ManifestPath

@@ -605,6 +605,12 @@ func collectCppMutation(ctx context.Context, workdir, sourceBase string, timeout
 		"LD_LIBRARY_PATH=/usr/lib/llvm-19/lib:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:/usr/lib64:"+os.Getenv("LD_LIBRARY_PATH"),
 	)
 	mullOut, mullErr := runCommandWithProcessGroupKill(runCtx, mullRunner, []string{binaryPath}, workdir, mullEnv)
+	if runCtx.Err() == context.DeadlineExceeded {
+		return 0, mutationStats{}, fmt.Sprintf("mull timed out after %ds", timeoutSeconds)
+	}
+	if mullOutputReportsNoMutants(string(mullOut)) {
+		return 0, mutationStats{}, ""
+	}
 
 	stats, parseErr := parseMullOutput(string(mullOut))
 	if parseErr != "" {
@@ -714,6 +720,7 @@ func parseMullOutput(output string) (mutationStats, string) {
 
 	// Timeout mutants
 	timeoutPatterns := []string{
+		`(?:Timed out|Timeout)\s*(?:mutants|mutations)?\s*\((\d+)/(\d+)\)`,
 		`(?:Timed out|Timeout)\s*(?:mutants|mutations)?\s*[:=]\s*(\d+)`,
 		`Timeout\s*[:=]\s*(\d+)`,
 	}
@@ -721,12 +728,16 @@ func parseMullOutput(output string) (mutationStats, string) {
 		re := regexp.MustCompile(pattern)
 		if match := re.FindStringSubmatch(output); match != nil && len(match) > 1 {
 			stats.Timeout = parseIntOrZero(match[1])
+			if len(match) > 2 && stats.Total == 0 {
+				stats.Total = parseIntOrZero(match[2])
+			}
 			break
 		}
 	}
 
 	// No tests / Not covered
 	noTestsPatterns := []string{
+		`(?:No tests|Not covered|No coverage|NoCoverage|NotCovered)\s*(?:mutants|mutations)?\s*\((\d+)/(\d+)\)`,
 		`(?:No tests|Not covered)\s*(?:mutants|mutations)?\s*[:=]\s*(\d+)`,
 		`NoCoverage\s*[:=]\s*(\d+)`,
 		`NotCovered\s*[:=]\s*(\d+)`,
@@ -735,12 +746,16 @@ func parseMullOutput(output string) (mutationStats, string) {
 		re := regexp.MustCompile(pattern)
 		if match := re.FindStringSubmatch(output); match != nil && len(match) > 1 {
 			stats.NoTests = parseIntOrZero(match[1])
+			if len(match) > 2 && stats.Total == 0 {
+				stats.Total = parseIntOrZero(match[2])
+			}
 			break
 		}
 	}
 
 	// Not checked
 	notCheckedPatterns := []string{
+		`Not checked\s*(?:mutants|mutations)?\s*\((\d+)/(\d+)\)`,
 		`Not checked\s*(?:mutants|mutations)?\s*[:=]\s*(\d+)`,
 		`NotChecked\s*[:=]\s*(\d+)`,
 	}
@@ -748,20 +763,43 @@ func parseMullOutput(output string) (mutationStats, string) {
 		re := regexp.MustCompile(pattern)
 		if match := re.FindStringSubmatch(output); match != nil && len(match) > 1 {
 			stats.NotChecked = parseIntOrZero(match[1])
+			if len(match) > 2 && stats.Total == 0 {
+				stats.Total = parseIntOrZero(match[2])
+			}
 			break
 		}
 	}
 
 	// Skipped
-	skippedPattern := regexp.MustCompile(`Skipped\s*(?:mutants|mutations)?\s*[:=]\s*(\d+)`)
-	if match := skippedPattern.FindStringSubmatch(output); match != nil && len(match) > 1 {
-		stats.Skipped = parseIntOrZero(match[1])
+	skippedPatterns := []string{
+		`Skipped\s*(?:mutants|mutations)?\s*\((\d+)/(\d+)\)`,
+		`Skipped\s*(?:mutants|mutations)?\s*[:=]\s*(\d+)`,
+	}
+	for _, pattern := range skippedPatterns {
+		re := regexp.MustCompile(pattern)
+		if match := re.FindStringSubmatch(output); match != nil && len(match) > 1 {
+			stats.Skipped = parseIntOrZero(match[1])
+			if len(match) > 2 && stats.Total == 0 {
+				stats.Total = parseIntOrZero(match[2])
+			}
+			break
+		}
 	}
 
 	// Suspicious
-	suspiciousPattern := regexp.MustCompile(`Suspicious\s*(?:mutants|mutations)?\s*[:=]\s*(\d+)`)
-	if match := suspiciousPattern.FindStringSubmatch(output); match != nil && len(match) > 1 {
-		stats.Suspicious = parseIntOrZero(match[1])
+	suspiciousPatterns := []string{
+		`Suspicious\s*(?:mutants|mutations)?\s*\((\d+)/(\d+)\)`,
+		`Suspicious\s*(?:mutants|mutations)?\s*[:=]\s*(\d+)`,
+	}
+	for _, pattern := range suspiciousPatterns {
+		re := regexp.MustCompile(pattern)
+		if match := re.FindStringSubmatch(output); match != nil && len(match) > 1 {
+			stats.Suspicious = parseIntOrZero(match[1])
+			if len(match) > 2 && stats.Total == 0 {
+				stats.Total = parseIntOrZero(match[2])
+			}
+			break
+		}
 	}
 
 	// 从 X/Y 格式提取总数（Mull 0.33.x 进度显示）
@@ -817,8 +855,18 @@ func parseMullOutput(output string) (mutationStats, string) {
 	if stats.Total == 0 {
 		return stats, "no mutation stats found in mull output"
 	}
+	if stats.Killed+stats.Survived+stats.Timeout+stats.NoTests+stats.NotChecked+stats.Skipped+stats.Suspicious == 0 {
+		return stats, "mull stats missing mutant outcome categories"
+	}
 
 	return stats, ""
+}
+
+func mullOutputReportsNoMutants(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "no mutants found") ||
+		strings.Contains(lower, "no mutations found") ||
+		strings.Contains(lower, "no mutants were generated")
 }
 
 func copyFile(src, dst string) error {

@@ -13,6 +13,8 @@ type ReusableGeneratedCase struct {
 	ResponsePath          string   `json:"response_path,omitempty"`
 	MetadataPath          string   `json:"metadata_path,omitempty"`
 	TracePath             string   `json:"trace_path,omitempty"`
+	RawTracePath          string   `json:"raw_trace_path,omitempty"`
+	TrajectoryPath        string   `json:"trajectory_path,omitempty"`
 	WorkspaceDiffPath     string   `json:"workspace_diff_path,omitempty"`
 	SandboxFingerprint    string   `json:"sandbox_fingerprint,omitempty"`
 	TokenSource           string   `json:"token_source,omitempty"`

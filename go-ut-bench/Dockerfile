@@ -9,7 +9,19 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
+# Clear proxy vars that Docker may inject from the host.
+# On Windows + Docker Desktop the host's 127.0.0.1 proxy is unreachable
+# inside the container, causing every apt-get / curl / wget to fail with
+# ECONNREFUSED.
+ENV http_proxy=""
+ENV https_proxy=""
+ENV HTTP_PROXY=""
+ENV HTTPS_PROXY=""
+ENV no_proxy=""
+ENV NO_PROXY=""
+
 ARG UBUNTU_MIRROR=
+ARG LLVM_APT_BASE_URL=https://apt.llvm.org
 
 # Optionally override Ubuntu archive/security hosts for build environments
 # that need a regional mirror. Leave UBUNTU_MIRROR empty to keep upstream
@@ -28,16 +40,34 @@ RUN if [ -n "${UBUNTU_MIRROR}" ]; then \
       fi; \
     fi
 
-# Install base tools first (needed for adding LLVM repo)
-RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && apt-get install -y --no-install-recommends \
-    apt-transport-https \
-    curl \
-    wget \
-    gnupg \
-    lsb-release \
-    software-properties-common \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Install base tools first (needed for adding LLVM repo). Some build networks
+# intermittently fail against the default Ubuntu archive, so retry once through
+# a regional mirror before giving up.
+RUN set -eux; \
+    APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 -o Acquire::ForceIPv4=true"; \
+    install_base_tools() { \
+      apt-get ${APT_OPTS} update && \
+      apt-get install -y --no-install-recommends \
+        apt-transport-https \
+        curl \
+        wget \
+        gnupg \
+        lsb-release \
+        software-properties-common \
+        ca-certificates; \
+    }; \
+    if ! install_base_tools; then \
+      echo "warning: Ubuntu apt source failed, retrying with mirrors.aliyun.com"; \
+      rm -rf /var/lib/apt/lists/*; \
+      if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i -E 's|https?://[^ ]*/ubuntu/?|http://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources; \
+      fi; \
+      if [ -f /etc/apt/sources.list ]; then \
+        sed -i -E 's|https?://[^ ]*/ubuntu/?|http://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list; \
+      fi; \
+      install_base_tools; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
 
 # System dependencies. Keep apt-get update in the same layer as install so a
 # cached repository setup layer never leaves this step with stale package lists.
@@ -65,70 +95,107 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
     libgcc-s1 && \
     cd /usr/src/gtest && cmake . && make && cp lib/*.a /usr/lib/
 
+# Ubuntu 24.04 packages Maven 3.8.x, while several modern Java projects and
+# quality-gate plugins require Maven 3.9+. Install a pinned upstream Maven so
+# project-level evaluation does not fail before generated tests are compiled.
+ARG MAVEN_VERSION=3.9.9
+ENV MAVEN_HOME=/opt/apache-maven-${MAVEN_VERSION}
+ENV PATH="${MAVEN_HOME}/bin:${PATH}"
+RUN set -eux; \
+    tarball="apache-maven-${MAVEN_VERSION}-bin.tar.gz"; \
+    urls="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/${tarball} https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/${tarball}"; \
+    for url in ${urls}; do \
+        echo "Downloading Maven from ${url}"; \
+        if curl -fL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 20 -o /tmp/maven.tar.gz "${url}"; then \
+            break; \
+        fi; \
+        rm -f /tmp/maven.tar.gz; \
+    done; \
+    test -s /tmp/maven.tar.gz; \
+    rm -rf "${MAVEN_HOME}"; \
+    tar -C /opt -xzf /tmp/maven.tar.gz; \
+    rm /tmp/maven.tar.gz; \
+    mvn -version
+
 # Add LLVM official repository for LLVM 19 only after base dependencies are
 # installed. This keeps temporary apt.llvm.org failures from breaking the large
-# Ubuntu package layer above.
-RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc && \
-    add-apt-repository "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main"
+# Ubuntu package layer above, and also lets callers override the repo host when
+# they need to route through a different mirror.
+RUN mkdir -p /etc/apt/keyrings && \
+    wget -qO /etc/apt/keyrings/apt.llvm.org.asc https://apt.llvm.org/llvm-snapshot.gpg.key && \
+    echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] ${LLVM_APT_BASE_URL}/noble/ llvm-toolchain-noble-19 main" > /etc/apt/sources.list.d/llvm.list
 
 # LLVM/Clang 19 is installed separately so failures from apt.llvm.org are
-# easier to diagnose than a single very long apt-get install command.
-RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
-    apt-get install -y --fix-missing --no-install-recommends \
-    clang-19 \
-    llvm-19 \
-    llvm-19-dev \
-    libclang-19-dev \
-    lld-19 \
-    && rm -rf /var/lib/apt/lists/*
+# easier to diagnose than a single very long apt-get install command. Keep a
+# small retry loop here because apt.llvm.org occasionally returns transient 5xx.
+RUN set -eux; \
+    for attempt in 1 2 3; do \
+      if apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && \
+         apt-get install -y --fix-missing --no-install-recommends \
+           clang-19 \
+           llvm-19 \
+           llvm-19-dev \
+           libclang-19-dev \
+           lld-19; then \
+        rm -rf /var/lib/apt/lists/*; \
+        exit 0; \
+      fi; \
+      echo "LLVM apt install failed on attempt ${attempt}, retrying..."; \
+      rm -rf /var/lib/apt/lists/*; \
+      sleep $((attempt * 10)); \
+    done; \
+    echo "LLVM apt install failed after 3 attempts"; \
+    exit 1
 
 # Configure Maven to use Aliyun mirror for faster downloads in China
-RUN mkdir -p /root/.m2 && cat > /root/.m2/settings.xml << 'SETTINGSEOF'
-<settings>
-  <mirrors>
-    <mirror>
-      <id>aliyun</id>
-      <mirrorOf>central</mirrorOf>
-      <name>Aliyun Maven Mirror</name>
-      <url>https://maven.aliyun.com/repository/central</url>
-    </mirror>
-  </mirrors>
-</settings>
-SETTINGSEOF
+RUN mkdir -p /root/.m2 && \
+    printf '%s\n' \
+      '<settings>' \
+      '  <mirrors>' \
+      '    <mirror>' \
+      '      <id>aliyun</id>' \
+      '      <mirrorOf>central</mirrorOf>' \
+      '      <name>Aliyun Maven Mirror</name>' \
+      '      <url>https://maven.aliyun.com/repository/central</url>' \
+      '    </mirror>' \
+      '  </mirrors>' \
+      '</settings>' \
+      > /root/.m2/settings.xml
 
 # Pre-download Maven dependencies used by Java evaluation (JUnit 5, JaCoCo, Surefire, PITest).
 # This avoids downloading them on every container run, which is slow and unreliable
 # with concurrent workers.
-RUN mkdir -p /tmp/maven-warmup && cat > /tmp/maven-warmup/pom.xml << 'POMEOF'
-<project>
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>warmup</groupId><artifactId>warmup</artifactId><version>1.0</version>
-  <properties>
-    <maven.compiler.source>17</maven.compiler.source>
-    <maven.compiler.target>17</maven.compiler.target>
-  </properties>
-  <dependencies>
-    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.10.2</version><scope>test</scope></dependency>
-    <dependency><groupId>org.junit.vintage</groupId><artifactId>junit-vintage-engine</artifactId><version>5.10.2</version><scope>test</scope></dependency>
-  </dependencies>
-  <build><plugins>
-    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.11.0</version></plugin>
-    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.1.2</version></plugin>
-    <plugin><groupId>org.jacoco</groupId><artifactId>jacoco-maven-plugin</artifactId><version>0.8.11</version></plugin>
-    <plugin><groupId>org.pitest</groupId><artifactId>pitest-maven</artifactId><version>1.19.6</version>
-      <dependencies><dependency><groupId>org.pitest</groupId><artifactId>pitest-junit5-plugin</artifactId><version>1.2.1</version></dependency></dependencies>
-    </plugin>
-  </plugins></build>
-</project>
-POMEOF
+RUN mkdir -p /tmp/maven-warmup && \
+    printf '%s\n' \
+      '<project>' \
+      '  <modelVersion>4.0.0</modelVersion>' \
+      '  <groupId>warmup</groupId><artifactId>warmup</artifactId><version>1.0</version>' \
+      '  <properties>' \
+      '    <maven.compiler.source>17</maven.compiler.source>' \
+      '    <maven.compiler.target>17</maven.compiler.target>' \
+      '  </properties>' \
+      '  <dependencies>' \
+      '    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.10.2</version><scope>test</scope></dependency>' \
+      '    <dependency><groupId>org.junit.vintage</groupId><artifactId>junit-vintage-engine</artifactId><version>5.10.2</version><scope>test</scope></dependency>' \
+      '  </dependencies>' \
+      '  <build><plugins>' \
+      '    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.11.0</version></plugin>' \
+      '    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.1.2</version></plugin>' \
+      '    <plugin><groupId>org.jacoco</groupId><artifactId>jacoco-maven-plugin</artifactId><version>0.8.11</version></plugin>' \
+      '    <plugin><groupId>org.pitest</groupId><artifactId>pitest-maven</artifactId><version>1.19.6</version>' \
+      '      <dependencies><dependency><groupId>org.pitest</groupId><artifactId>pitest-junit5-plugin</artifactId><version>1.2.1</version></dependency></dependencies>' \
+      '    </plugin>' \
+      '  </plugins></build>' \
+      '</project>' \
+      > /tmp/maven-warmup/pom.xml
 RUN cd /tmp/maven-warmup && mvn dependency:resolve test-compile -q && rm -rf /tmp/maven-warmup
 
 # Copy docker CLI binary from official image (lighter than docker.io package)
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
-# Install Go 1.24. Keep multiple download endpoints because TLS to go.dev can
+# Install Go. Keep multiple download endpoints because TLS to go.dev can
 # be flaky in some build networks.
-ARG GO_VERSION=1.24.2
+ARG GO_VERSION=1.25.5
 ARG GO_DOWNLOAD_URLS=
 RUN set -eux; \
     tarball="go${GO_VERSION}.linux-amd64.tar.gz"; \
@@ -145,7 +212,8 @@ RUN set -eux; \
     tar -C /usr/local -xzf /tmp/go.tar.gz; \
     rm /tmp/go.tar.gz
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
-ENV GOPROXY=https://goproxy.cn,direct
+ARG GO_MODULE_PROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GO_MODULE_PROXY}
 
 # LLVM/Clang 19 paths
 ENV LLVM_DIR=/usr/lib/llvm-19
@@ -188,7 +256,17 @@ RUN python3 -m venv /opt/venv && \
     ln -sf /opt/venv/bin/coverage /usr/local/bin/coverage
 
 # Install Go mutation testing tool
-RUN go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
+ARG GO_MUTESTING_VERSION=48d0401f00fb
+RUN set -eux; \
+    for proxy in "${GO_MODULE_PROXY}" "https://goproxy.cn,direct" "https://proxy.golang.org,direct" "direct"; do \
+      echo "Installing go-mutesting via GOPROXY=${proxy}"; \
+      if GOPROXY="${proxy}" go install "github.com/avito-tech/go-mutesting/cmd/go-mutesting@${GO_MUTESTING_VERSION}"; then \
+        test -x /root/go/bin/go-mutesting; \
+        exit 0; \
+      fi; \
+    done; \
+    echo "ERROR: failed to install go-mutesting ${GO_MUTESTING_VERSION}"; \
+    exit 1
 
 WORKDIR /app
 
@@ -202,5 +280,5 @@ RUN go build -o utbench ./cmd/utbench/
 
 RUN mkdir -p /app/artifacts /app/storage
 
-ENTRYPOINT ["./utbench"]
+ENTRYPOINT ["/app/utbench"]
 CMD ["--help"]
