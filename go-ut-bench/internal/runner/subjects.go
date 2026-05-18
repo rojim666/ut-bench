@@ -225,7 +225,7 @@ func (s *Service) generateWithSubject(
 
 	return result.Code, result.RawResponse, trace, result.LatencyMS,
 		result.PromptTokens, result.CompletionTokens, result.TotalTokens,
-		result.Truncated, result.Error, agentTraceSummary{}
+		result.Truncated, result.Error, summary
 }
 
 // generateWithModelAPI 已迁移到 adapter_model.go 中的 modelAPIAdapter。

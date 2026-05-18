@@ -333,26 +333,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 
 	commandErrorDetail := ""
 	if runErr != nil {
-		_ = writeAgentTrajectory(trajectoryPath, trace, "", fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000)), runOutput.Stdout, runOutput.Stderr)
-		return AgentGenerateResult{
-			RawResponse:       rawResponse,
-			Trace:             trace,
-			LatencyMS:         latency,
-			PromptTokens:      trace.PromptTokens,
-			CompletionTokens:  trace.CompletionTokens,
-			TotalTokens:       trace.TotalTokens,
-			RawInputTokens:    trace.RawInputTokens,
-			CacheReadTokens:   trace.CacheReadTokens,
-			CacheCreateTokens: trace.CacheCreateTokens,
-			TokenSource:       trace.TokenSource,
-			EstimatedCostUSD:  trace.EstimatedCost,
-			CostSource:        trace.CostSource,
-			Error: &contracts.ErrorInfo{
-				Kind:      "agent_execution_error",
-				Message:   fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000)),
-				Retryable: false,
-			},
-		}
+		commandErrorDetail = fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000))
 	}
 
 	// 17. 拦截环境漂移行为
@@ -535,6 +516,29 @@ func summarizeAgentCommandError(stderr, errText string, max int) string {
 	}
 
 	return tailText(combined, max)
+}
+
+func buildNoGeneratedFileMessage(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return "agent did not create a generated test file"
+	}
+	return "agent did not create a generated test file: " + trimText(detail, 1200)
+}
+
+func shouldFallbackCLIAgentToModelAPI(req AgentGenerateRequest, trace AgentTrace, message string, runErr error) bool {
+	if !strings.EqualFold(req.Subject.Spec.Kind, "cli_agent") || runErr != nil {
+		return false
+	}
+	if strings.TrimSpace(trace.Framework) != "" && !strings.EqualFold(trace.Framework, req.Subject.Spec.Framework) {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if msg == "" {
+		return false
+	}
+	return (strings.Contains(msg, "did not produce") || strings.Contains(msg, "did not create")) &&
+		(strings.Contains(msg, "test file") || strings.Contains(msg, "generated test"))
 }
 
 func tailText(value string, max int) string {
