@@ -9,7 +9,7 @@
 1. 想快速使用：先读 [用户指南](01-user-guides/USER_GUIDE.md)，再按需要查看 [完整启动指南](01-user-guides/startup-guide.md) 或 [Docker 使用指南](03-operations/DOCKER_GUIDE.md)。
 2. 想理解项目：先读 [项目详细介绍](00-overview/project-introduction.md)，再看 [项目文件职责说明](00-overview/project-file-map.md)。
    如果是第一次进项目，优先补读 [新成员代码导读](00-overview/new-member-code-walkthrough.md)。
-3. 想开发或改造：先读 [架构设计](02-design/architecture-mvp.md)，再按模块查看数据库、Prompt、资产管理、沙箱等设计文档。
+3. 想开发或改造：先读 [架构设计](02-design/architecture-mvp.md)，再按模块查看数据库、Prompt、资产管理、项目级评测链路、沙箱等设计文档。
 4. 想接入 Agent：先读 [用户指南](01-user-guides/USER_GUIDE.md) 中的 Agent/Skill 部分，再看 [Agent 评测升级记录](04-development/AGENT_UPGRADE.md) 和外部工具资料。
 
 ## 目录分类

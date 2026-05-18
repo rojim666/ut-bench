@@ -5,6 +5,7 @@
 | 文档 | 内容定位 |
 | --- | --- |
 | [architecture-mvp.md](architecture-mvp.md) | MVP 架构、模块职责和迭代计划。 |
+| [project-level-evaluation-pipeline.md](project-level-evaluation-pipeline.md) | 项目级评测链路：repo_level 样本、生成、复用、评测、报告和入库。 |
 | [database-design.md](database-design.md) | SQLite 数据库、实体、入库和查询设计。 |
 | [asset-management-design.md](asset-management-design.md) | 资产管理、生成复用和评测复用设计。 |
 | [automation-scheduler-notification-design.md](automation-scheduler-notification-design.md) | 当前采用方向的定时评测与通知服务设计。 |
