@@ -2,6 +2,7 @@
 artifacts/
 storage/
 .cache/
+.m2-cache/
 *.tar
 *.log
 *.exe

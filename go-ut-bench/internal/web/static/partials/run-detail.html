@@ -1,5 +1,5 @@
 ﻿      <!-- RUN DETAIL -->
-      <div x-show="page === 'run-detail'" class="max-w-6xl space-y-4 animate-fadeUp">
+      <div x-show="page === 'run-detail'" :class="detailTab === 'analysis' ? 'max-w-none' : 'max-w-6xl'" class="space-y-4 animate-fadeUp">
         <template x-if="currentRun">
           <div>
             <!-- Detail Header -->
@@ -345,10 +345,10 @@
             </div>
 
             <!-- AI Analysis -->
-            <div x-show="detailTab === 'analysis'" class="space-y-4 pb-[190px] lg:pb-0 lg:pr-[360px]">
+            <div x-show="detailTab === 'analysis'" class="space-y-4 pb-[240px] 2xl:pb-0 2xl:pr-[360px]">
               <template x-teleport="body">
                 <div x-show="page === 'run-detail' && detailTab === 'analysis' && currentAnalysis">
-                  <div class="hidden lg:block fixed right-4 top-24 bottom-6 w-[340px] z-[80]">
+                  <div class="hidden 2xl:block fixed right-4 top-24 bottom-6 w-[340px] z-[80]">
                     <div class="form-section h-full flex flex-col p-0 overflow-hidden shadow-lg" style="border-color:var(--border);background:var(--bg)">
                       <div class="p-4 border-b flex items-start justify-between gap-3" style="border-color:var(--border)">
                         <div class="min-w-0">
@@ -402,7 +402,7 @@
                       </div>
                     </div>
                   </div>
-                  <div class="lg:hidden fixed left-3 right-3 bottom-3 z-[90]">
+                  <div class="2xl:hidden fixed left-[252px] right-3 bottom-3 z-[90]">
                     <div class="rounded-xl border shadow-xl overflow-hidden" style="border-color:var(--border);background:var(--bg)">
                       <div class="px-3 py-2 border-b flex items-center justify-between gap-3" style="border-color:var(--border);background:var(--bg-elevated)">
                         <div class="min-w-0">
@@ -440,7 +440,7 @@
                       </div>
                     </div>
                   </div>
-                  <div x-show="analysisDetailOpen" class="fixed inset-y-0 right-0 lg:right-[370px] w-full sm:w-[520px] z-[95] shadow-2xl border-l flex flex-col"
+                  <div x-show="analysisDetailOpen" class="fixed inset-y-0 right-0 2xl:right-[370px] w-full sm:w-[520px] z-[95] shadow-2xl border-l flex flex-col"
                        style="border-color:var(--border);background:var(--bg)">
                     <div class="p-4 border-b flex items-start justify-between gap-3" style="border-color:var(--border);background:var(--bg-elevated)">
                       <div class="min-w-0">
@@ -451,7 +451,7 @@
                     </div>
                     <div class="flex-1 overflow-y-auto p-4 space-y-4">
                       <template x-if="analysisDetail?.root_cause">
-                        <div @click="openAnalysisSubjectDetail(s)" class="rounded border p-3 cursor-pointer transition" style="border-color:var(--border);background:var(--bg-elevated)">
+                        <div class="rounded border p-3" style="border-color:var(--border);background:var(--bg-elevated)">
                           <div class="flex flex-wrap gap-2 mb-2">
                             <span class="tag-pill border" :style="findingBadgeStyle(analysisDetail.root_cause.severity)" x-text="analysisDetail.root_cause.severity"></span>
                             <span class="tag-pill" x-text="analysisDetail.root_cause.category"></span>
@@ -531,8 +531,8 @@
                       <div x-show="analysisDetail?.root_cause?.evidence_ids?.length">
                         <div class="text-[13px] font-medium mb-2">证据链</div>
                         <div class="space-y-2">
-                          <template x-for="id in analysisDetail.root_cause.evidence_ids" :key="'detail-ev-' + id">
-                            <button @click="openAnalysisEvidence(id, analysisDetail.root_cause)" class="w-full text-left rounded border p-2 text-[12px]" style="border-color:var(--border);background:var(--bg-muted);color:var(--fg-muted)">
+                          <template x-for="id in (analysisDetail?.root_cause?.evidence_ids || [])" :key="'detail-ev-' + id">
+                            <button @click="openAnalysisEvidence(id, analysisDetail?.root_cause)" class="w-full text-left rounded border p-2 text-[12px]" style="border-color:var(--border);background:var(--bg-muted);color:var(--fg-muted)">
                               <span class="font-mono" x-text="id"></span>
                               <span x-text="' · ' + (analysisEvidenceByID(id)?.title || '查看证据')"></span>
                             </button>
@@ -542,7 +542,7 @@
                       <div x-show="analysisDetail?.report_insight?.evidence_ids?.length">
                         <div class="text-[13px] font-medium mb-2">报告级证据</div>
                         <div class="space-y-2">
-                          <template x-for="id in analysisDetail.report_insight.evidence_ids" :key="'detail-ri-ev-' + id">
+                          <template x-for="id in (analysisDetail?.report_insight?.evidence_ids || [])" :key="'detail-ri-ev-' + id">
                             <button @click="openAnalysisEvidence(id)" class="w-full text-left rounded border p-2 text-[12px]" style="border-color:var(--border);background:var(--bg-muted);color:var(--fg-muted)">
                               <span class="font-mono" x-text="id"></span>
                               <span x-text="' · ' + (analysisEvidenceByID(id)?.title || '查看证据')"></span>
@@ -559,7 +559,7 @@
                   </div>
                 </div>
               </template>
-              <div class="form-section sticky top-[64px] z-30 shadow-sm" style="background:var(--bg)">
+              <div class="form-section sticky -top-6 z-40 shadow-md" style="background:var(--bg)">
                 <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
                   <div>
                     <div class="section-title mb-1">AI 分析工作台</div>
@@ -717,8 +717,8 @@
                     <button @click="toggleAnalysisSubject(s)" class="tag-pill border font-mono" style="border-color:rgba(14,165,233,.35);color:var(--accent)" x-text="s.subject_id + ' / ' + s.sample_id + ' / ' + s.language + ' ×'"></button>
                   </template>
                 </div>
-                <div class="max-h-[260px] overflow-y-auto">
-                  <table class="data-table">
+                <div class="max-h-[260px] overflow-auto">
+                  <table class="data-table min-w-[980px]">
                     <thead><tr><th>选择</th><th>Subject</th><th>样本</th><th>语言</th><th>编译</th><th>测试</th><th>覆盖率</th><th>变异</th><th>Trace</th></tr></thead>
                     <tbody>
                       <template x-for="s in analysisSubjectRows().slice(0, analysisSubjectLimit)" :key="analysisSubjectKey(s)">
@@ -821,7 +821,7 @@
                     </div>
                   </div>
 
-                  <div class="grid grid-cols-5 gap-3">
+                  <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
                     <div class="kpi-card text-center">
                       <div class="kpi-value kpi-total" x-text="currentAnalysis.summary?.result_count ?? 0"></div>
                       <div class="kpi-label">结果数</div>
@@ -917,23 +917,25 @@
                       <span class="text-[13px] font-medium">诊断与横向对比</span>
                       <span class="text-[12px]" style="color:var(--fg-muted)">高亮项为本次 LLM 分析对象；多选时用于比较步骤和表现差异。</span>
                     </div>
-                    <table class="data-table">
-                      <thead><tr><th>Subject</th><th>样本</th><th>Trace</th><th>读源码</th><th>写测试</th><th>运行测试</th><th>策略命令</th><th>噪声</th></tr></thead>
-                      <tbody>
-                        <template x-for="s in currentAnalysis.subjects || []" :key="s.subject_id + s.sample_id">
-                          <tr :style="isAnalysisSubjectInReportSelection(s) ? 'background:rgba(14,165,233,.08)' : ''">
-                            <td class="font-mono text-[12px]" x-text="s.subject_id"></td>
-                            <td class="font-mono text-[12px]" x-text="s.sample_id"></td>
-                            <td class="text-[12px]" x-text="s.trace_step_count"></td>
-                            <td class="text-[12px]" x-text="s.has_source_read ? '是' : '否'"></td>
-                            <td class="text-[12px]" x-text="s.has_test_write ? '是' : '否'"></td>
-                            <td class="text-[12px]" x-text="s.has_test_execution ? '是' : '否'"></td>
-                            <td class="text-[12px]" x-text="s.policy_command_count"></td>
-                            <td class="text-[12px]" x-text="s.runtime_noise_count"></td>
-                          </tr>
-                        </template>
-                      </tbody>
-                    </table>
+                    <div class="overflow-x-auto">
+                      <table class="data-table min-w-[900px]">
+                        <thead><tr><th>Subject</th><th>样本</th><th>Trace</th><th>读源码</th><th>写测试</th><th>运行测试</th><th>策略命令</th><th>噪声</th></tr></thead>
+                        <tbody>
+                          <template x-for="s in currentAnalysis.subjects || []" :key="s.subject_id + s.sample_id">
+                            <tr :style="isAnalysisSubjectInReportSelection(s) ? 'background:rgba(14,165,233,.08)' : ''">
+                              <td class="font-mono text-[12px]" x-text="s.subject_id"></td>
+                              <td class="font-mono text-[12px]" x-text="s.sample_id"></td>
+                              <td class="text-[12px]" x-text="s.trace_step_count"></td>
+                              <td class="text-[12px]" x-text="s.has_source_read ? '是' : '否'"></td>
+                              <td class="text-[12px]" x-text="s.has_test_write ? '是' : '否'"></td>
+                              <td class="text-[12px]" x-text="s.has_test_execution ? '是' : '否'"></td>
+                              <td class="text-[12px]" x-text="s.policy_command_count"></td>
+                              <td class="text-[12px]" x-text="s.runtime_noise_count"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
 
                   <div class="form-section">

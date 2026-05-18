@@ -1,15 +1,13 @@
-# UT-Bench Agent Sandbox
+# UT-Bench Agent 沙箱
 #
-# Purpose:
-# - Run CLI agents such as Codex, Claude Code, OpenCode, and CodeBuddy.
-# - Includes Go/Java/C++ compilers so agents can compile-verify generated tests.
+# 用途：
+# - 运行 Codex、Claude Code、OpenCode、CodeBuddy 等 CLI agent。
+# - 内置轻量语言工具链，方便 agent 返回前编译或冒烟测试生成用例。
 #
-# Coverage, mutation, and full evaluation toolchains live in the main evaluator
-# image built from the repository root Dockerfile.
+# 覆盖率、变异测试和完整评测工具链位于仓库根 Dockerfile 构建的主评测镜像。
 
 FROM node:22-bookworm-slim AS agent-clis
 
-# Clear proxy vars (same reason as the final stage)
 ENV http_proxy=""
 ENV https_proxy=""
 ENV HTTP_PROXY=""
@@ -22,26 +20,19 @@ ARG EXTRA_NPM_PACKAGES=
 
 RUN if [ -n "${NPM_REGISTRY}" ]; then npm config set registry "${NPM_REGISTRY}"; fi
 
-# Built-in runtimes used by the default agents.yaml.
 RUN npm install -g opencode-ai opencode-linux-x64-baseline
 RUN npm install -g @tencent-ai/codebuddy-code
 RUN npm install -g @anthropic-ai/claude-code
-# Pin to 0.42.x: 0.43+ removed `wire_api="chat"` support and forces /v1/responses,
-# which国产兼容端点 (MiMo / DeepSeek / 豆包等) 暂不支持。
-# 见 https://github.com/openai/codex/discussions/7782
+# 固定到 0.42.x：0.43+ 移除了 wire_api="chat" 支持并强制使用 /v1/responses，
+# 一些 OpenAI 兼容端点暂不支持该接口。
 RUN npm install -g @openai/codex@^0.42.0
 
-# Optional Agent CLI selected from the Web installer, for example:
-#   --build-arg EXTRA_NPM_PACKAGES="@openai/codex"
 RUN if [ -n "${EXTRA_NPM_PACKAGES}" ]; then npm install -g ${EXTRA_NPM_PACKAGES}; fi
 
 FROM golang:1.24-bookworm AS go-runtime
 
 FROM node:22-bookworm-slim
 
-# Clear proxy vars that Docker may inject from the host.
-# On Windows + Docker Desktop the host's 127.0.0.1 proxy is unreachable
-# inside the container, causing every apt-get / npm to fail with ECONNREFUSED.
 ENV http_proxy=""
 ENV https_proxy=""
 ENV HTTP_PROXY=""
@@ -55,29 +46,24 @@ COPY --from=agent-clis /usr/local/bin/ /usr/local/bin/
 COPY --from=agent-clis /usr/local/lib/ /usr/local/lib/
 COPY --from=go-runtime /usr/local/go/ /usr/local/go/
 
-# 内置多镜像自动 fallback：优先使用 DEBIAN_MIRROR 参数，失败后自动切换备选镜像
-# 镜像列表顺序：外部传入 > 阿里云 > 清华源 > 华为云
+# 安装 CLI agent 使用的语言运行时和轻量构建工具。
+# 镜像源轮询用于处理 deb.debian.org 较慢或不可达的网络环境。
 RUN set -eux; \
-    # 备份原始 sources，供每次循环前恢复
     if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
       cp /etc/apt/sources.list.d/debian.sources /tmp/debian.sources.bak; \
     fi; \
     if [ -f /etc/apt/sources.list ]; then \
       cp /etc/apt/sources.list /tmp/sources.list.bak; \
     fi; \
-    # 构建镜像列表（去空）
     MIRROR_LIST=""; \
     for m in "${DEBIAN_MIRROR}" "http://mirrors.aliyun.com/debian" "http://repo.huaweicloud.com/debian" "http://mirrors.tuna.tsinghua.edu.cn/debian"; do \
       [ -n "$m" ] && MIRROR_LIST="$MIRROR_LIST $m"; \
     done; \
-    # 遍历镜像列表，找到可用的源
     APT_OK=0; \
     for MIRROR in $MIRROR_LIST; do \
       echo ">>> Trying mirror: $MIRROR"; \
-      # 恢复原始 sources
       if [ -f /tmp/debian.sources.bak ]; then cp /tmp/debian.sources.bak /etc/apt/sources.list.d/debian.sources; fi; \
       if [ -f /tmp/sources.list.bak ]; then cp /tmp/sources.list.bak /etc/apt/sources.list; fi; \
-      # 替换为主镜像
       MIRROR_HOST=$(echo "$MIRROR" | sed 's|https\?://||;s|/*$||'); \
       if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
         sed -i "s|deb.debian.org/debian|${MIRROR_HOST}|g" /etc/apt/sources.list.d/debian.sources; \
@@ -86,7 +72,7 @@ RUN set -eux; \
         sed -i "s|deb.debian.org/debian|${MIRROR_HOST}|g" /etc/apt/sources.list; \
         sed -i "s|security.debian.org/debian-security|${MIRROR_HOST}-security|g" /etc/apt/sources.list || true; \
       fi; \
-      if apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update 2>/dev/null; then \
+      if apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update; then \
         echo ">>> Mirror OK: $MIRROR"; \
         APT_OK=1; \
         break; \
@@ -99,8 +85,6 @@ RUN set -eux; \
       echo "ERROR: all mirrors failed"; \
       exit 1; \
     fi; \
-    # 用可用源安装包（带重试）。不要使用 --fix-missing；它可能在下载失败后
-    # 留下半安装的 Java 元包，后续重试会被 unmet dependencies 卡住。
     for attempt in 1 2 3 4 5; do \
       if apt-get install -y --no-install-recommends \
         bash \
@@ -118,13 +102,12 @@ RUN set -eux; \
         python3-pip \
         python3-pytest \
         g++ \
-        cmake \
-        libgtest-dev \
         openjdk-17-jdk-headless \
         maven; then \
         if [ -d /usr/src/gtest ]; then \
           cd /usr/src/gtest && cmake . && make && cp lib/*.a /usr/lib/; \
         fi; \
+        python3 -m pytest --version; \
         rm -rf /var/lib/apt/lists/*; \
         exit 0; \
       fi; \
@@ -138,9 +121,7 @@ RUN set -eux; \
     echo "ERROR: apt-get install failed after 5 attempts"; \
     exit 1
 
-# Install Go (same version as main evaluator image).
-# Download method cascades through curl, wget, and Node.js fetch so that the
-# build never depends on a single binary being present.
+# 安装 Go，保持与 agent 基础镜像预期的主版本一致。
 ARG GO_VERSION=1.24.2
 ARG GO_DOWNLOAD_URLS=
 RUN set -eux; \
@@ -165,6 +146,7 @@ RUN set -eux; \
     rm -rf /usr/local/go; \
     tar -C /usr/local -xzf "${dest}"; \
     rm "${dest}"
+
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 ENV GOPROXY=https://goproxy.cn,direct
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64

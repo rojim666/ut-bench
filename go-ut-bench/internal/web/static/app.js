@@ -233,6 +233,7 @@
     modelsLoading: false,
     modelFormOpen: false,
     modelFormMode: 'create', // create | edit
+    modelFormOriginalName: '',
     modelForm: {
       name: '', enabled: true, provider: '', model_id: '',
       api_endpoint: '', anthropic_endpoint: '',
@@ -3007,6 +3008,7 @@
 
     openAddModel() {
       this.modelFormMode = 'create'
+      this.modelFormOriginalName = ''
       this.modelForm = {
         name: '', enabled: true, provider: '', model_id: '',
         api_endpoint: '', anthropic_endpoint: '',
@@ -3019,6 +3021,7 @@
 
     openEditModel(m) {
       this.modelFormMode = 'edit'
+      this.modelFormOriginalName = m.name
       this.modelForm = {
         name: m.name, enabled: !!m.enabled, provider: m.provider || '',
         model_id: m.model_id || '', api_endpoint: m.api_endpoint || '',
@@ -3030,12 +3033,13 @@
       this.modelFormOpen = true
     },
 
-    closeModelForm() { this.modelFormOpen = false },
+    closeModelForm() { this.modelFormOpen = false; this.modelFormOriginalName = '' },
 
     async saveModel() {
       this.modelFormError = ''
       const f = this.modelForm
-      if (!f.name.trim()) { this.modelFormError = '模型名称必填'; return }
+      f.name = (f.name || '').trim()
+      if (!f.name) { this.modelFormError = '模型名称必填'; return }
       if (!f.provider.trim()) { this.modelFormError = '提供商必填'; return }
       if (!f.model_id.trim()) { this.modelFormError = '模型 ID 必填'; return }
       if (!f.api_endpoint.trim()) { this.modelFormError = 'API 端点必填'; return }
@@ -3045,11 +3049,20 @@
         if (this.modelFormMode === 'create') {
           r = await fetch('/api/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         } else {
-          r = await fetch('/api/models/' + encodeURIComponent(f.name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          const originalName = this.modelFormOriginalName || f.name
+          r = await fetch('/api/models/' + encodeURIComponent(originalName), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         }
         const data = await r.json()
         if (!r.ok) { this.modelFormError = data.error || '保存失败'; return }
+        if (this.modelFormMode === 'edit' && this.modelFormOriginalName && this.modelFormOriginalName !== f.name) {
+          const nextResults = { ...this.modelTestResults }
+          if (nextResults[this.modelFormOriginalName] && !nextResults[f.name]) nextResults[f.name] = { ...nextResults[this.modelFormOriginalName], name: f.name }
+          delete nextResults[this.modelFormOriginalName]
+          this.modelTestResults = nextResults
+          this.form.models = this.form.models.map(m => m === this.modelFormOriginalName ? f.name : m)
+        }
         this.modelFormOpen = false
+        this.modelFormOriginalName = ''
         this.showToast(this.modelFormMode === 'create' ? '模型已添加' : '模型已更新', 'ok')
         await this.loadModels()
         await this.loadConfig() // 刷新新建任务页面的可选模型列表

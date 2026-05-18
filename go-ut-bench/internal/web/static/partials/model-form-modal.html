@@ -9,7 +9,8 @@
           <div class="space-y-3">
             <div>
               <label class="text-[11px] font-medium" style="color:var(--fg-muted)">名称（唯一标识）<span style="color:var(--red)">*</span></label>
-              <input x-model="modelForm.name" :disabled="modelFormMode === 'edit'" type="text" class="input-base w-full" placeholder="例如：qwen-max">
+              <input x-model="modelForm.name" type="text" class="input-base w-full" placeholder="例如：qwen-max">
+              <div x-show="modelFormMode === 'edit'" class="mt-1 text-[11px]" style="color:var(--fg-subtle)">编辑时可重命名，保存后会同步更新 models.yaml 中的模型键名。</div>
             </div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>

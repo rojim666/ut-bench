@@ -327,8 +327,8 @@ body>main>.flex-1{flex:1 1 auto;min-height:0;overflow-y:auto}
 .form-section:hover{border-color:#27354f}
 .section-title{font-size:13px;font-weight:700;color:var(--fg);letter-spacing:0}
 .section-title:not(.m-0){margin-bottom:14px}
-.input-base{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 11px;font-size:13px;color:var(--fg);width:100%;transition:all .15s;font-family:inherit}
-.input-base:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(14,165,233,.12)}
+.input-base,.input-field{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 11px;font-size:13px;color:var(--fg);width:100%;transition:all .15s;font-family:inherit}
+.input-base:focus,.input-field:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(14,165,233,.12)}
 .label-text{font-size:12px;font-weight:500;color:var(--fg-muted);margin-bottom:5px;display:block}
 .chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;cursor:pointer;transition:all .15s;background:var(--bg-overlay);user-select:none}
 .chip:hover{border-color:var(--fg-subtle);background:rgba(14,165,233,.04)}

@@ -64,7 +64,7 @@ func TestBuildDockerEvaluateArgsUsesSourceRunManifest(t *testing.T) {
 	mustContain(t, joined, "--manifest /app/artifacts/runs/source-run/generated/generated_manifest.json")
 	mustContain(t, joined, "--mutation-enabled")
 	mustContain(t, joined, "--mutation-timeout 120")
-	mustContain(t, joined, "--workers 4")
+	mustNotContain(t, joined, "--workers")
 }
 
 func TestBuildDockerRunArgsAppliesResourceLimits(t *testing.T) {
@@ -169,5 +169,12 @@ func mustContain(t *testing.T, haystack, needle string) {
 	t.Helper()
 	if !strings.Contains(haystack, needle) {
 		t.Fatalf("expected %q to contain %q", haystack, needle)
+	}
+}
+
+func mustNotContain(t *testing.T, haystack, needle string) {
+	t.Helper()
+	if strings.Contains(haystack, needle) {
+		t.Fatalf("expected %q not to contain %q", haystack, needle)
 	}
 }
