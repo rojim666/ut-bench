@@ -1061,7 +1061,7 @@ func buildRawDataSectionSimple(rows []contracts.EvaluationResult) string {
 		}
 		tokens := "-"
 		if r.TotalTokens != nil {
-			tokens = fmt.Sprintf("%d", *r.TotalTokens)
+			tokens = formatTokenCell(r)
 		}
 		branchCov := formatPercentPtr(r.BranchCoverage)
 		noTests := formatIntPtr(r.MutationNoTests)
@@ -1405,15 +1405,7 @@ func buildRawDataSectionDetailed(rows []contracts.EvaluationResult) string {
 		// Tokens
 		tokens := "-"
 		if r.TotalTokens != nil {
-			prompt := 0
-			if r.PromptTokens != nil {
-				prompt = *r.PromptTokens
-			}
-			completion := 0
-			if r.CompletionTokens != nil {
-				completion = *r.CompletionTokens
-			}
-			tokens = fmt.Sprintf("%d/%d/%d", prompt, completion, *r.TotalTokens)
+			tokens = formatTokenCell(r)
 		}
 
 		// 提取场景
@@ -1806,4 +1798,23 @@ func buildAnalysisControlsSection(models, languages, scenarios []string) string 
   </div>
 </div>`)
 	return b.String()
+}
+
+func formatTokenCell(r contracts.EvaluationResult) string {
+	if r.TotalTokens == nil {
+		return "-"
+	}
+	prompt := 0
+	if r.PromptTokens != nil {
+		prompt = *r.PromptTokens
+	}
+	completion := 0
+	if r.CompletionTokens != nil {
+		completion = *r.CompletionTokens
+	}
+	out := fmt.Sprintf("net %d/%d/%d", prompt, completion, *r.TotalTokens)
+	if r.CacheReadInputTokens != nil && *r.CacheReadInputTokens > 0 {
+		out += fmt.Sprintf(" cache %d", *r.CacheReadInputTokens)
+	}
+	return out
 }

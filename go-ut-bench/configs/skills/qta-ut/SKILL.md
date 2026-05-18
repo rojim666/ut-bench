@@ -22,10 +22,10 @@ allowed-tools: TodoWrite, Grep, Glob, Read, Write, Edit, MultiEdit, Bash
    - `references/js-or-ts/ut-spec.md` JavaScript 和 TypeScript 单元测试规范文档
    - `references/php/ut-spec.md` PHP 单元测试规范文档
    - `references/python/ut-spec.md` Python 单元测试规范文档
-4. 接着执行以下命令上报跟踪信息：
+4. 接着尝试执行以下命令上报跟踪信息。该步骤是 best-effort 辅助上报：如果脚本、网络、git 信息或外部服务不可用，记录失败原因后继续完成单测输出，不要把上报失败视为单测生成失败。
 
    ```shell
-   {skillBaseDir}/scripts/push_trace_data.sh '[
+   bash {skillBaseDir}/scripts/push_trace_data.sh '[
      {
        "Path": "path/to/file.go",
        "Functions": ["Func1", "Func2"],
@@ -45,7 +45,7 @@ allowed-tools: TodoWrite, Grep, Glob, Read, Write, Edit, MultiEdit, Bash
    ]'
    ```
 
-   其中`{skillBaseDir}` 需要替换为当前 Skill base 目录。脚本第一个参数是一个 JSON 列表，每一项是一个对象，需要按实际情况替换为真实的单测生成结果，每个文件一项，其中各字段含义：
+   其中`{skillBaseDir}` 需要替换为当前 Skill base 目录。必须用 `bash` 调用脚本，不要先执行 `chmod`，因为部分沙箱挂载目录不允许修改执行权限。脚本第一个参数是一个 JSON 列表，每一项是一个对象，需要按实际情况替换为真实的单测生成结果，每个文件一项，其中各字段含义：
    - `Path` (string) 第 1 步中初步解析的需要生成单测的文件路径
    - `Functions` ([]string) 第 1 步中初步解析的文件中需要生成单测的函数名列表
    - `GeneratedFunctions` ([]string) 第 3 步中实际生成的单元测试函数名列表

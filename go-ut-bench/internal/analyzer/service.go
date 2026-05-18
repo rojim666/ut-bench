@@ -142,7 +142,7 @@ func (s *Service) Analyze(ctx context.Context, opts Options) (*contracts.Analysi
 	report.Selection = selection
 
 	if opts.LLMEnabled {
-		llmResult, evidenceCount, evidenceSubjectCount := s.runLLM(ctx, opts, report, analysisDir)
+		llmResult, evidenceCount, evidenceSubjectCount := s.runLLM(ctx, opts, manifest, report, analysisDir)
 		report.LLM = &llmResult
 		report.LLMStatus.Status = firstNonEmpty(llmResult.Status, "degraded")
 		report.LLMStatus.Model = firstNonEmpty(llmResult.Model, opts.LLMModel)
@@ -246,6 +246,9 @@ func (s *Service) analyzeResult(outputRoot string, res contracts.EvaluationResul
 		MutationScore:     res.MutationScore,
 		LatencyMS:         res.LatencyMS,
 		TotalTokens:       res.TotalTokens,
+		RawInputTokens:    res.RawInputTokens,
+		CacheReadTokens:   res.CacheReadInputTokens,
+		CacheCreateTokens: res.CacheCreationInputTokens,
 		TrajectoryPath:    firstNonEmpty(res.TrajectoryPath, gen.TrajectoryPath),
 		RawTracePath:      firstNonEmpty(res.RawTracePath, gen.RawTracePath),
 		WorkspaceDiffPath: firstNonEmpty(res.WorkspaceDiffPath, gen.WorkspaceDiffPath),
@@ -370,20 +373,57 @@ func buildRuleFindings(res contracts.EvaluationResult, subject contracts.Analysi
 		})
 	}
 	baseEv := contracts.EvidenceRef{Kind: "evaluation", SubjectID: subject.SubjectID, SampleID: subject.SampleID}
+
+	// 编译失败：需要区分是agent生成的代码问题还是平台/工具链问题
 	if !res.CompilePass {
-		add("P0", "compile", "编译失败", firstNonEmpty(res.CompileError, "生成测试未通过编译"), "优先检查生成测试是否引用不存在的符号、缺少 import、测试框架不匹配，或破坏了项目结构。", baseEv)
+		compileErr := firstNonEmpty(res.CompileError, "生成测试未通过编译")
+		detail := compileErr
+		rec := "优先检查生成测试是否引用不存在的符号、缺少 import、测试框架不匹配，或破坏了项目结构。"
+
+		// 检测是否可能是平台/工具链问题
+		if isLikelyToolchainIssue(compileErr) {
+			detail += "\n\n⚠️ 可能是平台或工具链问题：错误信息中包含工具链相关的关键词。"
+			rec = "先检查评测环境和工具链是否正常（如编译器版本、依赖安装），再排查生成代码问题。"
+		}
+		add("P0", "compile", "编译失败", detail, rec, baseEv)
 	}
+
+	// 测试执行失败：需要区分是测试代码问题还是环境问题
 	if res.TestPass != nil && !*res.TestPass {
-		add("P0", "test", "测试执行失败", firstNonEmpty(res.TestError, "生成测试运行失败"), "要求 agent 在提交前运行目标测试，并把失败输出作为修正依据。", baseEv)
+		testErr := firstNonEmpty(res.TestError, "生成测试运行失败")
+		detail := testErr
+		rec := "要求 agent 在提交前运行目标测试，并把失败输出作为修正依据。"
+
+		// 检测是否可能是环境问题
+		if isLikelyEnvironmentIssue(testErr) {
+			detail += "\n\n⚠️ 可能是环境或平台问题：错误信息中包含环境相关的关键词。"
+			rec = "先检查评测环境是否正常（如运行时、依赖、权限），再排查测试代码问题。"
+		}
+		add("P0", "test", "测试执行失败", detail, rec, baseEv)
 	}
+
 	if res.TestPass == nil {
 		add("P1", "test", "测试未执行", "评测结果中 test_pass 为空，说明测试阶段没有得到有效结果。", "检查编译阶段、测试发现规则和 evaluator 日志。", baseEv)
 	}
+
 	if subject.LineCoverage != nil && normMetric(*subject.LineCoverage) < 0.7 {
 		add("P1", "coverage", "行覆盖率偏低", fmt.Sprintf("当前行覆盖率为 %.1f%%。", normMetric(*subject.LineCoverage)*100), "补充正常路径、边界路径和异常路径断言。", baseEv)
 	}
+
+	// 缺少变异测试得分：需要区分是工具链问题还是测试问题
 	if subject.MutationScore == nil {
-		add("P1", "mutation", "缺少变异测试得分", firstNonEmpty(res.MutationError, "评测结果没有 mutation_score。"), "确认变异测试工具链可用，并检查生成测试是否能稳定运行。", baseEv)
+		mutationErr := firstNonEmpty(res.MutationError, "评测结果没有 mutation_score。")
+		detail := mutationErr
+		rec := "确认变异测试工具链可用，并检查生成测试是否能稳定运行。"
+
+		// 检测是否是工具链问题
+		if isLikelyToolchainIssue(mutationErr) || strings.Contains(strings.ToLower(mutationErr), "not found") ||
+			strings.Contains(strings.ToLower(mutationErr), "not installed") ||
+			strings.Contains(strings.ToLower(mutationErr), "baseline tests failed") {
+			detail += "\n\n⚠️ 可能是变异测试工具链问题或基线测试未通过。"
+			rec = "检查变异测试工具是否正确安装，以及基线测试是否全部通过。"
+		}
+		add("P1", "mutation", "缺少变异测试得分", detail, rec, baseEv)
 	} else if normMetric(*subject.MutationScore) < 0.6 {
 		title := "变异得分偏低"
 		detail := fmt.Sprintf("当前变异得分为 %.1f%%。", normMetric(*subject.MutationScore)*100)
@@ -393,15 +433,21 @@ func buildRuleFindings(res contracts.EvaluationResult, subject contracts.Analysi
 		}
 		add("P1", "mutation", title, detail, "增加对关键分支、边界条件和错误消息的强断言，并先确保 baseline 测试全量通过。", baseEv)
 	}
+
+	// 缺少 trajectory：可能是平台导出问题
 	if subject.TraceStepCount == 0 {
-		add("P1", "trace", "缺少 step-by-step trajectory", "没有读取到统一 trajectory，无法还原 agent 的逐步执行过程。", "优先修复对应 agent 的原始 trace 导出和 trajectory 适配。", evidenceRefFromPath("trajectory", subject.TrajectoryPath, subject.SubjectID, subject.SampleID))
+		add("P1", "trace", "缺少 step-by-step trajectory", "没有读取到统一 trajectory，无法还原 agent 的逐步执行过程。", "检查 trajectory 导出是否正常，可能是平台 trace 适配问题。", evidenceRefFromPath("trajectory", subject.TrajectoryPath, subject.SubjectID, subject.SampleID))
 	}
+
 	if subject.TraceStepCount > 0 && !subject.HasSourceRead {
 		add("P2", "trace", "未观察到源码读取步骤", "trajectory 中没有明确的源码读取行为。", "约束 agent 先读取目标源码，再生成测试。", evidenceRefFromPath("trajectory", subject.TrajectoryPath, subject.SubjectID, subject.SampleID))
 	}
+
 	if subject.TraceStepCount > 0 && !subject.HasTestExecution {
 		add("P2", "trace", "未观察到测试执行步骤", "trajectory 中没有发现 pytest/go test/mvn test 等本地验证命令。", "要求 agent 写完测试后运行最小验证命令，并根据失败结果迭代。", evidenceRefFromPath("trajectory", subject.TrajectoryPath, subject.SubjectID, subject.SampleID))
 	}
+
+	// 修改源码：这是明确的agent行为问题
 	if subject.ModifiedSource {
 		detail := "workspace diff 显示 agent 修改了原始业务源码"
 		if len(subject.ModifiedSourcePaths) > 0 {
@@ -414,24 +460,94 @@ func buildRuleFindings(res contracts.EvaluationResult, subject contracts.Analysi
 		}
 		add("P0", "policy", "agent 修改了被测源码", detail, "强化执行约束：只允许写测试文件，不允许改业务源码；验证失败时只能修改生成测试。", evidenceRefFromPath("workspace_diff", subject.WorkspaceDiffPath, subject.SubjectID, subject.SampleID))
 	}
+
 	if subject.RuntimeNoiseCount > 0 {
 		add("P3", "policy", "产生运行时噪声文件", fmt.Sprintf("workspace diff 中有 %d 个缓存、插件或临时文件。", subject.RuntimeNoiseCount), "继续过滤运行时噪声，必要时清理 agent 工作区后再采集 diff。", evidenceRefFromPath("workspace_diff", subject.WorkspaceDiffPath, subject.SubjectID, subject.SampleID))
 	}
+
 	if subject.PolicyCommandCount > 0 {
 		add("P2", "policy", "执行了不推荐的环境命令", fmt.Sprintf("trajectory 中发现 %d 次安装或外部下载类命令。", subject.PolicyCommandCount), "在 prompt 和 sandbox 策略中禁止随意安装依赖，除非样本显式需要。", evidenceRefFromPath("trajectory", subject.TrajectoryPath, subject.SubjectID, subject.SampleID))
 	}
+
+	// Token 消耗异常：需要区分多种可能原因
 	if subject.TotalTokens != nil && *subject.TotalTokens > 200000 {
-		add("P2", "efficiency", "token 消耗异常偏高", fmt.Sprintf("总 token 为 %d。", *subject.TotalTokens), "检查 agent 是否反复读取无关文件或陷入无效循环。", baseEv)
+		detail := fmt.Sprintf("净 token 为 %d。", *subject.TotalTokens)
+		if subject.RawInputTokens != nil || subject.CacheReadTokens != nil || subject.CacheCreateTokens != nil {
+			detail += fmt.Sprintf(" raw_input=%s，cache_read=%s，cache_creation=%s。", intPtrText(subject.RawInputTokens), intPtrText(subject.CacheReadTokens), intPtrText(subject.CacheCreateTokens))
+		}
+		rec := ""
+
+		// 根据 agent 框架和 token 来源判断可能原因
+		framework := strings.ToLower(subject.AgentFramework)
+		tokenSource := strings.ToLower(res.TokenSource)
+
+		if framework == "opencode" || framework == "codebuddy" {
+			detail += "\n\n可能原因分析："
+			detail += "\n1. 当前异常判断基于净 token，cache token 仅作为解释证据"
+			detail += "\n2. 大量工具输出或构建日志可能被回灌到后续上下文"
+			detail += "\n3. Agent 框架本身的多轮工具调用会放大上下文成本"
+
+			if tokenSource == "actual" || tokenSource == "opencode_session_export" || strings.Contains(tokenSource, "json") {
+				detail += "\n\nToken 来源: " + tokenSource
+				rec = "检查平台 token 计算是否准确，对比实际 API 调用次数和每次调用的 token 用量。"
+			} else {
+				rec = "检查 agent 是否反复读取文件或陷入无效循环，同时关注平台 token 计算的准确性。"
+			}
+		} else {
+			rec = "检查 agent 是否反复读取无关文件或陷入无效循环。"
+		}
+
+		add("P2", "efficiency", "token 消耗异常偏高", detail, rec, baseEv)
 	}
+
 	return findings
 }
 
-func (s *Service) runLLM(ctx context.Context, opts Options, report *contracts.AnalysisReport, analysisDir string) (contracts.LLMAnalysisResult, int, int) {
+// isLikelyToolchainIssue 检测错误信息是否可能是工具链问题
+func isLikelyToolchainIssue(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	keywords := []string{
+		"not found", "not installed", "no such file",
+		"command not found", "permission denied",
+		"cannot find", "executable not found",
+		"toolchain", "compiler", "linker",
+		"syntax error near unexpected token", // Windows 行尾问题
+		"\\r': command not found",            // CRLF 问题
+	}
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// isLikelyEnvironmentIssue 检测错误信息是否可能是环境问题
+func isLikelyEnvironmentIssue(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	keywords := []string{
+		"segmentation fault", "sigsegv",
+		"out of memory", "oom",
+		"timeout", "timed out",
+		"connection refused", "network",
+		"permission denied", "access denied",
+		"no space left", "disk full",
+		"docker", "container",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) runLLM(ctx context.Context, opts Options, manifest contracts.GeneratedManifest, report *contracts.AnalysisReport, analysisDir string) (contracts.LLMAnalysisResult, int, int) {
 	if s.llm == nil {
 		return contracts.LLMAnalysisResult{Model: opts.LLMModel, PromptVersion: promptVersion, Status: "skipped", Error: "llm client not configured"}, 0, 0
 	}
 	reportProgress(opts.Progress, "构建证据包")
-	bundle, evidenceMap := buildLLMEvidenceBundle(opts.OutputRoot, report)
+	bundle, evidenceMap := buildLLMEvidenceBundle(opts.OutputRoot, opts.ConfigPath, manifest, report)
 	_ = contracts.WriteJSON(filepath.Join(analysisDir, "llm_evidence_bundle.json"), bundle)
 
 	prompt, err := buildLLMPrompt(bundle)
@@ -468,9 +584,9 @@ func buildLLMPrompt(bundle LLMEvidenceBundle) (string, error) {
 	selectionHint := ""
 	selectedCount := len(bundle.Selection.SelectedSubjects)
 	if selectedCount == 1 {
-		selectionHint = "\n10. 本次是用户定点分析：请围绕 selection.selected_subjects 中的对象解释行为链路、测试质量、trajectory 证据和改进建议，不要把重点转移到未选对象。\n"
+		selectionHint = "\n11. 本次是用户定点分析：请围绕 selection.selected_subjects 中的对象解释行为链路、测试质量、trajectory 证据和改进建议，不要把重点转移到未选对象。\n"
 	} else if selectedCount > 1 || bundle.Selection.CompareMode {
-		selectionHint = "\n10. 本次是用户选择的横向对比：请比较 selection.selected_subjects 中 2-3 个对象的共同问题、差异点、最优/最差表现原因和可迁移策略。不要把重点转移到未选对象。\n"
+		selectionHint = "\n11. 本次是用户选择的横向对比：请比较 selection.selected_subjects 中 2-3 个对象的共同问题、差异点、最优/最差表现原因和可迁移策略。不要把重点转移到未选对象。\n"
 	}
 	return `你是 UTBench 的单元测试 agent 诊断器。请基于 evidence bundle 分析 agent/skill 的弱点，并给出能落地的优化建议。
 
@@ -478,12 +594,60 @@ func buildLLMPrompt(bundle LLMEvidenceBundle) (string, error) {
 1. 只输出合法 JSON，不要输出 markdown、解释或代码块。
 2. 所有 finding 和 recommendation 必须尽量引用 evidence_id。没有证据时只能作为低置信度建议。
 3. 不要建议本阶段自动修改 skill 或自动复测；本阶段只做诊断与建议。
-4. 优先区分 agent 行为问题、skill/prompt 问题、环境契约问题、evaluator 问题。
-5. category 只能使用 compile/test/coverage/mutation/trace/policy/efficiency/skill/environment/evaluator/dataset。
-6. recommendation.target 只能使用 skill/prompt/agent_config/environment/evaluator/dataset。
-7. 不要复述 rule_findings，不要逐条复制规则诊断；只补充规则没有覆盖的归因、跨 agent 对比和优化建议。
-8. findings 最多 5 条，recommendations 最多 5 条；每条 detail 控制在 120 字以内，recommendation/detail/expected_impact/risk 都要简短。
-9. 如果最重要的问题已经在规则里出现，请在 LLM 中合并为更高层的归因，不要重复同名 finding。
+4. category 只能使用 compile/test/coverage/mutation/trace/policy/efficiency/skill/environment/evaluator/dataset。
+5. recommendation.target 只能使用 skill/prompt/agent_config/environment/evaluator/dataset。
+6. 不要复述 rule_findings，不要逐条复制规则诊断；只补充规则没有覆盖的归因、跨 agent 对比和优化建议。
+7. findings 最多 5 条，recommendations 最多 5 条；每条 detail 控制在 120 字以内，recommendation/detail/expected_impact/risk 都要简短。
+8. 如果最重要的问题已经在规则里出现，请在 LLM 中合并为更高层的归因，不要重复同名 finding。
+9. **必须利用上下文信息进行归因**：证据包中包含 prompt_context、skill_context、agent_context、success_baseline，这些是归因的关键依据。
+
+关键诊断原则（必须遵守）：
+⚠️ 不要盲目归咎于 agent！问题可能有多种根源，必须根据证据判断：
+
+【问题归因分类标准】
+1. **平台/工具链问题** (environment/evaluator)：
+   - 错误信息包含: "not found", "not installed", "command not found", "permission denied", "syntax error near unexpected token", "\\r": command not found"
+   - Token 异常高但 trajectory 正常 → 可能是平台 token 计算方式问题
+   - 变异测试失败但基线测试通过 → 可能是变异工具链问题
+   - Trajectory 缺失但测试通过 → 可能是 trace 导出适配问题
+
+2. **Skill/Prompt 问题** (skill)：
+   - 对比 prompt_context 中的要求与 agent 实际行为，判断是否是 prompt 指令不清晰
+   - 对比 skill_context 中的关键要求与生成测试的质量，判断是否是 skill 设计问题
+   - Agent 行为模式一致但结果不佳（如所有样本都缺少某类断言）
+   - 测试覆盖了错误的路径（如只测正常路径不测异常路径）
+
+3. **Agent 行为问题** (agent_config)：
+   - 对比 agent_context 中的约束与 trajectory 行为，判断是否违反约束
+   - 明确违反约束（如修改了源码、安装了依赖）
+   - 重复读取相同文件或陷入无效循环
+   - 忽略 prompt 中的明确指令
+
+4. **数据集问题** (dataset)：
+   - 特定样本在多个 agent 上都失败
+   - 样本本身有歧义或缺少必要上下文
+
+5. **模型能力问题** (model)：
+   - 对比 success_baseline 中的成功案例特征，判断是否是模型能力不足
+   - 同一 agent/skill 在不同模型上表现差异大 → 模型能力差异
+
+【上下文信息使用指南】
+- prompt_context: 对比 prompt 要求与 agent 实际行为，判断是否是指令问题
+- skill_context: 对比 skill 关键要求与测试质量，判断是否是 skill 设计问题
+- agent_context: 对比框架约束与 trajectory 行为，判断是否是框架限制或违规
+- success_baseline: 对比成功案例特征，判断失败原因是能力问题还是行为问题
+
+【Token 异常分析】
+- opencode/codebuddy 的 token 可能包含缓存、工具注册开销，不能直接与 claudecode 比较
+- Token 高 + trajectory 正常 + 测试通过 → 优先怀疑平台计算问题
+- Token 高 + trajectory 显示重复行为 → 优先怀疑 agent 行为问题
+
+【证据优先级】
+1. evaluation_result/report_summary 中的 compile_error、test_error、failure_origin、指标结果是最高优先级事实
+2. 有 trajectory → 分析 agent 行为模式，但后置脚本、上报、trace 导出失败不能覆盖真实编译/测试失败原因
+3. 有明确工具错误信息 → 根据错误内容判断环境或 evaluator 问题
+4. 只有指标 → 结合多个指标交叉验证；不要把少数样本/subject 的局部失败概括为整体全面失败
+5. 无证据 → 低置信度建议，标注"需要进一步验证"
 ` + selectionHint + `
 
 输出 JSON 格式：

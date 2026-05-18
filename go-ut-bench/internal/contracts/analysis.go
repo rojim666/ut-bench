@@ -90,6 +90,9 @@ type AnalysisSubject struct {
 	MutationScore       *float64                 `json:"mutation_score,omitempty"`
 	LatencyMS           *int                     `json:"latency_ms,omitempty"`
 	TotalTokens         *int                     `json:"total_tokens,omitempty"`
+	RawInputTokens      *int                     `json:"raw_input_tokens,omitempty"`
+	CacheReadTokens     *int                     `json:"cache_read_input_tokens,omitempty"`
+	CacheCreateTokens   *int                     `json:"cache_creation_input_tokens,omitempty"`
 	TrajectoryPath      string                   `json:"trajectory_path,omitempty"`
 	RawTracePath        string                   `json:"raw_trace_path,omitempty"`
 	WorkspaceDiffPath   string                   `json:"workspace_diff_path,omitempty"`

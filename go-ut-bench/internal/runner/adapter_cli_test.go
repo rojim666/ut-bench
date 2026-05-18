@@ -113,18 +113,19 @@ func TestCollectOpenCodeSessionExportUsesOpenCodeMessageTokensSchema(t *testing.
 		exportPayload: `{
 			"info": {"id":"ses_test"},
 			"messages": [
-				{"info":{"tokens":{"total":11840,"input":105,"output":52}}},
-				{"info":{"tokens":{"total":14584,"input":651,"output":1310}}},
-				{"info":{"tokens":{"total":14718,"input":136,"output":92}}},
-				{"info":{"tokens":{"total":14861,"input":159,"output":96}}},
-				{"info":{"tokens":{"total":16301,"input":1323,"output":32}}}
+				{"info":{"role":"assistant","tokens":{"total":11840,"input":105,"output":52}}},
+				{"info":{"role":"assistant","tokens":{"total":14584,"input":651,"output":1310}}},
+				{"info":{"role":"assistant","tokens":{"total":14718,"input":136,"output":92}}},
+				{"info":{"role":"assistant","tokens":{"total":14861,"input":159,"output":96}}},
+				{"info":{"role":"assistant","tokens":{"total":16301,"input":1323,"output":32}}}
 			]
 		}`,
 	}
 
 	trace := AgentTrace{
-		Framework: "opencode",
-		SessionID: "ses_test",
+		Framework:        "opencode",
+		SessionID:        "ses_test",
+		InteractionCount: 108,
 	}
 
 	collectOpenCodeSessionExport(
@@ -154,6 +155,9 @@ func TestCollectOpenCodeSessionExportUsesOpenCodeMessageTokensSchema(t *testing.
 	}
 	if trace.TotalTokens == nil || *trace.TotalTokens != 3956 {
 		t.Fatalf("total tokens = %v, want 3956 (prompt+completion, not cumulative sum)", trace.TotalTokens)
+	}
+	if trace.InteractionCount != 5 {
+		t.Fatalf("interaction_count = %d, want 5 from assistant messages", trace.InteractionCount)
 	}
 }
 
@@ -224,6 +228,34 @@ func TestParseCodeBuddyJSONOutput(t *testing.T) {
 	}
 	if trace.UsageSourceDetail != "codebuddy_json_output" {
 		t.Fatalf("usage_source_detail = %q, want %q", trace.UsageSourceDetail, "codebuddy_json_output")
+	}
+}
+
+func TestParseCodeBuddyJSONOutputKeepsNetAndCacheTokens(t *testing.T) {
+	trace := &AgentTrace{Framework: "codebuddy"}
+	stdout := `{"result":"Done","session_id":"sess_cb_cache","num_turns":85,"usage":{"input_tokens":1555562,"cache_read_input_tokens":1428800,"cache_creation_input_tokens":2300,"output_tokens":4839}}`
+	parseCodeBuddyJSONOutput(trace, stdout)
+
+	if trace.InteractionCount != 85 {
+		t.Fatalf("interaction_count = %d, want 85", trace.InteractionCount)
+	}
+	if trace.PromptTokens == nil || *trace.PromptTokens != 126762 {
+		t.Fatalf("prompt_tokens = %v, want net 126762", trace.PromptTokens)
+	}
+	if trace.CompletionTokens == nil || *trace.CompletionTokens != 4839 {
+		t.Fatalf("completion_tokens = %v, want 4839", trace.CompletionTokens)
+	}
+	if trace.TotalTokens == nil || *trace.TotalTokens != 131601 {
+		t.Fatalf("total_tokens = %v, want 131601", trace.TotalTokens)
+	}
+	if trace.RawInputTokens == nil || *trace.RawInputTokens != 1555562 {
+		t.Fatalf("raw_input_tokens = %v, want 1555562", trace.RawInputTokens)
+	}
+	if trace.CacheReadTokens == nil || *trace.CacheReadTokens != 1428800 {
+		t.Fatalf("cache_read_input_tokens = %v, want 1428800", trace.CacheReadTokens)
+	}
+	if trace.CacheCreateTokens == nil || *trace.CacheCreateTokens != 2300 {
+		t.Fatalf("cache_creation_input_tokens = %v, want 2300", trace.CacheCreateTokens)
 	}
 }
 
@@ -403,6 +435,41 @@ func TestParseClaudeCodeJSONOutput(t *testing.T) {
 	}
 	if got, want := trace.UsageSourceDetail, "claudecode_json_output"; got != want {
 		t.Fatalf("usage_source_detail = %q, want %q", got, want)
+	}
+}
+
+func TestParseClaudeCodeJSONOutputDoesNotDoubleCountModelUsage(t *testing.T) {
+	trace := &AgentTrace{Framework: "claudecode"}
+	stdout := `{"type":"result","session_id":"sess_claude","usage":{"input_tokens":14349,"output_tokens":5667},"modelUsage":{"mimo-v2.5":{"input_tokens":14349,"output_tokens":5667}}}`
+	parseClaudeCodeJSONOutput(trace, stdout)
+
+	if trace.PromptTokens == nil || *trace.PromptTokens != 14349 {
+		t.Fatalf("prompt_tokens = %v, want 14349", trace.PromptTokens)
+	}
+	if trace.CompletionTokens == nil || *trace.CompletionTokens != 5667 {
+		t.Fatalf("completion_tokens = %v, want 5667", trace.CompletionTokens)
+	}
+	if trace.TotalTokens == nil || *trace.TotalTokens != 20016 {
+		t.Fatalf("total_tokens = %v, want 20016 without modelUsage double count", trace.TotalTokens)
+	}
+}
+
+func TestParseAgentOutputExtractsCommandsFromStructuredToolCalls(t *testing.T) {
+	trace := &AgentTrace{Framework: "claudecode", Command: "claude -p prompt"}
+	stdout := strings.Join([]string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"go test ./..."}}]}}`,
+		`{"type":"result","num_turns":7,"usage":{"input_tokens":1200,"output_tokens":300}}`,
+	}, "\n")
+	parseAgentOutput(trace, stdout, "")
+
+	if trace.InteractionCount != 7 {
+		t.Fatalf("interaction_count = %d, want 7", trace.InteractionCount)
+	}
+	if len(trace.CommandsExecuted) != 1 || trace.CommandsExecuted[0] != "go test ./..." {
+		t.Fatalf("commands_executed = %+v, want go test ./...", trace.CommandsExecuted)
+	}
+	if len(trace.ToolCalls) != 1 || trace.ToolCalls[0].Tool != "Bash" {
+		t.Fatalf("tool calls = %+v, want one Bash call", trace.ToolCalls)
 	}
 }
 
@@ -728,5 +795,152 @@ func TestParseOpenCodeSessionTrajectoryPartsSchema(t *testing.T) {
 	}
 	if steps[3].Kind != "message" || steps[4].Tool != "read" || steps[5].Kind != "tool_result" {
 		t.Fatalf("tail steps unexpected: %+v", steps)
+	}
+}
+
+func TestExtractOpenCodeToolCalls(t *testing.T) {
+	payload := map[string]any{
+		"info": map[string]any{"id": "ses_test"},
+		"messages": []any{
+			map[string]any{
+				"info": map[string]any{"role": "assistant", "id": "msg_1"},
+				"parts": []any{
+					map[string]any{"type": "step-start"},
+					map[string]any{"type": "reasoning", "text": "Need to write test."},
+					map[string]any{
+						"type":   "tool",
+						"tool":   "write",
+						"callID": "call_write",
+						"state": map[string]any{
+							"status": "completed",
+							"input":  map[string]any{"filePath": "/workspace/generated_test.go", "content": "package main"},
+							"output": "Wrote file successfully.",
+						},
+					},
+					map[string]any{
+						"type":   "tool",
+						"tool":   "bash",
+						"callID": "call_bash",
+						"state": map[string]any{
+							"status": "completed",
+							"input":  map[string]any{"command": "go test ./..."},
+							"output": "ok",
+						},
+					},
+				},
+			},
+			map[string]any{
+				"info": map[string]any{"role": "assistant", "id": "msg_2"},
+				"parts": []any{
+					map[string]any{
+						"type":   "tool",
+						"tool":   "read",
+						"callID": "call_read",
+						"state": map[string]any{
+							"status": "completed",
+							"input":  map[string]any{"filePath": "/workspace/generated_test.go"},
+							"output": "package main",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	calls := extractOpenCodeToolCalls(payload)
+	if len(calls) != 3 {
+		t.Fatalf("tool calls len = %d, want 3: %+v", len(calls), calls)
+	}
+
+	// 验证工具名称
+	expectedTools := []string{"write", "bash", "read"}
+	for i, call := range calls {
+		if call.Tool != expectedTools[i] {
+			t.Fatalf("tool[%d] = %q, want %q", i, call.Tool, expectedTools[i])
+		}
+		if !call.Success {
+			t.Fatalf("tool[%d].Success = false, want true", i)
+		}
+	}
+}
+
+func TestExtractOpenCodeToolCallsIgnoresNonToolParts(t *testing.T) {
+	payload := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"parts": []any{
+					map[string]any{"type": "step-start"},
+					map[string]any{"type": "reasoning", "text": "Thinking..."},
+					map[string]any{"type": "text", "text": "Done"},
+					map[string]any{
+						"type":   "tool",
+						"tool":   "bash",
+						"callID": "call_1",
+						"state": map[string]any{
+							"status": "completed",
+							"input":  map[string]any{"command": "ls"},
+							"output": "file.go",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	calls := extractOpenCodeToolCalls(payload)
+	if len(calls) != 1 {
+		t.Fatalf("tool calls len = %d, want 1: %+v", len(calls), calls)
+	}
+	if calls[0].Tool != "bash" {
+		t.Fatalf("tool = %q, want bash", calls[0].Tool)
+	}
+}
+
+func TestUsageRecordFromMapSubtractsCacheReadTokens(t *testing.T) {
+	// 模拟 CodeBuddy 的 token 数据，其中 input_tokens 包含缓存读取的 token
+	v := map[string]any{
+		"input_tokens":            float64(1125817),
+		"output_tokens":           float64(6496),
+		"cache_read_input_tokens": float64(1104896),
+	}
+
+	record, ok := usageRecordFromMap(v)
+	if !ok {
+		t.Fatal("expected usage record to be extracted")
+	}
+
+	// input_tokens - cache_read_input_tokens = 1125817 - 1104896 = 20921
+	if record.Prompt == nil || *record.Prompt != 20921 {
+		t.Fatalf("prompt tokens = %v, want 20921 (input_tokens - cache_read_input_tokens)", record.Prompt)
+	}
+	if record.Completion == nil || *record.Completion != 6496 {
+		t.Fatalf("completion tokens = %v, want 6496", record.Completion)
+	}
+	// total = prompt + completion = 20921 + 6496 = 27417
+	if record.Total == nil || *record.Total != 27417 {
+		t.Fatalf("total tokens = %v, want 27417", record.Total)
+	}
+}
+
+func TestUsageRecordFromMapWithoutCacheTokens(t *testing.T) {
+	// 没有缓存token的情况
+	v := map[string]any{
+		"input_tokens":  float64(1000),
+		"output_tokens": float64(200),
+	}
+
+	record, ok := usageRecordFromMap(v)
+	if !ok {
+		t.Fatal("expected usage record to be extracted")
+	}
+
+	if record.Prompt == nil || *record.Prompt != 1000 {
+		t.Fatalf("prompt tokens = %v, want 1000", record.Prompt)
+	}
+	if record.Completion == nil || *record.Completion != 200 {
+		t.Fatalf("completion tokens = %v, want 200", record.Completion)
+	}
+	if record.Total == nil || *record.Total != 1200 {
+		t.Fatalf("total tokens = %v, want 1200", record.Total)
 	}
 }

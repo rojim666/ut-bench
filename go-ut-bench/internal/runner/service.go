@@ -3,13 +3,13 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -262,6 +262,7 @@ func (s *Service) Generate(ctx context.Context, spec contracts.RunSpec, samples 
 			Truncated:        item.Truncated,
 			LatencyMS:        item.LatencyMS,
 			Tokens:           tokens,
+			CacheReadTokens:  ptrIntValue(item.CacheReadInputTokens),
 			SubjectID:        item.SubjectID,
 			SubjectKind:      item.SubjectKind,
 			AgentFramework:   item.AgentFramework,
@@ -804,6 +805,9 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		trace = subjectTrace
 		agentSummary = agentSmry
 		truncated = isTruncated
+		promptTokens = pTok
+		completionTokens = cTok
+		totalTokens = tTok
 		if genErr != nil {
 			_ = contracts.WriteJSON(respPath, map[string]any{"error": genErr, "truncated": truncated, "trace_path": trace.TracePath, "raw_trace_path": trace.RawTracePath, "trajectory_path": trace.TrajectoryPath, "workspace_diff_path": trace.WorkspaceDiffPath})
 			return contracts.GeneratedCase{
@@ -831,6 +835,9 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 				PromptTokens:             promptTokens,
 				CompletionTokens:         completionTokens,
 				TotalTokens:              totalTokens,
+				RawInputTokens:           trace.RawInputTokens,
+				CacheReadInputTokens:     trace.CacheReadTokens,
+				CacheCreationInputTokens: trace.CacheCreateTokens,
 				TokenSource:              trace.TokenSource,
 				EstimatedCostUSD:         trace.EstimatedCostUSD,
 				CostSource:               trace.CostSource,
@@ -858,9 +865,6 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		}
 		content = generated
 		rawResponse = response
-		promptTokens = pTok
-		completionTokens = cTok
-		totalTokens = tTok
 		latencyMS = latency
 	}
 
@@ -958,12 +962,15 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		"generation_env_fingerprint": identity.GenerationEnvFingerprint,
 		"latency_ms":                 latencyForMeta,
 		"tokens": map[string]any{
-			"prompt_tokens":      promptTokens,
-			"completion_tokens":  completionTokens,
-			"total_tokens":       totalTokens,
-			"token_source":       trace.TokenSource,
-			"estimated_cost_usd": trace.EstimatedCostUSD,
-			"cost_source":        trace.CostSource,
+			"prompt_tokens":               promptTokens,
+			"completion_tokens":           completionTokens,
+			"total_tokens":                totalTokens,
+			"raw_input_tokens":            trace.RawInputTokens,
+			"cache_read_input_tokens":     trace.CacheReadTokens,
+			"cache_creation_input_tokens": trace.CacheCreateTokens,
+			"token_source":                trace.TokenSource,
+			"estimated_cost_usd":          trace.EstimatedCostUSD,
+			"cost_source":                 trace.CostSource,
 		},
 		"truncated":      truncated,
 		"created_at_utc": time.Now().UTC(),
@@ -1001,6 +1008,9 @@ func (s *Service) generateOne(ctx context.Context, spec contracts.RunSpec, testR
 		PromptTokens:             promptTokens,
 		CompletionTokens:         completionTokens,
 		TotalTokens:              totalTokens,
+		RawInputTokens:           trace.RawInputTokens,
+		CacheReadInputTokens:     trace.CacheReadTokens,
+		CacheCreationInputTokens: trace.CacheCreateTokens,
 		TokenSource:              trace.TokenSource,
 		EstimatedCostUSD:         trace.EstimatedCostUSD,
 		CostSource:               trace.CostSource,
@@ -1098,23 +1108,30 @@ func sha256Bytes(data []byte) string {
 // 返回值:
 //   - error: 复制失败时的错误
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	info, err := os.Stat(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	out, err := os.Create(dst)
+	raw, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
+	if shouldNormalizeShellScript(src) {
+		raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+		raw = bytes.ReplaceAll(raw, []byte("\r"), []byte("\n"))
 	}
-	return out.Close()
+	mode := info.Mode().Perm()
+	if mode == 0 {
+		mode = 0o644
+	}
+	return os.WriteFile(dst, raw, mode)
+}
+
+func shouldNormalizeShellScript(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".sh")
 }
 
 func finalizeGenerationTokenAccounting(
@@ -1333,6 +1350,13 @@ func trimErrorMsg(msg string, max int) string {
 		return msg
 	}
 	return msg[:max] + "..."
+}
+
+func ptrIntValue(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // errorMsgSafe 安全提取错误消息

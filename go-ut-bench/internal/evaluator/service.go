@@ -364,6 +364,9 @@ func (s *Service) evaluateOne(ctx context.Context, spec contracts.RunSpec, item 
 		PromptTokens:             item.PromptTokens,
 		CompletionTokens:         item.CompletionTokens,
 		TotalTokens:              item.TotalTokens,
+		RawInputTokens:           item.RawInputTokens,
+		CacheReadInputTokens:     item.CacheReadInputTokens,
+		CacheCreationInputTokens: item.CacheCreationInputTokens,
 		TokenSource:              item.TokenSource,
 		EstimatedCostUSD:         item.EstimatedCostUSD,
 		CostSource:               item.CostSource,
@@ -510,6 +513,9 @@ func applyReusableEvaluation(row *contracts.EvaluationResult, reused store.Reusa
 	reusedRow.PromptTokens = current.PromptTokens
 	reusedRow.CompletionTokens = current.CompletionTokens
 	reusedRow.TotalTokens = current.TotalTokens
+	reusedRow.RawInputTokens = current.RawInputTokens
+	reusedRow.CacheReadInputTokens = current.CacheReadInputTokens
+	reusedRow.CacheCreationInputTokens = current.CacheCreationInputTokens
 	reusedRow.TokenSource = current.TokenSource
 	reusedRow.EstimatedCostUSD = current.EstimatedCostUSD
 	reusedRow.CostSource = current.CostSource
