@@ -1,5 +1,0 @@
-./index.go
-./manifest.go
-./process_windows.go
-./service.go
-./validate.go
