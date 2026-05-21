@@ -2787,24 +2787,26 @@ func (s *Server) listRunsFromDisk(w http.ResponseWriter, activeRuns []*RunEntry,
 }
 
 type createRunRequest struct {
-	RunID           string   `json:"run_id"`
-	Models          []string `json:"models"`
-	Subjects        []string `json:"subjects,omitempty"`
-	Languages       []string `json:"languages"`
-	Class           string   `json:"class"`
-	Scenario        string   `json:"scenario"`
-	Project         string   `json:"project"`
-	Level           string   `json:"level"`
-	MaxSamples      int      `json:"max_samples"`
-	Workers         int      `json:"workers"`
-	Mode            string   `json:"mode"`
-	DryRun          bool     `json:"dry_run"`
-	ReuseGenerated  *bool    `json:"reuse_generated"`
-	ReuseEvaluation bool     `json:"reuse_evaluation"`
-	MutationEnabled bool     `json:"mutation_enabled"`
-	MutationTimeout int      `json:"mutation_timeout"`
-	MutationPolicy  string   `json:"mutation_policy"`
-	Ingest          bool     `json:"ingest"`
+	RunID            string   `json:"run_id"`
+	Models           []string `json:"models"`
+	Subjects         []string `json:"subjects,omitempty"`
+	BenchmarkProfile string   `json:"benchmark_profile"`
+	Languages        []string `json:"languages"`
+	Class            string   `json:"class"`
+	Scenario         string   `json:"scenario"`
+	Project          string   `json:"project"`
+	Level            string   `json:"level"`
+	DatasetManifest  string   `json:"dataset_manifest"`
+	MaxSamples       int      `json:"max_samples"`
+	Workers          int      `json:"workers"`
+	Mode             string   `json:"mode"`
+	DryRun           bool     `json:"dry_run"`
+	ReuseGenerated   *bool    `json:"reuse_generated"`
+	ReuseEvaluation  bool     `json:"reuse_evaluation"`
+	MutationEnabled  bool     `json:"mutation_enabled"`
+	MutationTimeout  int      `json:"mutation_timeout"`
+	MutationPolicy   string   `json:"mutation_policy"`
+	Ingest           bool     `json:"ingest"`
 	// UseDocker selects the Docker execution backend. When true the server
 	// shells out to `docker run utbench:latest run ...` instead of running
 	// the orchestrator in-process.
@@ -2911,12 +2913,14 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		Models:           models,
 		Subjects:         splitTrim(strings.Join(req.Subjects, ",")),
 		AgentsConfigPath: agentsConfigPath,
+		BenchmarkProfile: normalizeBenchmarkProfile(req.BenchmarkProfile),
 		Languages:        req.Languages,
 		DatasetClasses:   classes,
 		DatasetScenario:  req.Scenario,
 		DatasetProject:   req.Project,
 		DatasetLevel:     req.Level,
 		DatasetRoot:      s.mgr.datasetRoot,
+		DatasetManifest:  req.DatasetManifest,
 		ConfigPath:       s.configPath,
 		Mode:             contracts.RunMode(mode),
 		DryRun:           req.DryRun,
@@ -3697,6 +3701,17 @@ func (s *Server) handleRunReportHTML(w http.ResponseWriter, r *http.Request, run
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
+}
+
+func normalizeBenchmarkProfile(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "small", "medium", "large":
+		return strings.ToLower(strings.TrimSpace(value))
+	case "custom":
+		return "custom"
+	default:
+		return ""
+	}
 }
 
 func splitTrim(s string) []string {

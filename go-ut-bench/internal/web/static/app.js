@@ -145,11 +145,17 @@
     dbReportFilter: { run_id:'' },
     dbRunArtifactFilter: { run_id:'' },
     form: {
-      run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill',skill_version:''}], languages:[], class:'self_contained', scenario:'', level:'',
-      max_samples:1, workers:4, mode:'full', phase:'full', source_run_id:'', manifest_path:'', evaluation_path:'',
-      dry_run:false, reuse_generated:true, reuse_evaluation:false, mutation_enabled:true,
+      run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill',skill_version:''}],
+      benchmark_profile:'small', dataset_manifest:'./configs/dataset_small.json', languages:['python','go'], class:'self_contained', scenario:'', level:'l1',
+      max_samples:0, workers:4, mode:'full', phase:'full', source_run_id:'', manifest_path:'', evaluation_path:'',
+      dry_run:false, reuse_generated:true, reuse_evaluation:false, mutation_enabled:false,
       mutation_timeout:1800, mutation_policy:'warn', ingest:true, use_docker:true,
     },
+    benchmarkProfiles: [
+      { key:'small', label:'small', title:'冒烟验证', manifest:'./configs/dataset_small.json', languages:['python','go'], level:'l1', mutation:false, samples:'40', detail:'快速确认生成、评估、报告链路。' },
+      { key:'medium', label:'medium', title:'对比实验', manifest:'./configs/dataset_medium.json', languages:['python','go','java','cpp'], level:'l1,l2', mutation:true, samples:'480', detail:'启用 mutation 与断言密度，用于模型/prompt/agent/skill 对比。' },
+      { key:'large', label:'large', title:'正式基准', manifest:'./configs/dataset_large.json', languages:['python','go','java','cpp'], level:'l1,l2,l3', mutation:true, samples:'800', detail:'固定全量 manifest，适合产出正式可复现报告。' },
+    ],
     env: null,
     envChecking: false,
     toast: '',
@@ -807,6 +813,22 @@
       return this.form.languages.length
     },
 
+    get selectedBenchmarkProfile() {
+      return (this.benchmarkProfiles || []).find(p => p.key === this.form.benchmark_profile) || null
+    },
+
+    get benchmarkProfileSummary() {
+      const p = this.selectedBenchmarkProfile
+      if (!p) return '自定义配置'
+      const mutation = p.mutation ? 'mutation 开启' : 'mutation 关闭'
+      return `${p.title} · ${p.samples} 样本 · ${mutation}`
+    },
+
+    get benchmarkMutationHint() {
+      if (this.form.benchmark_profile !== 'medium' && this.form.benchmark_profile !== 'large') return ''
+      return 'medium/large 会启用 mutation；Java/C++ 建议优先使用 Docker 镜像，确保 pitest、mull 等工具链可用。'
+    },
+
     get selectedSubjectCount() {
       return (this.form.combinations || []).filter(c => c.model).length
     },
@@ -1211,6 +1233,8 @@
         combinations: combos.length ? combos : [{ _id: 1, framework: 'model_api', model: models[0] || this._comboModels('model_api')[0] || '', skill: 'no_skill', skill_version: '' }],
         models: combos.length ? [] : models,
         languages: Array.isArray(spec.languages) ? spec.languages : [],
+        benchmark_profile: spec.benchmark_profile || 'custom',
+        dataset_manifest: spec.dataset_manifest || '',
         class: Array.isArray(spec.dataset_classes) ? spec.dataset_classes.join(',') : '',
         scenario: spec.dataset_scenario || '',
         project: spec.dataset_project || '',
@@ -1283,6 +1307,27 @@
         seen.add(combo.model); out.push(combo.model)
       }
       return out.length ? out : subjects.map(s => String(s).split('__')[1]).filter(Boolean)
+    },
+
+    applyBenchmarkProfile(key) {
+      const profile = (this.benchmarkProfiles || []).find(p => p.key === key)
+      if (!profile) return
+      this.form.benchmark_profile = profile.key
+      this.form.dataset_manifest = profile.manifest
+      this.form.languages = [...profile.languages]
+      this.form.class = 'self_contained'
+      this.form.scenario = ''
+      this.form.project = ''
+      this.form.level = profile.level
+      this.form.max_samples = 0
+      this.form.mutation_enabled = !!profile.mutation
+      if (profile.key === 'large') this.form.ingest = true
+    },
+
+    markBenchmarkCustom() {
+      if (['small', 'medium', 'large'].includes(this.form.benchmark_profile)) {
+        this.form.benchmark_profile = 'custom'
+      }
     },
 
     datasetScenariosForClass(className) {
@@ -3480,11 +3525,13 @@
           run_id: runId,
           models: payload.models || [],
           subjects: payload.subjects || [],
+          benchmark_profile: payload.benchmark_profile || '',
           languages: payload.languages || [],
           dataset_classes: payload.class ? String(payload.class).split(',').map(s => s.trim()).filter(Boolean) : [],
           dataset_scenario: payload.scenario || '',
           dataset_project: payload.project || '',
           dataset_level: payload.level || '',
+          dataset_manifest: payload.dataset_manifest || '',
           max_samples: payload.max_samples,
           workers: payload.workers,
           reuse_generated: payload.reuse_generated !== false,

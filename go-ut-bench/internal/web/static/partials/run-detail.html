@@ -18,6 +18,7 @@
                   <span>被测对象: <span style="color:var(--fg)" x-text="runSubjectSummary(currentRun)"></span></span>
                   <span>模型: <span style="color:var(--fg)" x-text="runModelSummary(currentRun)"></span></span>
                   <span>语言: <span style="color:var(--fg)" x-text="(currentRun.spec?.languages ?? []).join(', ') || '—'"></span></span>
+                  <span>规格: <span style="color:var(--fg)" x-text="currentRun.spec?.benchmark_profile || '—'"></span></span>
                   <span>类型: <span style="color:var(--fg)" x-text="(currentRun.spec?.dataset_classes ?? []).join(', ') || '—'"></span></span>
                   <span>场景: <span style="color:var(--fg)" x-text="currentRun.spec?.dataset_scenario || '—'"></span></span>
                   <span x-show="currentRun.spec?.dataset_project">项目: <span style="color:var(--fg)" x-text="currentRun.spec?.dataset_project"></span></span>

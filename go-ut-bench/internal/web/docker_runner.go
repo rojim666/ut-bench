@@ -197,6 +197,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if len(spec.DatasetClasses) > 0 {
 			a = append(a, "--class", strings.Join(spec.DatasetClasses, ","))
 		}
+		if spec.DatasetManifest != "" {
+			a = append(a, "--dataset-manifest", dockerConfigPath(spec.DatasetManifest))
+		}
 		if spec.DatasetScenario != "" {
 			a = append(a, "--scenario", spec.DatasetScenario)
 		}
@@ -224,9 +227,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if spec.ReuseEvaluation {
 			a = append(a, "--reuse-evaluation", "--db-path", "/app/storage/utbench.db")
 		}
-		if spec.MutationEnabled {
-			a = append(a, "--mutation-enabled")
-		}
+		a = append(a, fmt.Sprintf("--mutation-enabled=%t", spec.MutationEnabled))
 		if spec.MutationTimeout > 0 {
 			a = append(a, "--mutation-timeout", fmt.Sprintf("%d", spec.MutationTimeout))
 		}
@@ -255,6 +256,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		}
 		if len(spec.DatasetClasses) > 0 {
 			a = append(a, "--class", strings.Join(spec.DatasetClasses, ","))
+		}
+		if spec.DatasetManifest != "" {
+			a = append(a, "--dataset-manifest", dockerConfigPath(spec.DatasetManifest))
 		}
 		if spec.DatasetScenario != "" {
 			a = append(a, "--scenario", spec.DatasetScenario)
@@ -290,9 +294,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 			manifestPath = dockerContainerPathForMountedFile(root, manifestPath)
 		}
 		a = append(a, "--manifest", manifestPath)
-		if spec.MutationEnabled {
-			a = append(a, "--mutation-enabled")
-		}
+		a = append(a, fmt.Sprintf("--mutation-enabled=%t", spec.MutationEnabled))
 		if spec.MutationTimeout > 0 {
 			a = append(a, "--mutation-timeout", fmt.Sprintf("%d", spec.MutationTimeout))
 		}
@@ -343,6 +345,21 @@ func dockerContainerPathForMountedFile(projectRoot, filePath string) string {
 		return path.Join("/app", slash[len(root)+1:])
 	}
 	return slashRaw
+}
+
+func dockerConfigPath(filePath string) string {
+	raw := strings.TrimSpace(filePath)
+	if raw == "" {
+		return raw
+	}
+	slash := filepath.ToSlash(raw)
+	if strings.HasPrefix(slash, "/app/") {
+		return path.Clean(slash)
+	}
+	if strings.HasPrefix(slash, "configs/") {
+		return path.Join("/app", slash)
+	}
+	return path.Join("/app/configs", filepath.Base(raw))
 }
 
 func resolveDockerHostPath(projectRoot, requested, fallbackName string) string {

@@ -107,6 +107,23 @@ func TestBuildDockerRunArgsPassesReuseGeneratedWithDBPath(t *testing.T) {
 	mustContain(t, joined, "--db-path /app/storage/utbench.db")
 }
 
+func TestBuildDockerRunArgsPassesBenchmarkManifestAndMutationFalse(t *testing.T) {
+	spec := contracts.RunSpec{
+		RunID:           "run-1",
+		Models:          []string{"deepseek"},
+		Languages:       []string{"python", "go"},
+		DatasetManifest: "./configs/dataset_small.json",
+		MutationEnabled: false,
+	}
+	cfg := DockerConfig{EvalImageName: "utbench:latest", ProjectRoot: "/repo"}
+
+	args := buildDockerRunArgs(spec, orchestrator.Options{}, cfg)
+	joined := strings.Join(args, " ")
+
+	mustContain(t, joined, "--dataset-manifest /app/configs/dataset_small.json")
+	mustContain(t, joined, "--mutation-enabled=false")
+}
+
 func TestBuildDockerEvaluateArgsMapsWindowsRelativeManifest(t *testing.T) {
 	spec := contracts.RunSpec{RunID: "run-1"}
 	cfg := DockerConfig{EvalImageName: "utbench:latest", ProjectRoot: `F:\repo\go-ut-bench`}
