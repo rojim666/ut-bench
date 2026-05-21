@@ -781,3 +781,10 @@ func TestGenerateWithCLIAgentFailsOnSandboxPreflight(t *testing.T) {
 		t.Fatalf("expected failed preflight checks, got %+v", result.Trace.PreflightChecks)
 	}
 }
+
+func TestFrameworkForbiddenCommandPatternsDefaultAllowsDependencyInstall(t *testing.T) {
+	got := frameworkForbiddenCommandPatterns(agentconfig.FrameworkSpec{})
+	if len(got) != 0 {
+		t.Fatalf("expected no default forbidden command patterns, got %+v", got)
+	}
+}

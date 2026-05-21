@@ -115,6 +115,9 @@ func runDockerSandbox(ctx context.Context, req SandboxRunRequest, timeout int) (
 		if roPath == "" {
 			continue
 		}
+		if mapped, ok := mapContainerPathToDockerHost(roPath); ok {
+			roPath = mapped
+		}
 		// 将相对路径转换为绝对路径，Docker 要求绝对路径
 		if !filepath.IsAbs(roPath) {
 			if absPath, err := filepath.Abs(roPath); err == nil {
@@ -149,6 +152,9 @@ func resolveDockerWorkspaceMount(req SandboxRunRequest) (string, error) {
 	workspace := strings.TrimSpace(req.Workspace)
 	if workspace == "" {
 		return "", fmt.Errorf("docker sandbox workspace is empty")
+	}
+	if mapped, ok := mapContainerPathToDockerHost(workspace); ok {
+		return mapped, nil
 	}
 	hostOutputRoot := strings.TrimSpace(os.Getenv("UTBENCH_SANDBOX_HOST_OUTPUT_ROOT"))
 	containerOutputRoot := strings.TrimSpace(os.Getenv("UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT"))
@@ -185,6 +191,34 @@ func resolveDockerWorkspaceMount(req SandboxRunRequest) (string, error) {
 		return "", fmt.Errorf("docker sandbox workspace %s looks container-local; set UTBENCH_SANDBOX_HOST_OUTPUT_ROOT to the host artifacts path when using DOOD", workspace)
 	}
 	return workspace, nil
+}
+
+func mapContainerPathToDockerHost(value string) (string, bool) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return "", false
+	}
+	pairs := [][2]string{
+		{os.Getenv("UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT"), os.Getenv("UTBENCH_SANDBOX_HOST_OUTPUT_ROOT")},
+		{os.Getenv("UTBENCH_SANDBOX_CONTAINER_DATASET_ROOT"), os.Getenv("UTBENCH_SANDBOX_HOST_DATASET_ROOT")},
+		{os.Getenv("UTBENCH_SANDBOX_CONTAINER_PROJECT_ROOT"), os.Getenv("UTBENCH_SANDBOX_HOST_PROJECT_ROOT")},
+	}
+	slashRaw := filepath.ToSlash(raw)
+	for _, pair := range pairs {
+		containerRoot := strings.TrimRight(filepath.ToSlash(strings.TrimSpace(pair[0])), "/")
+		hostRoot := strings.TrimSpace(pair[1])
+		if containerRoot == "" || hostRoot == "" {
+			continue
+		}
+		if slashRaw == containerRoot {
+			return filepath.ToSlash(hostRoot), true
+		}
+		if strings.HasPrefix(slashRaw, containerRoot+"/") {
+			rel := strings.TrimPrefix(slashRaw, containerRoot+"/")
+			return filepath.ToSlash(filepath.Join(hostRoot, filepath.FromSlash(rel))), true
+		}
+	}
+	return "", false
 }
 
 func runLocalSandbox(ctx context.Context, req SandboxRunRequest) (SandboxRunResult, error) {

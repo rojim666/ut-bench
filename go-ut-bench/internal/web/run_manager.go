@@ -293,10 +293,7 @@ func (m *RunManager) execute(entry *RunEntry, spec contracts.RunSpec, opts orche
 
 	var err error
 	if entry.UseDocker {
-		// Docker 模式下拆分流水线：generation 在宿主机执行（agent 沙箱需要宿主机 Docker），
-		// evaluation 在 eval 容器内执行（需要语言工具链）。
-		// 单独的 evaluate/report phase 直接进容器。
-		err = m.executeDockerSplit(ctx, entry, spec, opts)
+		err = m.executeDockerUnified(ctx, entry, spec, opts)
 	} else {
 		err = m.executeInProcess(ctx, entry, spec, opts)
 	}
@@ -543,106 +540,21 @@ func (m *RunManager) executeInProcess(ctx context.Context, entry *RunEntry, spec
 	return err
 }
 
-// executeDockerSplit 拆分流水线：generation 在宿主机执行，evaluation 在 eval 容器内执行。
-//
-// Agent 沙箱（opencode 等 CLI Agent）需要宿主机 Docker 来启动沙箱容器，
-// 而评测工具链（compile/test/coverage/mutation）在 eval 容器内。
-// 因此完整流水线拆为三步：
-//  1. generate — 宿主机 in-process（agent 沙箱可用宿主机 Docker）
-//  2. evaluate — eval 容器（语言工具链齐全）
-//  3. report   — 宿主机 in-process（纯数据聚合，不需要工具链）
-//
-// 单独的 evaluate/report phase 直接进容器执行。
-func (m *RunManager) executeDockerSplit(ctx context.Context, entry *RunEntry, spec contracts.RunSpec, opts orchestrator.Options) error {
+// executeDockerUnified 在同一个 utbench 容器内执行所选 phase。
+func (m *RunManager) executeDockerUnified(ctx context.Context, entry *RunEntry, spec contracts.RunSpec, opts orchestrator.Options) error {
 	phase := opts.Phase
 	if phase == "" {
 		phase = "full"
 	}
-
-	// 单独的 report — 直接进 eval 容器。
-	if phase == "report" {
-		return runInDocker(ctx, entry, spec, opts, m.dockerCfg)
-	}
-
-	// 单独的 evaluate — 容器内评测 + 宿主机报告。
 	if phase == "evaluate" {
-		entry.appendLog(fmt.Sprintf("[%s] phase 1/2: evaluate (docker: %s)", logTS(), m.dockerCfg.EffectiveEvalImage()))
 		evalOpts, err := m.dockerEvaluateOptions(spec, opts)
 		if err != nil {
 			return fmt.Errorf("prepare docker manifest failed: %w", err)
 		}
-		if err := runInDocker(ctx, entry, spec, evalOpts, m.dockerCfg); err != nil {
-			return fmt.Errorf("evaluate phase failed: %w", err)
-		}
-		entry.appendLog(fmt.Sprintf("[%s] evaluate phase completed", logTS()))
-
-		entry.appendLog(fmt.Sprintf("[%s] phase 2/2: report (in-process)", logTS()))
-		reportOpts := orchestrator.Options{
-			Phase:       "report",
-			SourceRunID: spec.RunID,
-		}
-		if err := m.executeInProcess(ctx, entry, spec, reportOpts); err != nil {
-			return fmt.Errorf("report phase failed: %w", err)
-		}
-		return nil
+		opts = evalOpts
 	}
-
-	// phase == "full" 或 "generate"：先在宿主机跑 generation。
-	// 设置路径映射环境变量，使 sandbox 代码能将相对 workspace 路径转换为 Docker 需要的绝对路径。
-	hostOutputRoot := filepath.Join(strings.TrimRight(m.dockerCfg.ProjectRoot, `/\`), "artifacts")
-	os.Setenv("UTBENCH_SANDBOX_HOST_OUTPUT_ROOT", hostOutputRoot)
-	os.Setenv("UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT", spec.OutputRoot)
-	defer func() {
-		os.Unsetenv("UTBENCH_SANDBOX_HOST_OUTPUT_ROOT")
-		os.Unsetenv("UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT")
-	}()
-	entry.appendLog(fmt.Sprintf("[%s] phase 1/2: generate (in-process, agent sandbox uses host Docker)", logTS()))
-	genOpts := orchestrator.Options{
-		Phase:       "generate",
-		SourceRunID: spec.RunID,
-	}
-	if err := m.executeInProcess(ctx, entry, spec, genOpts); err != nil {
-		return fmt.Errorf("generate phase failed: %w", err)
-	}
-	entry.appendLog(fmt.Sprintf("[%s] generate phase completed", logTS()))
-
-	// 清理 generate 阶段可能残留的 sandbox 子容器
-	killSandboxContainers(spec.RunID)
-
-	// generate-only 模式到此结束。
-	if phase == "generate" {
-		return nil
-	}
-
-	// phase == "full"：进 eval 容器跑 evaluate + report。
-	entry.appendLog(fmt.Sprintf("[%s] phase 2/2: evaluate+report (docker: %s)", logTS(), m.dockerCfg.EffectiveEvalImage()))
-	dockerManifestPath, err := m.prepareDockerGeneratedManifest(spec)
-	if err != nil {
-		return fmt.Errorf("prepare docker manifest failed: %w", err)
-	}
-	evalOpts := orchestrator.Options{
-		Phase:        "evaluate",
-		SourceRunID:  spec.RunID,
-		ManifestPath: dockerManifestPath,
-		Ingest:       opts.Ingest,
-		DBPath:       opts.DBPath,
-	}
-	if err := runInDocker(ctx, entry, spec, evalOpts, m.dockerCfg); err != nil {
-		return fmt.Errorf("evaluate phase failed: %w", err)
-	}
-	entry.appendLog(fmt.Sprintf("[%s] evaluate phase completed", logTS()))
-
-	// 报告生成在宿主机 in-process 执行（纯数据聚合 + 模板渲染，不需要语言工具链）。
-	entry.appendLog(fmt.Sprintf("[%s] phase 3/3: report (in-process)", logTS()))
-	reportOpts := orchestrator.Options{
-		Phase:       "report",
-		SourceRunID: spec.RunID,
-	}
-	if err := m.executeInProcess(ctx, entry, spec, reportOpts); err != nil {
-		return fmt.Errorf("report phase failed: %w", err)
-	}
-
-	return nil
+	entry.appendLog(fmt.Sprintf("[%s] phase: %s (docker unified: %s)", logTS(), phase, m.dockerCfg.EffectiveEvalImage()))
+	return runInDocker(ctx, entry, spec, opts, m.dockerCfg)
 }
 
 func (m *RunManager) dockerEvaluateOptions(spec contracts.RunSpec, opts orchestrator.Options) (orchestrator.Options, error) {

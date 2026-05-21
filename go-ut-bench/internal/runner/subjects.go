@@ -759,27 +759,7 @@ func frameworkForbiddenCommandPatterns(fw agentconfig.FrameworkSpec) []string {
 	if len(patterns) > 0 {
 		return patterns
 	}
-	return []string{
-		"apt-get update",
-		"apt-get install",
-		"apt install",
-		"apk add",
-		"yum install",
-		"dnf install",
-		"zypper install",
-		"pacman -s",
-		"pip install",
-		"pip3 install",
-		"python -m pip install",
-		"python3 -m pip install",
-		"uv pip install",
-		"poetry add",
-		"npm install",
-		"pnpm add",
-		"yarn add",
-		"go install ",
-		"cargo install ",
-	}
+	return nil
 }
 
 func normalizeFrameworkLookupKey(value string) string {

@@ -5,8 +5,8 @@ package web
 import (
 	"archive/zip"
 	"context"
-	"database/sql"
 	"crypto/sha256"
+	"database/sql"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -2473,7 +2473,6 @@ func buildAgentFrameworkYAMLNode(req createAgentFrameworkRequest, command string
 			"cpu", scalarNode("2"),
 		),
 		"preflight", defaultPreflightNode(languages),
-		"forbidden_command_patterns", stringSeqNode(defaultForbiddenCommandPatterns()),
 		"env_from_host", stringSeqNode(uniqueNonEmptyStrings(req.EnvFromHost)),
 		"command", literalNode(command),
 		"compatible_languages", stringSeqNode(languages),
@@ -2539,14 +2538,6 @@ func defaultPreflightNode(languages []string) *yaml.Node {
 		}
 	}
 	return node
-}
-
-func defaultForbiddenCommandPatterns() []string {
-	return []string{
-		"apt-get update", "apt-get install", "apt install", "apk add", "yum install", "dnf install",
-		"pip install", "pip3 install", "python -m pip install", "python3 -m pip install",
-		"npm install", "yarn add", "pnpm add",
-	}
 }
 
 func uniqueNonEmptyStrings(values []string) []string {

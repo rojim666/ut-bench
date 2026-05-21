@@ -1,0 +1,285 @@
+{
+    "level":  "l1",
+    "samples":  [
+                    {
+                        "id":  "boundary_000",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "boundary",
+                        "path":  "go/go_code_files_self_contained/boundary/boundary_000.go"
+                    },
+                    {
+                        "id":  "boundary_001",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "boundary",
+                        "path":  "go/go_code_files_self_contained/boundary/boundary_001.go"
+                    },
+                    {
+                        "id":  "boundary_002",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "boundary",
+                        "path":  "go/go_code_files_self_contained/boundary/boundary_002.go"
+                    },
+                    {
+                        "id":  "boundary_003",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "boundary",
+                        "path":  "go/go_code_files_self_contained/boundary/boundary_003.go"
+                    },
+                    {
+                        "id":  "boundary_004",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "boundary",
+                        "path":  "go/go_code_files_self_contained/boundary/boundary_004.go"
+                    },
+                    {
+                        "id":  "complex_dependency_000",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "complex_dependency",
+                        "path":  "go/go_code_files_self_contained/complex_dependency/complex_dependency_000.go"
+                    },
+                    {
+                        "id":  "complex_dependency_001",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "complex_dependency",
+                        "path":  "go/go_code_files_self_contained/complex_dependency/complex_dependency_001.go"
+                    },
+                    {
+                        "id":  "complex_dependency_002",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "complex_dependency",
+                        "path":  "go/go_code_files_self_contained/complex_dependency/complex_dependency_002.go"
+                    },
+                    {
+                        "id":  "complex_dependency_003",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "complex_dependency",
+                        "path":  "go/go_code_files_self_contained/complex_dependency/complex_dependency_003.go"
+                    },
+                    {
+                        "id":  "complex_dependency_004",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "complex_dependency",
+                        "path":  "go/go_code_files_self_contained/complex_dependency/complex_dependency_004.go"
+                    },
+                    {
+                        "id":  "interface_mock_000",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "interface_mock",
+                        "path":  "go/go_code_files_self_contained/interface_mock/interface_mock_000.go"
+                    },
+                    {
+                        "id":  "interface_mock_001",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "interface_mock",
+                        "path":  "go/go_code_files_self_contained/interface_mock/interface_mock_001.go"
+                    },
+                    {
+                        "id":  "interface_mock_002",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "interface_mock",
+                        "path":  "go/go_code_files_self_contained/interface_mock/interface_mock_002.go"
+                    },
+                    {
+                        "id":  "interface_mock_003",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "interface_mock",
+                        "path":  "go/go_code_files_self_contained/interface_mock/interface_mock_003.go"
+                    },
+                    {
+                        "id":  "interface_mock_004",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "interface_mock",
+                        "path":  "go/go_code_files_self_contained/interface_mock/interface_mock_004.go"
+                    },
+                    {
+                        "id":  "simple_function_000",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "simple_function",
+                        "path":  "go/go_code_files_self_contained/simple_function/simple_function_000.go"
+                    },
+                    {
+                        "id":  "simple_function_001",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "simple_function",
+                        "path":  "go/go_code_files_self_contained/simple_function/simple_function_001.go"
+                    },
+                    {
+                        "id":  "simple_function_002",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "simple_function",
+                        "path":  "go/go_code_files_self_contained/simple_function/simple_function_002.go"
+                    },
+                    {
+                        "id":  "simple_function_003",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "simple_function",
+                        "path":  "go/go_code_files_self_contained/simple_function/simple_function_003.go"
+                    },
+                    {
+                        "id":  "simple_function_004",
+                        "language":  "go",
+                        "category":  "self_contained",
+                        "scenario":  "simple_function",
+                        "path":  "go/go_code_files_self_contained/simple_function/simple_function_004.go"
+                    },
+                    {
+                        "id":  "boundary_000",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "boundary",
+                        "path":  "python/python_code_files_self_contained/boundary/boundary_000.py"
+                    },
+                    {
+                        "id":  "boundary_001",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "boundary",
+                        "path":  "python/python_code_files_self_contained/boundary/boundary_001.py"
+                    },
+                    {
+                        "id":  "boundary_002",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "boundary",
+                        "path":  "python/python_code_files_self_contained/boundary/boundary_002.py"
+                    },
+                    {
+                        "id":  "boundary_003",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "boundary",
+                        "path":  "python/python_code_files_self_contained/boundary/boundary_003.py"
+                    },
+                    {
+                        "id":  "boundary_004",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "boundary",
+                        "path":  "python/python_code_files_self_contained/boundary/boundary_004.py"
+                    },
+                    {
+                        "id":  "complex_dependency_000",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "complex_dependency",
+                        "path":  "python/python_code_files_self_contained/complex_dependency/complex_dependency_000.py"
+                    },
+                    {
+                        "id":  "complex_dependency_001",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "complex_dependency",
+                        "path":  "python/python_code_files_self_contained/complex_dependency/complex_dependency_001.py"
+                    },
+                    {
+                        "id":  "complex_dependency_002",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "complex_dependency",
+                        "path":  "python/python_code_files_self_contained/complex_dependency/complex_dependency_002.py"
+                    },
+                    {
+                        "id":  "complex_dependency_003",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "complex_dependency",
+                        "path":  "python/python_code_files_self_contained/complex_dependency/complex_dependency_003.py"
+                    },
+                    {
+                        "id":  "complex_dependency_004",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "complex_dependency",
+                        "path":  "python/python_code_files_self_contained/complex_dependency/complex_dependency_004.py"
+                    },
+                    {
+                        "id":  "interface_mock_000",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "interface_mock",
+                        "path":  "python/python_code_files_self_contained/interface_mock/interface_mock_000.py"
+                    },
+                    {
+                        "id":  "interface_mock_001",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "interface_mock",
+                        "path":  "python/python_code_files_self_contained/interface_mock/interface_mock_001.py"
+                    },
+                    {
+                        "id":  "interface_mock_002",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "interface_mock",
+                        "path":  "python/python_code_files_self_contained/interface_mock/interface_mock_002.py"
+                    },
+                    {
+                        "id":  "interface_mock_003",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "interface_mock",
+                        "path":  "python/python_code_files_self_contained/interface_mock/interface_mock_003.py"
+                    },
+                    {
+                        "id":  "interface_mock_004",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "interface_mock",
+                        "path":  "python/python_code_files_self_contained/interface_mock/interface_mock_004.py"
+                    },
+                    {
+                        "id":  "simple_function_000",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "simple_function",
+                        "path":  "python/python_code_files_self_contained/simple_function/simple_function_000.py"
+                    },
+                    {
+                        "id":  "simple_function_001",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "simple_function",
+                        "path":  "python/python_code_files_self_contained/simple_function/simple_function_001.py"
+                    },
+                    {
+                        "id":  "simple_function_002",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "simple_function",
+                        "path":  "python/python_code_files_self_contained/simple_function/simple_function_002.py"
+                    },
+                    {
+                        "id":  "simple_function_003",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "simple_function",
+                        "path":  "python/python_code_files_self_contained/simple_function/simple_function_003.py"
+                    },
+                    {
+                        "id":  "simple_function_004",
+                        "language":  "python",
+                        "category":  "self_contained",
+                        "scenario":  "simple_function",
+                        "path":  "python/python_code_files_self_contained/simple_function/simple_function_004.py"
+                    }
+                ]
+}

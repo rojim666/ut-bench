@@ -30,3 +30,17 @@ func TestResolveDockerWorkspaceMountFailsFastForContainerLocalPathWithoutHostOve
 		t.Fatalf("expected error for container-local workspace without host override")
 	}
 }
+
+func TestMapContainerPathToDockerHostMapsDatasetPath(t *testing.T) {
+	t.Setenv("UTBENCH_SANDBOX_CONTAINER_DATASET_ROOT", "/app/datasets")
+	t.Setenv("UTBENCH_SANDBOX_HOST_DATASET_ROOT", "/repo/datasets")
+
+	got, ok := mapContainerPathToDockerHost("/app/datasets/python/sample.py")
+	if !ok {
+		t.Fatalf("expected dataset path to be mapped")
+	}
+	want := "/repo/datasets/python/sample.py"
+	if got != want {
+		t.Fatalf("unexpected mapped path: got=%s want=%s", got, want)
+	}
+}

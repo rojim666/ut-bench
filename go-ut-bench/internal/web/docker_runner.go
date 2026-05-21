@@ -130,6 +130,12 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 	root := strings.TrimRight(cfg.ProjectRoot, `/\`)
 	datasetRoot := resolveDockerHostPath(root, spec.DatasetRoot, "datasets")
 	a = append(a,
+		"-e", "UTBENCH_SANDBOX_HOST_PROJECT_ROOT="+filepath.ToSlash(root),
+		"-e", "UTBENCH_SANDBOX_CONTAINER_PROJECT_ROOT=/app",
+		"-e", "UTBENCH_SANDBOX_HOST_OUTPUT_ROOT="+filepath.ToSlash(filepath.Join(root, "artifacts")),
+		"-e", "UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT=/app/artifacts",
+		"-e", "UTBENCH_SANDBOX_HOST_DATASET_ROOT="+filepath.ToSlash(datasetRoot),
+		"-e", "UTBENCH_SANDBOX_CONTAINER_DATASET_ROOT=/app/datasets",
 		"-v", datasetRoot+`:/app/datasets`,
 		"-v", root+`/artifacts:/app/artifacts`,
 		"-v", root+`/configs:/app/configs`,
@@ -138,9 +144,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		// Docker 镜像已预下载关键依赖，但此 mount 可缓存运行时新增的依赖。
 		"-v", root+`/.m2-cache:/root/.m2/repository`,
 	)
-	// 不挂载 docker.sock — 评测面不需要 Docker daemon。
-	// Agent 沙箱容器由宿主机控制面直接启动（见 executeDockerSplit）。
-	// 评测面自身只负责 compile/test/coverage/mutation。
+	a = append(a, "-v", "/var/run/docker.sock:/var/run/docker.sock")
+	// 统一容器内可能还会启动 CLI Agent 沙箱；挂载 docker.sock 后由内层
+	// utbench 通过 Docker-outside-of-Docker 启动这些子容器。
 
 	// Determine the CLI subcommand based on phase.
 	// Phase "full" (or empty) uses "run" command.

@@ -140,7 +140,6 @@ docker run --rm --env-file .env \
 
 ```text
 docker run --rm \
-  [--network none] \
   [--cpus ...] \
   [--memory ...] \
   -v <workspace>:/workspace \

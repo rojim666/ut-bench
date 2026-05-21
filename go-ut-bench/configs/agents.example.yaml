@@ -27,20 +27,6 @@ frameworks:
         - command -v opencode
       cpp:
         - command -v opencode
-    forbidden_command_patterns:
-      - apt-get update
-      - apt-get install
-      - apt install
-      - apk add
-      - yum install
-      - dnf install
-      - pip install
-      - pip3 install
-      - python -m pip install
-      - python3 -m pip install
-      - npm install
-      - yarn add
-      - pnpm add
     env:
       PATH: "/go/bin:/usr/local/go/bin:/opt/java/openjdk/bin:/usr/share/maven/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       XDG_CONFIG_HOME: "{{.ContainerWorkdir}}/.utbench/xdg-config"
@@ -114,20 +100,6 @@ frameworks:
         - command -v codebuddy
       cpp:
         - command -v codebuddy
-    forbidden_command_patterns:
-      - apt-get update
-      - apt-get install
-      - apt install
-      - apk add
-      - yum install
-      - dnf install
-      - pip install
-      - pip3 install
-      - python -m pip install
-      - python3 -m pip install
-      - npm install
-      - yarn add
-      - pnpm add
     env:
       PATH: "/go/bin:/usr/local/go/bin:/opt/java/openjdk/bin:/usr/share/maven/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       CODEBUDDY_CONFIG_DIR: "{{.ContainerWorkdir}}/.codebuddy"
@@ -197,20 +169,6 @@ frameworks:
         - command -v claude
       cpp:
         - command -v claude
-    forbidden_command_patterns:
-      - apt-get update
-      - apt-get install
-      - apt install
-      - apk add
-      - yum install
-      - dnf install
-      - pip install
-      - pip3 install
-      - python -m pip install
-      - python3 -m pip install
-      - npm install
-      - yarn add
-      - pnpm add
     env:
       PATH: "/go/bin:/usr/local/go/bin:/opt/java/openjdk/bin:/usr/share/maven/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       CLAUDE_CONFIG_DIR: "{{.ContainerWorkdir}}/.claude"

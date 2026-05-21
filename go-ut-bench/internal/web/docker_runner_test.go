@@ -24,6 +24,9 @@ func TestBuildDockerRunArgsUsesMountedSource(t *testing.T) {
 
 	mustContain(t, joined, "-v /repo/datasets:/app/datasets")
 	mustContain(t, joined, "-v /repo/artifacts:/app/artifacts")
+	mustContain(t, joined, "-e UTBENCH_SANDBOX_HOST_PROJECT_ROOT=/repo")
+	mustContain(t, joined, "-e UTBENCH_SANDBOX_CONTAINER_PROJECT_ROOT=/app")
+	mustContain(t, joined, "-v /var/run/docker.sock:/var/run/docker.sock")
 	mustContain(t, joined, "utbench:latest")
 	mustContain(t, joined, "--output-root /app/artifacts")
 	mustContain(t, joined, "--models deepseek")
