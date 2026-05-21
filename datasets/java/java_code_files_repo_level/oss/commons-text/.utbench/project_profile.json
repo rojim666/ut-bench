@@ -1,0 +1,16 @@
+﻿{
+    "schema_version":  "v0.1.0",
+    "dataset_class":  "repo_level",
+    "lang":  "java",
+    "scenario":  "oss",
+    "project_name":  "commons-text",
+    "repo_url":  "https://github.com/apache/commons-text.git",
+    "commit_sha":  "62b61201c265f9a1805b38137e01adfa8c00f06e",
+    "branch":  "master",
+    "license_file":  "LICENSE.txt",
+    "imported_at":  "2026-05-14T01:16:00",
+    "preprocessing_notes":  [
+                                "shallow cloned with depth 1",
+                                "excluded nested .git, .github, dependency caches, and common build/output directories"
+                            ]
+}

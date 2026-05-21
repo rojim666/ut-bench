@@ -1,0 +1,16 @@
+﻿{
+    "schema_version":  "v0.1.0",
+    "dataset_class":  "repo_level",
+    "lang":  "java",
+    "scenario":  "oss",
+    "project_name":  "java-diff-utils",
+    "repo_url":  "https://github.com/java-diff-utils/java-diff-utils.git",
+    "commit_sha":  "b35ebf420274e1cf18e322218ed92b713a166b18",
+    "branch":  "master",
+    "license_file":  "LICENSE",
+    "imported_at":  "2026-05-14T01:15:54",
+    "preprocessing_notes":  [
+                                "shallow cloned with depth 1",
+                                "excluded nested .git, .github, dependency caches, and common build/output directories"
+                            ]
+}

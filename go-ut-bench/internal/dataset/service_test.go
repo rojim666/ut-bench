@@ -159,6 +159,26 @@ func TestDiscoverSamplesAutoSynthesizesGoRepoLevelSamples(t *testing.T) {
 	}
 }
 
+func TestSynthesizeRepoLevelMetaSkipsSelfContainedGoDataset(t *testing.T) {
+	root := t.TempDir()
+	datasetRoot := filepath.Join(root, "datasets", "go")
+	sampleDir := filepath.Join(datasetRoot, "go_code_files_self_contained", "boundary")
+	if err := os.MkdirAll(sampleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(datasetRoot, "go.mod"), []byte("module example.com/datasets\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	samplePath := filepath.Join(sampleDir, "boundary_000.go")
+	if err := os.WriteFile(samplePath, []byte("package main\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if meta, ok := SynthesizeRepoLevelMeta(samplePath); ok {
+		t.Fatalf("expected no synthesized repo-level metadata for self_contained sample, got %+v", meta)
+	}
+}
+
 func TestDiscoverSamplesFiltersRepoLevelProject(t *testing.T) {
 	root := t.TempDir()
 	datasetRoot := filepath.Join(root, "datasets")

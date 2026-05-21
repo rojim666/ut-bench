@@ -1,0 +1,16 @@
+﻿{
+    "schema_version":  "v0.1.0",
+    "dataset_class":  "repo_level",
+    "lang":  "go",
+    "scenario":  "oss",
+    "project_name":  "go-playground-validator",
+    "repo_url":  "https://github.com/go-playground/validator.git",
+    "commit_sha":  "7c334e52092ad1224f0a2eed6bc77408374048b7",
+    "branch":  "master",
+    "license_file":  "LICENSE",
+    "imported_at":  "2026-05-14T01:15:45",
+    "preprocessing_notes":  [
+                                "shallow cloned with depth 1",
+                                "excluded nested .git, .github, dependency caches, and common build/output directories"
+                            ]
+}

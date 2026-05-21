@@ -43,10 +43,7 @@ func prepareGenerationReusePlan(
 				continue
 			}
 			taskID := taskKey(target.subject.Spec.ID, sample.Language, sample.ID)
-			promptMode := string(PromptModeFullFile)
-			if loadRepoLevelMetaForRunner(sample.Path) != nil {
-				promptMode = string(PromptModeRepoLevel)
-			}
+			promptMode := string(resolveGenerationStrategy(sample).PromptMode)
 			plan := generationTaskPlan{PromptMode: promptMode}
 			sourceCode, err := os.ReadFile(sample.Path)
 			if err != nil {

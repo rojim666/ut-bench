@@ -1,0 +1,16 @@
+﻿{
+    "schema_version":  "v0.1.0",
+    "dataset_class":  "repo_level",
+    "lang":  "go",
+    "scenario":  "oss",
+    "project_name":  "go-playground-form",
+    "repo_url":  "https://github.com/go-playground/form.git",
+    "commit_sha":  "3079d9a89d178e7eb2651bcae73e889c42683be1",
+    "branch":  "master",
+    "license_file":  "LICENSE",
+    "imported_at":  "2026-05-14T01:15:47",
+    "preprocessing_notes":  [
+                                "shallow cloned with depth 1",
+                                "excluded nested .git, .github, dependency caches, and common build/output directories"
+                            ]
+}

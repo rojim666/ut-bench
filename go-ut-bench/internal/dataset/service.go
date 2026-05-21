@@ -825,6 +825,9 @@ func SynthesizeRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool)
 	if strings.HasSuffix(base, "_test"+ext) || strings.HasPrefix(base, "test_") {
 		return nil, false
 	}
+	if isSelfContainedDatasetPath(samplePath) {
+		return nil, false
+	}
 	switch ext {
 	case ".go":
 		return synthesizeGoRepoLevelMeta(samplePath)
@@ -837,6 +840,15 @@ func SynthesizeRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool)
 	default:
 		return nil, false
 	}
+}
+
+func isSelfContainedDatasetPath(samplePath string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(samplePath), "/") {
+		if strings.Contains(strings.ToLower(part), "_self_contained") {
+			return true
+		}
+	}
+	return false
 }
 
 func synthesizeGoRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {

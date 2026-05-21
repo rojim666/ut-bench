@@ -235,7 +235,7 @@ func (s *Service) generateWithSubject(
 // 保留 helper 函数供 adapter 使用。
 
 func prepareAgentWorkspace(workRoot string, sample contracts.SampleRef) (string, error) {
-	if meta := loadRepoLevelMetaForRunner(sample.Path); meta != nil && meta.WorkspaceRoot != "" {
+	if meta := repoLevelMetaForSample(sample); meta != nil && meta.WorkspaceRoot != "" {
 		sourceRoot := meta.WorkspaceRoot
 		if !filepath.IsAbs(sourceRoot) {
 			sourceRoot = filepath.Join(filepath.Dir(sample.Path), sourceRoot)
@@ -261,7 +261,7 @@ func buildSampleEnvironmentSetupCommands(sample contracts.SampleRef, workRoot st
 	var commands []string
 	switch strings.ToLower(strings.TrimSpace(sample.Language)) {
 	case "python":
-		if meta := loadRepoLevelMetaForRunner(sample.Path); meta != nil && len(meta.Requirements) > 0 {
+		if meta := repoLevelMetaForSample(sample); meta != nil && len(meta.Requirements) > 0 {
 			requirements := shellJoinArgs(meta.Requirements)
 			if requirements != "" {
 				commands = append(commands, "python3 -m pip install --disable-pip-version-check "+requirements)
@@ -282,6 +282,21 @@ func buildSampleEnvironmentSetupCommands(sample contracts.SampleRef, workRoot st
 		}
 	}
 	return uniqueSortedStrings(commands)
+}
+
+func ensureAgentWorkspaceWritable(workRoot string) error {
+	if err := os.MkdirAll(filepath.Join(workRoot, ".utbench"), 0o777); err != nil {
+		return err
+	}
+	return filepath.WalkDir(workRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return os.Chmod(path, 0o777)
+		}
+		return nil
+	})
 }
 
 func injectSkillWorkspace(workRoot string, skill contracts.SkillSpec) (string, error) {
@@ -877,15 +892,7 @@ func findGeneratedTest(workRoot, preferred string, globs, changes []string, lang
 	if raw, err := os.ReadFile(preferred); err == nil && strings.TrimSpace(string(raw)) != "" {
 		return preferred
 	}
-	for _, pattern := range globs {
-		matches, _ := filepath.Glob(filepath.Join(workRoot, filepath.FromSlash(pattern)))
-		sort.Strings(matches)
-		for _, match := range matches {
-			if isTestFile(match, language) {
-				return match
-			}
-		}
-	}
+	_ = globs
 	for _, rel := range changes {
 		path := filepath.Join(workRoot, filepath.FromSlash(rel))
 		if isTestFile(path, language) {
@@ -920,6 +927,19 @@ func findGeneratedTest(workRoot, preferred string, globs, changes []string, lang
 		return nil
 	})
 	return found
+}
+
+func findGeneratedTestStrict(workRoot, preferred string, changes []string, language string) string {
+	if raw, err := os.ReadFile(preferred); err == nil && strings.TrimSpace(string(raw)) != "" {
+		return preferred
+	}
+	for _, rel := range changes {
+		path := filepath.Join(workRoot, filepath.FromSlash(rel))
+		if isTestFile(path, language) {
+			return path
+		}
+	}
+	return ""
 }
 
 func isTestFile(path, language string) bool {

@@ -401,6 +401,10 @@ type ingestContext struct {
 //   - *SQLiteStore: 存储实例
 //   - error: 打开过程中的错误
 func OpenSQLite(path string) (*SQLiteStore, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, os.ErrInvalid
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -409,7 +413,8 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 	// - journal_mode=WAL：读写并发不再互斥
 	// - busy_timeout=5000：写写仍串行，但驱动会重试 5s
 	// - synchronous=NORMAL：WAL 下安全，且写入更快
-	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	journalMode := sqliteJournalMode(path)
+	dsn := path + "?_pragma=journal_mode(" + journalMode + ")&_pragma=busy_timeout(10000)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -418,6 +423,17 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 	// 消除多 goroutine 抢锁导致的 BUSY；读路径走 WAL 不受影响。
 	db.SetMaxOpenConns(1)
 	return &SQLiteStore{db: db, path: path}, nil
+}
+
+func sqliteJournalMode(dbPath string) string {
+	if v := strings.ToUpper(strings.TrimSpace(os.Getenv("UTBENCH_SQLITE_JOURNAL_MODE"))); v != "" {
+		return v
+	}
+	slash := filepath.ToSlash(dbPath)
+	if strings.HasPrefix(slash, "/app/storage/") {
+		return "DELETE"
+	}
+	return "WAL"
 }
 
 // Close 关闭数据库连接

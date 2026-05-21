@@ -24,6 +24,8 @@ type DockerConfig struct {
 	EvalCPUs      string // optional Docker CPU limit for eval containers, e.g. "4"
 }
 
+const containerDefaultDBPath = "/tmp/utbench.db"
+
 func (c DockerConfig) EffectiveEvalImage() string {
 	if strings.TrimSpace(c.EvalImageName) != "" {
 		return strings.TrimSpace(c.EvalImageName)
@@ -129,6 +131,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 	// mirror those used in STARTUP_GUIDE.md.
 	root := strings.TrimRight(cfg.ProjectRoot, `/\`)
 	datasetRoot := resolveDockerHostPath(root, spec.DatasetRoot, "datasets")
+	dbPath := dockerDBPath(root, spec, opts)
 	a = append(a,
 		"-e", "UTBENCH_SANDBOX_HOST_PROJECT_ROOT="+filepath.ToSlash(root),
 		"-e", "UTBENCH_SANDBOX_CONTAINER_PROJECT_ROOT=/app",
@@ -136,6 +139,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		"-e", "UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT=/app/artifacts",
 		"-e", "UTBENCH_SANDBOX_HOST_DATASET_ROOT="+filepath.ToSlash(datasetRoot),
 		"-e", "UTBENCH_SANDBOX_CONTAINER_DATASET_ROOT=/app/datasets",
+		"-e", "UTBENCH_DB_PATH="+dbPath,
 		"-v", datasetRoot+`:/app/datasets`,
 		"-v", root+`/artifacts:/app/artifacts`,
 		"-v", root+`/configs:/app/configs`,
@@ -221,11 +225,14 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if spec.DryRun {
 			a = append(a, "--dry-run")
 		}
+		needsDBPath := false
 		if spec.ReuseGenerated {
-			a = append(a, "--reuse-generated", "--db-path", "/app/storage/utbench.db")
+			a = append(a, "--reuse-generated")
+			needsDBPath = true
 		}
 		if spec.ReuseEvaluation {
-			a = append(a, "--reuse-evaluation", "--db-path", "/app/storage/utbench.db")
+			a = append(a, "--reuse-evaluation")
+			needsDBPath = true
 		}
 		a = append(a, fmt.Sprintf("--mutation-enabled=%t", spec.MutationEnabled))
 		if spec.MutationTimeout > 0 {
@@ -238,7 +245,14 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 			a = append(a, "--test-timeout", fmt.Sprintf("%d", spec.TestTimeout))
 		}
 		if opts.Ingest {
-			a = append(a, "--ingest", "--db-path", "/app/storage/utbench.db")
+			a = append(a, "--ingest")
+			needsDBPath = true
+		}
+		if opts.StrictIngest {
+			a = append(a, "--strict-ingest")
+		}
+		if needsDBPath {
+			a = append(a, "--db-path", dbPath)
 		}
 
 	case "generate":
@@ -282,7 +296,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 			a = append(a, "--dry-run")
 		}
 		if spec.ReuseGenerated {
-			a = append(a, "--reuse-generated", "--db-path", "/app/storage/utbench.db")
+			a = append(a, "--reuse-generated", "--db-path", dbPath)
 		}
 
 	case "evaluate":
@@ -305,7 +319,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 			a = append(a, "--test-timeout", fmt.Sprintf("%d", spec.TestTimeout))
 		}
 		if spec.ReuseEvaluation {
-			a = append(a, "--reuse-evaluation", "--db-path", "/app/storage/utbench.db")
+			a = append(a, "--reuse-evaluation", "--db-path", dbPath)
 		}
 
 	case "report":
@@ -322,6 +336,51 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 	return wrapDockerSourceCommand(a, cfg)
 }
 
+func dockerDBPath(projectRoot string, spec contracts.RunSpec, opts orchestrator.Options) string {
+	if v := strings.TrimSpace(os.Getenv("UTBENCH_DB_PATH")); v != "" {
+		if isContainerDBPath(v) {
+			return path.Clean(filepath.ToSlash(v))
+		}
+		return dockerContainerPathForMountedFile(projectRoot, v)
+	}
+	raw := strings.TrimSpace(opts.DBPath)
+	if raw == "" {
+		raw = strings.TrimSpace(spec.DBPath)
+	}
+	if isDefaultDockerHostDBPath(projectRoot, raw) {
+		return containerDefaultDBPath
+	}
+	if isContainerDBPath(raw) {
+		return path.Clean(filepath.ToSlash(raw))
+	}
+	return dockerContainerPathForMountedFile(projectRoot, raw)
+}
+
+func isContainerDBPath(dbPath string) bool {
+	slash := filepath.ToSlash(strings.TrimSpace(dbPath))
+	return strings.HasPrefix(slash, "/app/") || strings.HasPrefix(slash, "/tmp/")
+}
+
+func isDefaultDockerHostDBPath(projectRoot, dbPath string) bool {
+	raw := strings.TrimSpace(dbPath)
+	if raw == "" {
+		return true
+	}
+	slashRaw := filepath.ToSlash(raw)
+	if slashRaw == "/app/storage/utbench.db" ||
+		slashRaw == "./storage/utbench.db" ||
+		slashRaw == "storage/utbench.db" {
+		return true
+	}
+	root := strings.TrimRight(filepath.ToSlash(filepath.Clean(projectRoot)), "/")
+	clean := filepath.Clean(raw)
+	if !filepath.IsAbs(clean) {
+		clean = filepath.Join(projectRoot, clean)
+	}
+	slash := filepath.ToSlash(filepath.Clean(clean))
+	return slash == path.Join(root, "storage", "utbench.db")
+}
+
 func dockerContainerPathForMountedFile(projectRoot, filePath string) string {
 	raw := strings.TrimSpace(filePath)
 	if raw == "" {
@@ -333,6 +392,14 @@ func dockerContainerPathForMountedFile(projectRoot, filePath string) string {
 	}
 
 	root := strings.TrimRight(filepath.ToSlash(filepath.Clean(projectRoot)), "/")
+	cleanSlashRaw := path.Clean(slashRaw)
+	if cleanSlashRaw == root {
+		return "/app"
+	}
+	if strings.HasPrefix(cleanSlashRaw, root+"/") {
+		return path.Join("/app", cleanSlashRaw[len(root)+1:])
+	}
+
 	clean := filepath.Clean(raw)
 	if !filepath.IsAbs(clean) {
 		clean = filepath.Join(projectRoot, clean)

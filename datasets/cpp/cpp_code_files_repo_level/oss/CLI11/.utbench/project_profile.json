@@ -1,0 +1,16 @@
+﻿{
+    "schema_version":  "v0.1.0",
+    "dataset_class":  "repo_level",
+    "lang":  "cpp",
+    "scenario":  "oss",
+    "project_name":  "CLI11",
+    "repo_url":  "https://github.com/CLIUtils/CLI11.git",
+    "commit_sha":  "12ba4ac4dbaa6489cb07e01be796e2bc074ef4f4",
+    "branch":  "main",
+    "license_file":  "LICENSE",
+    "imported_at":  "2026-05-14T01:16:05",
+    "preprocessing_notes":  [
+                                "shallow cloned with depth 1",
+                                "excluded nested .git, .github, dependency caches, and common build/output directories"
+                            ]
+}

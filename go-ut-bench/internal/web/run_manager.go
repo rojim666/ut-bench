@@ -331,10 +331,14 @@ func (m *RunManager) execute(entry *RunEntry, spec contracts.RunSpec, opts orche
 		killSandboxContainers(spec.RunID)
 	}
 
-	m.ingestRunArtifacts(entry, spec)
+	m.ingestRunArtifacts(entry, spec, opts)
 }
 
-func (m *RunManager) ingestRunArtifacts(entry *RunEntry, spec contracts.RunSpec) {
+func (m *RunManager) ingestRunArtifacts(entry *RunEntry, spec contracts.RunSpec, opts orchestrator.Options) {
+	if !opts.Ingest {
+		entry.appendLog(fmt.Sprintf("[%s] db ingest skipped: ingest disabled", logTS()))
+		return
+	}
 	runDir := filepath.Join(m.outputRoot, "runs", spec.RunID)
 	sqliteStore, err := store.OpenSQLite(m.dbPath)
 	if err != nil {

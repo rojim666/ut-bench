@@ -80,6 +80,7 @@ func NewService(logger *obs.Logger) *Service {
 //  5. 保存测试文件和元数据
 //  6. 生成清单文件
 func (s *Service) Generate(ctx context.Context, spec contracts.RunSpec, samples []contracts.SampleRef, reuseStore GenerationReuseStore) (Output, error) {
+	spec.OutputRoot = agentWorkspaceOutputRoot(spec.OutputRoot)
 	modelConfigs, err := loadModelConfigs(spec.ConfigPath, spec.Models)
 	if err != nil {
 		return Output{}, err

@@ -1,0 +1,16 @@
+﻿{
+    "schema_version":  "v0.1.0",
+    "dataset_class":  "repo_level",
+    "lang":  "go",
+    "scenario":  "oss",
+    "project_name":  "fatih-color",
+    "repo_url":  "https://github.com/fatih/color.git",
+    "commit_sha":  "ca25f6e17f118a5a259f3c2c0d395949d1103a5a",
+    "branch":  "main",
+    "license_file":  "LICENSE.md",
+    "imported_at":  "2026-05-14T01:15:43",
+    "preprocessing_notes":  [
+                                "shallow cloned with depth 1",
+                                "excluded nested .git, .github, dependency caches, and common build/output directories"
+                            ]
+}
