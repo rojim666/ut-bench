@@ -68,7 +68,7 @@
                 </div>
                 <div class="text-[12px] mt-1" style="color:var(--fg)">冒烟验证</div>
                 <div class="text-[11px] mt-1" style="color:var(--fg-muted)">快速确认生成、评估、报告链路。</div>
-                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">./configs/dataset_small.json</div>
+                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1</div>
               </button>
               <button type="button" class="text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'medium' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('medium')">
                 <div class="flex items-center justify-between gap-2">
@@ -77,7 +77,7 @@
                 </div>
                 <div class="text-[12px] mt-1" style="color:var(--fg)">对比实验</div>
                 <div class="text-[11px] mt-1" style="color:var(--fg-muted)">启用 mutation 与断言密度，用于模型/prompt/agent/skill 对比。</div>
-                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">./configs/dataset_medium.json</div>
+                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1 + datasets/l2</div>
               </button>
               <button type="button" class="text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'large' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('large')">
                 <div class="flex items-center justify-between gap-2">
@@ -86,12 +86,13 @@
                 </div>
                 <div class="text-[12px] mt-1" style="color:var(--fg)">正式基准</div>
                 <div class="text-[11px] mt-1" style="color:var(--fg-muted)">固定全量 manifest，适合产出正式可复现报告。</div>
-                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">./configs/dataset_large.json</div>
+                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1 + datasets/l2 + datasets/l3</div>
               </button>
             </div>
             <div class="mt-3 text-[12px] rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border);color:var(--fg-muted)">
               <div>当前规格：<b style="color:var(--fg)" x-text="form.benchmark_profile || 'custom'"></b> · <span x-text="benchmarkProfileSummary"></span></div>
               <div x-show="form.dataset_manifest" class="font-mono mt-1" x-text="'manifest=' + form.dataset_manifest"></div>
+              <div x-show="!form.dataset_manifest && form.level" class="font-mono mt-1" x-text="'levels=' + form.level"></div>
               <div x-show="form.benchmark_profile === 'custom'" class="mt-1" style="color:var(--yellow)">已手动修改语言或数据集筛选，本次运行会记录为 custom。</div>
               <div x-show="benchmarkMutationHint" class="mt-1" style="color:var(--yellow)" x-text="benchmarkMutationHint"></div>
             </div>

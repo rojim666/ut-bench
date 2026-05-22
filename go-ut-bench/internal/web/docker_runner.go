@@ -195,6 +195,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if spec.AgentsConfigPath != "" {
 			a = append(a, "--agents-config", path.Join("/app/configs", filepath.Base(spec.AgentsConfigPath)))
 		}
+		if spec.BenchmarkProfile != "" {
+			a = append(a, "--benchmark-profile", spec.BenchmarkProfile)
+		}
 		if len(spec.Subjects) > 0 {
 			a = append(a, "--subjects", strings.Join(spec.Subjects, ","))
 		}
@@ -264,6 +267,9 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		)
 		if spec.AgentsConfigPath != "" {
 			a = append(a, "--agents-config", path.Join("/app/configs", filepath.Base(spec.AgentsConfigPath)))
+		}
+		if spec.BenchmarkProfile != "" {
+			a = append(a, "--benchmark-profile", spec.BenchmarkProfile)
 		}
 		if len(spec.Subjects) > 0 {
 			a = append(a, "--subjects", strings.Join(spec.Subjects, ","))

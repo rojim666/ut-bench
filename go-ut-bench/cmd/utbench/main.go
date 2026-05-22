@@ -720,7 +720,8 @@ func runRun(args []string) error {
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
 	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	datasetManifest := fs.String("dataset-manifest", "", "Dataset manifest path")
-	datasetLevel := fs.String("level", "", "Dataset level")
+	benchmarkProfile := fs.String("benchmark-profile", "", "Benchmark profile (small, medium, large)")
+	datasetLevel := fs.String("level", "", "Dataset level directories, comma-separated (for example l1 or l1,l2)")
 	datasetClass := fs.String("class", "self_contained", "Dataset class(es), comma-separated (self_contained, module_level)")
 	datasetScenario := fs.String("scenario", "", "Dataset scenario (boundary, simple_function, complex_dependency, interface_mock)")
 	datasetProject := fs.String("project", "", "Repo-level dataset project filter")
@@ -756,6 +757,7 @@ func runRun(args []string) error {
 		OutputRoot:       *outputRoot,
 		DatasetRoot:      *datasetRoot,
 		DatasetManifest:  *datasetManifest,
+		BenchmarkProfile: dataset.NormalizeBenchmarkProfile(*benchmarkProfile),
 		DatasetLevel:     *datasetLevel,
 		DatasetClasses:   parseCommaList(*datasetClass),
 		DatasetScenario:  *datasetScenario,
@@ -778,6 +780,7 @@ func runRun(args []string) error {
 		RunID:            *runID,
 		CreatedAtUTC:     time.Now().UTC(),
 	}
+	spec = dataset.ApplyBenchmarkProfile(spec)
 	ensureRunID(&spec)
 
 	logDir := filepath.Join(*outputRoot, "runs", spec.RunID, "logs")
@@ -836,7 +839,8 @@ func runGenerate(args []string) error {
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
 	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	datasetManifest := fs.String("dataset-manifest", "", "Dataset manifest path")
-	datasetLevel := fs.String("level", "", "Dataset level")
+	benchmarkProfile := fs.String("benchmark-profile", "", "Benchmark profile (small, medium, large)")
+	datasetLevel := fs.String("level", "", "Dataset level directories, comma-separated (for example l1 or l1,l2)")
 	datasetClass := fs.String("class", "self_contained", "Dataset class")
 	datasetScenario := fs.String("scenario", "", "Dataset scenario")
 	datasetProject := fs.String("project", "", "Repo-level dataset project filter")
@@ -861,6 +865,7 @@ func runGenerate(args []string) error {
 		OutputRoot:       *outputRoot,
 		DatasetRoot:      *datasetRoot,
 		DatasetManifest:  *datasetManifest,
+		BenchmarkProfile: dataset.NormalizeBenchmarkProfile(*benchmarkProfile),
 		DatasetLevel:     *datasetLevel,
 		DatasetClasses:   parseCommaList(*datasetClass),
 		DatasetScenario:  *datasetScenario,
@@ -877,6 +882,7 @@ func runGenerate(args []string) error {
 		RunID:            *runID,
 		CreatedAtUTC:     time.Now().UTC(),
 	}
+	spec = dataset.ApplyBenchmarkProfile(spec)
 	ensureRunID(&spec)
 
 	logger := obs.NewLogger(*verbose, "")
@@ -1409,6 +1415,7 @@ func runDataset(args []string) error {
 		fmt.Println("  stats            Show dataset file counts")
 		fmt.Println("  index            Build dataset index")
 		fmt.Println("  manifest         Build dataset manifest (L1/L2)")
+		fmt.Println("  materialize-levels Generate or validate datasets/l1~l3 directories")
 		fmt.Println("\nRun 'utbench dataset <subcommand> --help' for subcommand flags.")
 	}
 
@@ -1431,10 +1438,12 @@ func runDatasetSubcommand(svc *dataset.Service, subCmd string, remaining []strin
 		return datasetIndex(svc, remaining)
 	case "manifest":
 		return datasetManifest(svc, remaining)
+	case "materialize-levels":
+		return datasetMaterializeLevels(svc, remaining)
 	case "validate":
 		return datasetValidate(svc, remaining)
 	default:
-		return fmt.Errorf("unknown sub-command: %s (use: stats, index, manifest, validate)", subCmd)
+		return fmt.Errorf("unknown sub-command: %s (use: stats, index, manifest, materialize-levels, validate)", subCmd)
 	}
 }
 
@@ -1513,6 +1522,36 @@ func datasetManifest(svc *dataset.Service, args []string) error {
 		return fmt.Errorf("build manifest: %w", err)
 	}
 	fmt.Printf("Built manifest with %d samples -> %s\n", summary.Total, summary.Path)
+	return nil
+}
+
+func datasetMaterializeLevels(svc *dataset.Service, args []string) error {
+	fs := flag.NewFlagSet("utbench dataset materialize-levels", flag.ContinueOnError)
+	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
+	configRoot := fs.String("config-root", "./configs", "Config directory containing dataset manifests")
+	levels := fs.String("levels", "l1,l2,l3", "Comma-separated levels to materialize")
+	check := fs.Bool("check", false, "Only validate existing level directories without rewriting files")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	summary, err := svc.MaterializeLevels(dataset.MaterializeLevelsOptions{
+		DatasetRoot: *datasetRoot,
+		ConfigRoot:  *configRoot,
+		Levels:      parseCommaList(*levels),
+		Check:       *check,
+	})
+	if err != nil {
+		return err
+	}
+	mode := "materialized"
+	if *check {
+		mode = "validated"
+	}
+	for _, item := range summary.Levels {
+		fmt.Printf("%s %s -> %s (samples=%d files=%d repo_roots=%d)\n",
+			mode, item.Level, item.TargetRoot, item.Samples, item.Files, item.RepoRoots)
+	}
 	return nil
 }
 

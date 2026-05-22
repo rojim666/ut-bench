@@ -374,6 +374,104 @@ func TestDiscoverSamplesManifestMaxSamplesPerLanguageScenario(t *testing.T) {
 	}
 }
 
+func TestDiscoverSamplesSupportsLevelDirectories(t *testing.T) {
+	root := t.TempDir()
+	datasetRoot := filepath.Join(root, "datasets")
+	l1Dir := filepath.Join(datasetRoot, "l1", "python", "python_code_files_self_contained", "boundary")
+	l2Dir := filepath.Join(datasetRoot, "l2", "python", "python_code_files_self_contained", "boundary")
+	for _, dir := range []string{l1Dir, l2Dir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(l1Dir, "boundary_000.py"), []byte("def f():\n    return 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(l2Dir, "boundary_001.py"), []byte("def f():\n    return 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService()
+	samples, err := svc.DiscoverSamples(contracts.RunSpec{
+		RunID:        "r_levels",
+		DatasetRoot:  datasetRoot,
+		OutputRoot:   root,
+		ConfigPath:   "dummy",
+		Languages:    []string{"python"},
+		DatasetLevel: "l1,l2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("expected 2 samples across l1+l2, got %d", len(samples))
+	}
+
+	directRootSamples, err := svc.DiscoverSamples(contracts.RunSpec{
+		RunID:        "r_direct_level",
+		DatasetRoot:  filepath.Join(datasetRoot, "l1"),
+		OutputRoot:   root,
+		ConfigPath:   "dummy",
+		Languages:    []string{"python"},
+		DatasetLevel: "l1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(directRootSamples) != 1 || directRootSamples[0].ID != "boundary_000" {
+		t.Fatalf("expected direct l1 root to return boundary_000, got %+v", directRootSamples)
+	}
+}
+
+func TestDiscoverSamplesUsesBenchmarkProfileLevels(t *testing.T) {
+	root := t.TempDir()
+	datasetRoot := filepath.Join(root, "datasets")
+	paths := []string{
+		filepath.Join(datasetRoot, "l1", "python", "python_code_files_self_contained", "boundary"),
+		filepath.Join(datasetRoot, "l1", "go", "go_code_files_self_contained", "boundary"),
+		filepath.Join(datasetRoot, "l1", "java", "java_code_files_self_contained", "boundary"),
+		filepath.Join(datasetRoot, "l2", "python", "python_code_files_self_contained", "boundary"),
+	}
+	for _, dir := range paths {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(datasetRoot, "l1", "python", "python_code_files_self_contained", "boundary", "boundary_000.py"), "def f():\n    return 1\n")
+	write(filepath.Join(datasetRoot, "l1", "go", "go_code_files_self_contained", "boundary", "boundary_000.go"), "package main\n")
+	write(filepath.Join(datasetRoot, "l1", "java", "java_code_files_self_contained", "boundary", "boundary_000.java"), "class Boundary {}\n")
+	write(filepath.Join(datasetRoot, "l2", "python", "python_code_files_self_contained", "boundary", "boundary_001.py"), "def f():\n    return 2\n")
+
+	svc := NewService()
+	samples, err := svc.DiscoverSamples(contracts.RunSpec{
+		RunID:            "r_profile",
+		DatasetRoot:      datasetRoot,
+		OutputRoot:       root,
+		ConfigPath:       "dummy",
+		BenchmarkProfile: "small",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("expected small profile to select python/go from l1 only, got %d: %+v", len(samples), samples)
+	}
+	for _, sample := range samples {
+		if sample.Language != "python" && sample.Language != "go" {
+			t.Fatalf("unexpected language selected by small profile: %+v", sample)
+		}
+		if strings.Contains(filepath.ToSlash(sample.Path), "/l2/") {
+			t.Fatalf("small profile should not read l2 samples: %+v", sample)
+		}
+	}
+}
+
 func TestValidateReadinessFindsCountsErrorsAndRiskWarnings(t *testing.T) {
 	root := t.TempDir()
 	datasetRoot := filepath.Join(root, "datasets")

@@ -146,15 +146,15 @@
     dbRunArtifactFilter: { run_id:'' },
     form: {
       run_id:'', models:[], subjects:[], combinations:[{_id:1,framework:'model_api',model:'deepseek-v4-flash',skill:'no_skill',skill_version:''}],
-      benchmark_profile:'small', dataset_manifest:'./configs/dataset_small.json', languages:['python','go'], class:'self_contained', scenario:'', level:'l1',
+      benchmark_profile:'small', dataset_manifest:'', languages:['python','go'], class:'self_contained', scenario:'', level:'l1',
       max_samples:0, workers:4, mode:'full', phase:'full', source_run_id:'', manifest_path:'', evaluation_path:'',
       dry_run:false, reuse_generated:true, reuse_evaluation:false, mutation_enabled:false,
       mutation_timeout:1800, mutation_policy:'warn', ingest:true, use_docker:true,
     },
     benchmarkProfiles: [
-      { key:'small', label:'small', title:'冒烟验证', manifest:'./configs/dataset_small.json', languages:['python','go'], level:'l1', mutation:false, samples:'40', detail:'快速确认生成、评估、报告链路。' },
-      { key:'medium', label:'medium', title:'对比实验', manifest:'./configs/dataset_medium.json', languages:['python','go','java','cpp'], level:'l1,l2', mutation:true, samples:'480', detail:'启用 mutation 与断言密度，用于模型/prompt/agent/skill 对比。' },
-      { key:'large', label:'large', title:'正式基准', manifest:'./configs/dataset_large.json', languages:['python','go','java','cpp'], level:'l1,l2,l3', mutation:true, samples:'800', detail:'固定全量 manifest，适合产出正式可复现报告。' },
+      { key:'small', label:'small', title:'冒烟验证', manifest:'', languages:['python','go'], level:'l1', mutation:false, samples:'40', detail:'直接使用 datasets/l1，快速确认生成、评估、报告链路。' },
+      { key:'medium', label:'medium', title:'对比实验', manifest:'', languages:['python','go','java','cpp'], level:'l1,l2', mutation:true, samples:'480', detail:'组合 datasets/l1,l2，启用 mutation 与断言密度，用于模型/prompt/agent/skill 对比。' },
+      { key:'large', label:'large', title:'正式基准', manifest:'', languages:['python','go','java','cpp'], level:'l1,l2,l3', mutation:true, samples:'800', detail:'组合 datasets/l1,l2,l3，适合产出正式可复现报告。' },
     ],
     env: null,
     envChecking: false,
@@ -1313,7 +1313,7 @@
       const profile = (this.benchmarkProfiles || []).find(p => p.key === key)
       if (!profile) return
       this.form.benchmark_profile = profile.key
-      this.form.dataset_manifest = profile.manifest
+      this.form.dataset_manifest = ''
       this.form.languages = [...profile.languages]
       this.form.class = 'self_contained'
       this.form.scenario = ''

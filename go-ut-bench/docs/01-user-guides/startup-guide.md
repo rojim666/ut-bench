@@ -159,7 +159,7 @@ datasets/
 |------|--------|------|
 | `--class` | `self_contained`、`repo_level` | 数据集类别，逗号分隔可多选 |
 | `--scenario` | `boundary`、`simple_function`、`complex_dependency`、`interface_mock` | 场景过滤，逗号分隔可多选，不填则全选 |
-| `--level` | `l1`、`l2`、… | manifest level 过滤（与 `--dataset-manifest` 配合使用） |
+| `--level` | `l1`、`l2`、… | 直接选择 level 目录；`l1,l2` 表示组合扫描多个目录 |
 | `--dataset-root` | 路径 | 数据集根目录，默认 `./datasets` |
 | `--dataset-manifest` | JSON 路径 | 使用预生成的 manifest，与 `--class`/`--scenario` 二选一 |
 
@@ -697,7 +697,7 @@ docker run --rm --env-file .env \
 | `--dataset-manifest` | string | 空 | 预生成 manifest 路径，与 `--class`/`--scenario` 二选一 |
 | `--class` | string | 空 | `self_contained` 或 `repo_level`，逗号分隔 |
 | `--scenario` | string | 空 | 场景过滤，逗号分隔，空=全选 |
-| `--level` | string | 空 | manifest level 过滤 |
+| `--level` | string | 空 | level 目录过滤；可传 `l1,l2` |
 | `--max-samples` | int | `0` | 每个语言/场景最大样本数，`0`=不限 |
 | `--output-root` | string | `./artifacts` | 产物根目录 |
 | `--run-id` | string | 自动生成 | 本次运行 ID，分步执行时必须复用 |
@@ -749,6 +749,6 @@ docker run --rm --env-file .env \
 | `--langs` | 否 | 空（全选） | 逗号分隔 |
 | `--class` | 否 | 空（全选） | `self_contained` 或 `repo_level` |
 | `--scenario` | 否 | 空（全选） | 场景名，逗号分隔 |
-| `--level` | 否 | 空（全选） | level 标签 |
+| `--level` | 否 | 空（全选） | level 目录选择 |
 | `--limit-per-scenario` | 否 | `20` | 每场景保留样本数 |
 

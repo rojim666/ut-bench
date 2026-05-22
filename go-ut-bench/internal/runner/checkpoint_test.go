@@ -10,16 +10,17 @@ import (
 
 func TestCheckpointPathIncludesScopeFields(t *testing.T) {
 	spec1 := contracts.RunSpec{
-		OutputRoot:      filepath.Join(t.TempDir(), "out"),
-		DatasetRoot:     "../dataset",
-		DatasetClasses:  []string{"self_contained"},
-		DatasetLevel:    "l1",
-		DatasetManifest: "./configs/dataset_index.json",
-		MaxSamples:      10,
-		Languages:       []string{"python"},
+		OutputRoot:       filepath.Join(t.TempDir(), "out"),
+		DatasetRoot:      "../dataset",
+		BenchmarkProfile: "small",
+		DatasetClasses:   []string{"self_contained"},
+		DatasetLevel:     "l1",
+		DatasetManifest:  "./configs/dataset_index.json",
+		MaxSamples:       10,
+		Languages:        []string{"python"},
 	}
 	spec2 := spec1
-	spec2.DatasetLevel = "l2"
+	spec2.BenchmarkProfile = "medium"
 
 	subjects := []subjectTarget{{subject: agentconfig.ResolvedSubject{Spec: contracts.SubjectSpec{ID: "model_api__deepseek__no_skill"}}}}
 	p1 := buildCheckpointPath(spec1, subjects)

@@ -44,6 +44,9 @@ func NewService() *Service {
 //  4. Languages 必须为支持的语言
 //  5. MaxSamples 和 MutationTimeout 不能为负数
 func (s *Service) ValidateSpec(spec contracts.RunSpec) error {
+	if spec.BenchmarkProfile != "" && NormalizeBenchmarkProfile(spec.BenchmarkProfile) == "" {
+		return fmt.Errorf("unsupported benchmark profile: %s", spec.BenchmarkProfile)
+	}
 	if strings.TrimSpace(spec.DatasetRoot) == "" {
 		return errors.New("dataset root is required")
 	}
@@ -127,20 +130,50 @@ func (s *Service) ValidateSpec(spec contracts.RunSpec) error {
 //   - Scenario: 第三级目录名（boundary/simple_function等）
 //   - SampleID: 文件名（去掉扩展名）
 func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef, error) {
+	spec = ApplyBenchmarkProfile(spec)
 	if err := s.ValidateSpec(spec); err != nil {
 		return nil, err
 	}
 
-	if strings.TrimSpace(spec.DatasetManifest) != "" || strings.TrimSpace(spec.DatasetLevel) != "" {
+	if strings.TrimSpace(spec.DatasetManifest) != "" {
 		return s.discoverFromManifest(spec)
 	}
 
-	datasetRoot := absoluteCleanPath(spec.DatasetRoot)
+	datasetRoots := resolveDatasetRoots(spec)
 	langs := spec.Languages
 	if len(langs) == 0 {
 		langs = append([]string{}, contracts.SupportedLanguages...)
 	}
 
+	var all []contracts.SampleRef
+	seen := map[string]struct{}{}
+	for _, datasetRoot := range datasetRoots {
+		discovered, err := s.discoverSamplesFromRoot(spec, datasetRoot, langs)
+		if err != nil {
+			return nil, err
+		}
+		for _, sample := range discovered {
+			key := sampleDedupKey(sample)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			all = append(all, sample)
+		}
+	}
+
+	sortSampleRefs(all)
+	if spec.MaxSamples > 0 {
+		all = applyMaxSamplesPerLanguageScenario(all, spec.MaxSamples)
+	}
+	if len(all) == 0 {
+		return nil, fmt.Errorf("no dataset samples found (langs=%v classes=%v)", langs, spec.DatasetClasses)
+	}
+
+	return all, nil
+}
+
+func (s *Service) discoverSamplesFromRoot(spec contracts.RunSpec, datasetRoot string, langs []string) ([]contracts.SampleRef, error) {
 	var all []contracts.SampleRef
 	for _, langRaw := range langs {
 		lang := strings.ToLower(strings.TrimSpace(langRaw))
@@ -276,15 +309,6 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 			return nil, err
 		}
 	}
-
-	sortSampleRefs(all)
-	if spec.MaxSamples > 0 {
-		all = applyMaxSamplesPerLanguageScenario(all, spec.MaxSamples)
-	}
-	if len(all) == 0 {
-		return nil, fmt.Errorf("no dataset samples found (langs=%v classes=%v)", langs, spec.DatasetClasses)
-	}
-
 	return all, nil
 }
 

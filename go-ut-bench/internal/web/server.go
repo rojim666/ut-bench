@@ -2913,7 +2913,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		Models:           models,
 		Subjects:         splitTrim(strings.Join(req.Subjects, ",")),
 		AgentsConfigPath: agentsConfigPath,
-		BenchmarkProfile: normalizeBenchmarkProfile(req.BenchmarkProfile),
+		BenchmarkProfile: dataset.NormalizeBenchmarkProfile(req.BenchmarkProfile),
 		Languages:        req.Languages,
 		DatasetClasses:   classes,
 		DatasetScenario:  req.Scenario,
@@ -2935,6 +2935,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		OutputRoot:       s.outputRoot,
 		CreatedAtUTC:     time.Now().UTC(),
 	}
+	spec = dataset.ApplyBenchmarkProfile(spec)
 	opts := orchestrator.Options{
 		Ingest:         req.Ingest,
 		DBPath:         s.mgr.dbPath,
@@ -3704,14 +3705,7 @@ func (s *Server) handleRunReportHTML(w http.ResponseWriter, r *http.Request, run
 }
 
 func normalizeBenchmarkProfile(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "small", "medium", "large":
-		return strings.ToLower(strings.TrimSpace(value))
-	case "custom":
-		return "custom"
-	default:
-		return ""
-	}
+	return dataset.NormalizeBenchmarkProfile(value)
 }
 
 func splitTrim(s string) []string {

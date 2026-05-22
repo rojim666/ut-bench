@@ -145,17 +145,21 @@ func TestBuildDockerRunArgsMapsHostAbsoluteDBPath(t *testing.T) {
 
 func TestBuildDockerRunArgsPassesBenchmarkManifestAndMutationFalse(t *testing.T) {
 	spec := contracts.RunSpec{
-		RunID:           "run-1",
-		Models:          []string{"deepseek"},
-		Languages:       []string{"python", "go"},
-		DatasetManifest: "./configs/dataset_small.json",
-		MutationEnabled: false,
+		RunID:            "run-1",
+		Models:           []string{"deepseek"},
+		Languages:        []string{"python", "go"},
+		BenchmarkProfile: "small",
+		DatasetLevel:     "l1",
+		DatasetManifest:  "./configs/dataset_small.json",
+		MutationEnabled:  false,
 	}
 	cfg := DockerConfig{EvalImageName: "utbench:latest", ProjectRoot: "/repo"}
 
 	args := buildDockerRunArgs(spec, orchestrator.Options{}, cfg)
 	joined := strings.Join(args, " ")
 
+	mustContain(t, joined, "--benchmark-profile small")
+	mustContain(t, joined, "--level l1")
 	mustContain(t, joined, "--dataset-manifest /app/configs/dataset_small.json")
 	mustContain(t, joined, "--mutation-enabled=false")
 }

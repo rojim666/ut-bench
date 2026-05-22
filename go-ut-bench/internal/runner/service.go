@@ -1233,8 +1233,9 @@ func buildCheckpointPath(spec contracts.RunSpec, subjects []subjectTarget) strin
 	sort.Strings(langs)
 
 	scope := fmt.Sprintf(
-		"subjects=%s;langs=%s;class=%s;scenario=%s;project=%s;level=%s;manifest=%s;max=%d;dataset=%s;agents=%s",
+		"subjects=%s;profile=%s;langs=%s;class=%s;scenario=%s;project=%s;level=%s;manifest=%s;max=%d;dataset=%s;agents=%s",
 		strings.Join(subjectIDs, ","),
+		spec.BenchmarkProfile,
 		strings.Join(langs, ","),
 		strings.Join(spec.DatasetClasses, ","),
 		spec.DatasetScenario,
