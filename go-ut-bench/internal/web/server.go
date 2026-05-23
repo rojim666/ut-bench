@@ -3998,8 +3998,8 @@ func normalizeDatasetPackagePath(name string) (string, bool) {
 		return normalizeRepoLevelDatasetPackagePath(parts)
 	}
 	lang := parts[0]
-	classDir := parts[1]
-	if classDir != lang+"_code_files_self_contained" && classDir != lang+"_code_files_repo_level" {
+	classDir := dataset.NormalizeDatasetClassDirName(parts[1])
+	if classDir == "" {
 		return "", false
 	}
 	scenario := parts[2]
@@ -4007,15 +4007,21 @@ func normalizeDatasetPackagePath(name string) (string, bool) {
 		return "", false
 	}
 	filename := parts[3]
-	if classDir == lang+"_code_files_repo_level" && isRepoLevelMetaFile(filename) {
-		return strings.Join(parts, "/"), true
+	if classDir == "repo_level" {
+		if isRepoLevelMetaFile(filename) {
+			return strings.Join([]string{lang, classDir, scenario, filename}, "/"), true
+		}
+		return "", false
 	}
 	ext := filepath.Ext(filename)
 	sampleID := strings.TrimSuffix(filename, ext)
-	if ext != datasetExtForLanguage(lang) || !validDatasetToken(sampleID) || !strings.HasPrefix(sampleID, scenario+"_") {
+	if ext != datasetExtForLanguage(lang) || !validDatasetToken(sampleID) {
 		return "", false
 	}
-	return strings.Join(parts, "/"), true
+	if strings.HasPrefix(sampleID, scenario+"_") {
+		filename = strings.TrimPrefix(sampleID, scenario+"_") + ext
+	}
+	return strings.Join([]string{lang, classDir, scenario, filename}, "/"), true
 }
 
 func normalizeRepoLevelDatasetPackagePath(parts []string) (string, bool) {
@@ -4023,7 +4029,7 @@ func normalizeRepoLevelDatasetPackagePath(parts []string) (string, bool) {
 		return "", false
 	}
 	lang := parts[0]
-	if !isSupportedDatasetLanguage(lang) || parts[1] != lang+"_code_files_repo_level" || !validDatasetToken(parts[2]) {
+	if !isSupportedDatasetLanguage(lang) || dataset.NormalizeDatasetClassDirName(parts[1]) != "repo_level" || !validDatasetToken(parts[2]) {
 		return "", false
 	}
 	if parts[3] != "workspace" && !validDatasetToken(parts[3]) {
@@ -4034,7 +4040,8 @@ func normalizeRepoLevelDatasetPackagePath(parts []string) (string, bool) {
 			return "", false
 		}
 	}
-	return strings.Join(parts, "/"), true
+	normalized := append([]string{lang, "repo_level"}, parts[2:]...)
+	return strings.Join(normalized, "/"), true
 }
 
 func isRepoLevelMetaFile(filename string) bool {
@@ -4111,16 +4118,18 @@ func datasetScenariosByClass(datasetRoot string) map[string][]string {
 	}
 	for _, lang := range contracts.SupportedLanguages {
 		for _, class := range classes {
-			classDir := filepath.Join(datasetRoot, lang, lang+"_code_files_"+class)
-			entries, err := os.ReadDir(classDir)
-			if err != nil {
-				continue
-			}
-			for _, entry := range entries {
-				if !entry.IsDir() {
+			for _, classDirName := range dataset.DatasetClassDirCandidates(lang, class) {
+				classDir := filepath.Join(datasetRoot, lang, classDirName)
+				entries, err := os.ReadDir(classDir)
+				if err != nil {
 					continue
 				}
-				add(class, entry.Name())
+				for _, entry := range entries {
+					if !entry.IsDir() {
+						continue
+					}
+					add(class, entry.Name())
+				}
 			}
 		}
 	}
@@ -4144,36 +4153,38 @@ func datasetProjectsByScenario(datasetRoot string) map[string]map[string][]datas
 	}
 	byScenario := map[string]map[string]*acc{}
 	for _, lang := range contracts.SupportedLanguages {
-		classDir := filepath.Join(datasetRoot, lang, lang+"_code_files_repo_level")
-		scenarios, err := os.ReadDir(classDir)
-		if err != nil {
-			continue
-		}
-		for _, scenarioEntry := range scenarios {
-			if !scenarioEntry.IsDir() || strings.HasPrefix(scenarioEntry.Name(), ".") {
-				continue
-			}
-			scenario := scenarioEntry.Name()
-			scenarioDir := filepath.Join(classDir, scenario)
-			projects, err := os.ReadDir(scenarioDir)
+		for _, classDirName := range dataset.DatasetClassDirCandidates(lang, "repo_level") {
+			classDir := filepath.Join(datasetRoot, lang, classDirName)
+			scenarios, err := os.ReadDir(classDir)
 			if err != nil {
 				continue
 			}
-			if byScenario[scenario] == nil {
-				byScenario[scenario] = map[string]*acc{}
-			}
-			for _, projectEntry := range projects {
-				if !projectEntry.IsDir() || strings.HasPrefix(projectEntry.Name(), ".") {
+			for _, scenarioEntry := range scenarios {
+				if !scenarioEntry.IsDir() || strings.HasPrefix(scenarioEntry.Name(), ".") {
 					continue
 				}
-				project := projectEntry.Name()
-				item := byScenario[scenario][project]
-				if item == nil {
-					item = &acc{name: project, languages: map[string]bool{}}
-					byScenario[scenario][project] = item
+				scenario := scenarioEntry.Name()
+				scenarioDir := filepath.Join(classDir, scenario)
+				projects, err := os.ReadDir(scenarioDir)
+				if err != nil {
+					continue
 				}
-				item.languages[lang] = true
-				item.count += countRepoLevelProjectSamples(filepath.Join(scenarioDir, project), lang)
+				if byScenario[scenario] == nil {
+					byScenario[scenario] = map[string]*acc{}
+				}
+				for _, projectEntry := range projects {
+					if !projectEntry.IsDir() || strings.HasPrefix(projectEntry.Name(), ".") {
+						continue
+					}
+					project := projectEntry.Name()
+					item := byScenario[scenario][project]
+					if item == nil {
+						item = &acc{name: project, languages: map[string]bool{}}
+						byScenario[scenario][project] = item
+					}
+					item.languages[lang] = true
+					item.count += countRepoLevelProjectSamples(filepath.Join(scenarioDir, project), lang)
+				}
 			}
 		}
 	}

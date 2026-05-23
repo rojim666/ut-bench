@@ -136,15 +136,15 @@ Get-Content .env | ForEach-Object {
 ```
 datasets/
   python/
-    python_code_files_self_contained/
+    self_contained/
       boundary/          # 边界值测试
       simple_function/   # 简单函数
       complex_dependency/ # 复杂依赖
       interface_mock/    # 接口 mock
-    python_code_files_repo_level/
+    repo_level/
       ...
   go/
-    go_code_files_self_contained/
+    self_contained/
       boundary/
       simple_function/
       complex_dependency/

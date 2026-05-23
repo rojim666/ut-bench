@@ -24,8 +24,11 @@
 
 每个语言目录内部继续沿用原有结构：
 
-- `datasets/<root>/<lang>/<lang>_code_files_self_contained/<scenario>/<sample_id>.<ext>`
-- `datasets/<root>/<lang>/<lang>_code_files_repo_level/<scenario>/<project>/...`
+- `datasets/<root>/<lang>/self_contained/<scenario>/<sample_file>.<ext>`
+- `datasets/<root>/<lang>/repo_level/<scenario>/<project>/...`
+
+其中，`self_contained` 目录下的物理文件名使用短名（例如 `041.py`），
+运行时逻辑 `sample_id` 仍保持为 `<scenario>_<编号>`（例如 `simple_function_041`）。
 
 这里的 `<root>` 可以是原始根，也可以是 `l1` / `l2` / `l3`。
 

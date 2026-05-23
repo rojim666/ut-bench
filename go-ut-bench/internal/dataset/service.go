@@ -204,9 +204,10 @@ func (s *Service) discoverSamplesFromRoot(spec contracts.RunSpec, datasetRoot st
 				if strings.HasSuffix(strings.ToLower(d.Name()), "_test"+filepath.Ext(d.Name())) {
 					return nil
 				}
-				id := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
-				cat := classifySampleClass(id, rel)
-				scenario := classifySampleScenario(id, rel)
+				baseID := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
+				cat := classifySampleClass(baseID, rel)
+				scenario := classifySampleScenario(baseID, rel)
+				id := buildStableSampleID(baseID, rel, cat, scenario)
 				if !matchDatasetClassFilter(spec.DatasetClasses, cat) {
 					return nil
 				}
@@ -265,10 +266,11 @@ func (s *Service) discoverSamplesFromRoot(spec contracts.RunSpec, datasetRoot st
 			metaPath := filepath.Join(path, "meta.json")
 			if _, err1 := os.Stat(entryPath); err1 == nil {
 				if _, err2 := os.Stat(metaPath); err2 == nil {
-					id := filepath.Base(path)
+					baseID := filepath.Base(path)
 					rel, _ := filepath.Rel(langDir, path)
-					cat := classifySampleClass(id, rel)
-					scenario := classifySampleScenario(id, rel)
+					cat := classifySampleClass(baseID, rel)
+					scenario := classifySampleScenario(baseID, rel)
+					id := buildStableSampleID(baseID, rel, cat, scenario)
 					if !matchDatasetClassFilter(spec.DatasetClasses, cat) {
 						return filepath.SkipDir
 					}
@@ -598,6 +600,12 @@ func ValidateLayout(datasetRoot string) error {
 // classifySampleClass 从样本ID和相对路径推断数据集类别
 // 根据路径中的 self_contained/repo_level 关键字判断
 func classifySampleClass(sampleID string, relPath string) contracts.DatasetClass {
+	if classDir, _, _, ok := splitDatasetRelativeLayout(relPath); ok {
+		if classDir == datasetClassDirRepoLevel {
+			return contracts.DatasetClassRepoLevel
+		}
+		return contracts.DatasetClassSelfContained
+	}
 	lower := strings.ToLower(sampleID + "|" + relPath)
 	lower = strings.ReplaceAll(lower, "\\", "/")
 	if strings.Contains(lower, "self_contained") {
@@ -620,6 +628,11 @@ func classifySampleClass(sampleID string, relPath string) contracts.DatasetClass
 // 第二级目录名作为自定义 scenario（例如 dogfood），通过 normalizeScenario 校验。
 // 仍无法识别时返回 "unknown"。
 func classifySampleScenario(sampleID string, relPath string) string {
+	if _, scenario, _, ok := splitDatasetRelativeLayout(relPath); ok {
+		if n := normalizeScenario(scenario); n != "" {
+			return n
+		}
+	}
 	lower := strings.ToLower(sampleID + "|" + relPath)
 	lower = strings.ReplaceAll(lower, "\\", "/")
 	for _, scenario := range contracts.SupportedScenarios {
@@ -629,7 +642,7 @@ func classifySampleScenario(sampleID string, relPath string) string {
 	}
 	// 自定义 scenario 提取：路径第二段（class 目录之后）
 	parts := strings.Split(strings.ReplaceAll(relPath, "\\", "/"), "/")
-	if len(parts) >= 2 && strings.Contains(parts[0], "_code_files_") {
+	if len(parts) >= 2 && normalizeDatasetClassDirName(parts[0]) != "" {
 		if n := normalizeScenario(parts[1]); n != "" && n != "unknown" {
 			return n
 		}
@@ -685,11 +698,11 @@ func matchDatasetProjectFilter(project string, class contracts.DatasetClass, rel
 	if class != contracts.DatasetClassRepoLevel {
 		return false
 	}
-	parts := strings.Split(filepath.ToSlash(relPath), "/")
-	if len(parts) < 3 || !strings.Contains(parts[0], "_code_files_repo_level") {
+	classDir, _, remainder, ok := splitDatasetRelativeLayout(relPath)
+	if !ok || classDir != datasetClassDirRepoLevel || len(remainder) == 0 {
 		return false
 	}
-	return parts[2] == project
+	return remainder[0] == project
 }
 
 func validDatasetProjectToken(value string) bool {
@@ -868,7 +881,7 @@ func SynthesizeRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool)
 
 func isSelfContainedDatasetPath(samplePath string) bool {
 	for _, part := range strings.Split(filepath.ToSlash(samplePath), "/") {
-		if strings.Contains(strings.ToLower(part), "_self_contained") {
+		if normalizeDatasetClassDirName(part) == datasetClassDirSelfContained {
 			return true
 		}
 	}
@@ -1089,14 +1102,13 @@ func findCppWorkspaceRoot(samplePath string) (string, bool) {
 }
 
 func repoLevelDatasetProjectRoot(samplePath, lang string) (string, bool) {
-	marker := lang + "_code_files_repo_level"
 	slashPath := filepath.ToSlash(filepath.Clean(samplePath))
 	parts := strings.Split(slashPath, "/")
 	for i, part := range parts {
-		if part != marker {
+		if normalizeDatasetClassDirName(part) != datasetClassDirRepoLevel {
 			continue
 		}
-		if i+2 >= len(parts) {
+		if i == 0 || i+2 >= len(parts) {
 			return "", false
 		}
 		root := strings.Join(parts[:i+3], "/")

@@ -261,7 +261,7 @@ func repoLevelProjectRel(rel string) (string, bool) {
 	if len(parts) < 4 {
 		return "", false
 	}
-	if !strings.Contains(parts[1], "_code_files_repo_level") {
+	if normalizeDatasetClassDirName(parts[1]) != datasetClassDirRepoLevel {
 		return "", false
 	}
 	return filepath.FromSlash(strings.Join(parts[:4], "/")), true

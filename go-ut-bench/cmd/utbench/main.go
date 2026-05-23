@@ -722,7 +722,7 @@ func runRun(args []string) error {
 	datasetManifest := fs.String("dataset-manifest", "", "Dataset manifest path")
 	benchmarkProfile := fs.String("benchmark-profile", "", "Benchmark profile (small, medium, large)")
 	datasetLevel := fs.String("level", "", "Dataset level directories, comma-separated (for example l1 or l1,l2)")
-	datasetClass := fs.String("class", "self_contained", "Dataset class(es), comma-separated (self_contained, module_level)")
+	datasetClass := fs.String("class", "self_contained", "Dataset class(es), comma-separated (self_contained, repo_level)")
 	datasetScenario := fs.String("scenario", "", "Dataset scenario (boundary, simple_function, complex_dependency, interface_mock)")
 	datasetProject := fs.String("project", "", "Repo-level dataset project filter")
 	maxSamples := fs.Int("max-samples", 0, "Max samples")

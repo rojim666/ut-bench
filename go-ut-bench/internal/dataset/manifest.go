@@ -3,6 +3,7 @@
 package dataset
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ func loadManifest(path string, datasetRoot string) (datasetManifest, error) {
 	if err != nil {
 		return datasetManifest{}, err
 	}
+	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
 	var mf datasetManifest
 	if err := json.Unmarshal(raw, &mf); err != nil {
 		return datasetManifest{}, err

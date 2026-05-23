@@ -6,8 +6,8 @@ import (
 )
 
 func TestSplitJavaSourceByClasses_InnerClasses(t *testing.T) {
-	// Read the actual interface_mock_000.java which has inner classes
-	data, err := os.ReadFile("../../datasets/java/java_code_files_self_contained/interface_mock/interface_mock_000.java")
+	// Read the actual 000.java which has inner classes
+	data, err := os.ReadFile("../../datasets/java/self_contained/interface_mock/000.java")
 	if err != nil {
 		t.Skip("dataset not available:", err)
 	}
