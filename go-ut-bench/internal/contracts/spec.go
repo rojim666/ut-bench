@@ -8,6 +8,7 @@ type RunSpec struct {
 	RunID            string    `json:"run_id"`                       // 唯一运行标识符，由NewRunID生成
 	Models           []string  `json:"models"`                       // 要评测的模型列表，如["deepseek", "qwen"]
 	Subjects         []string  `json:"subjects,omitempty"`           // 要评测的被测对象列表，如["aider__deepseek__no_skill"]
+	BenchmarkProfile string    `json:"benchmark_profile,omitempty"`  // benchmark profile: small/medium/large/custom
 	AgentsConfigPath string    `json:"agents_config_path,omitempty"` // Agent/Skill配置文件路径
 	Languages        []string  `json:"languages"`                    // 要评测的编程语言，如["python", "go"]
 	DatasetClasses   []string  `json:"dataset_classes"`              // 数据集类别，如["self_contained", "repo_level"]

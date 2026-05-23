@@ -24,12 +24,12 @@ type ValidateOptions struct {
 // ValidationReport 验证报告
 // 包含验证结果统计和问题列表
 type ValidationReport struct {
-	DatasetRoot string            `json:"dataset_root"` // 数据集根目录
-	Total       int               `json:"total_samples"` // 总样本数
-	Counts      []ValidationCount `json:"counts"`       // 分类统计
-	Errors      []ValidationIssue `json:"errors,omitempty"` // 错误列表
+	DatasetRoot string            `json:"dataset_root"`       // 数据集根目录
+	Total       int               `json:"total_samples"`      // 总样本数
+	Counts      []ValidationCount `json:"counts"`             // 分类统计
+	Errors      []ValidationIssue `json:"errors,omitempty"`   // 错误列表
 	Warnings    []ValidationIssue `json:"warnings,omitempty"` // 警告列表
-	OK          bool              `json:"ok"`           // 是否通过验证
+	OK          bool              `json:"ok"`                 // 是否通过验证
 }
 
 // ValidationCount 分类统计
@@ -44,12 +44,12 @@ type ValidationCount struct {
 // ValidationIssue 验证问题
 // 描述单个错误或警告
 type ValidationIssue struct {
-	Severity string `json:"severity"`          // 严重程度（error/warning）
-	Code     string `json:"code"`              // 问题代码
-	Message  string `json:"message"`           // 问题消息
-	Language string `json:"language,omitempty"` // 相关语言
+	Severity string `json:"severity"`            // 严重程度（error/warning）
+	Code     string `json:"code"`                // 问题代码
+	Message  string `json:"message"`             // 问题消息
+	Language string `json:"language,omitempty"`  // 相关语言
 	SampleID string `json:"sample_id,omitempty"` // 相关样本ID
-	Path     string `json:"path,omitempty"`     // 相关路径
+	Path     string `json:"path,omitempty"`      // 相关路径
 }
 
 // ValidateReadiness 验证数据集是否就绪
@@ -114,9 +114,10 @@ func (s *Service) ValidateReadiness(opts ValidateOptions) ValidationReport {
 				return nil
 			}
 
-			id := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
-			class := classifySampleClass(id, rel)
-			scenario := classifySampleScenario(id, rel)
+			baseID := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
+			class := classifySampleClass(baseID, rel)
+			scenario := classifySampleScenario(baseID, rel)
+			id := buildStableSampleID(baseID, rel, class, scenario)
 			if !matchDatasetClassFilter(classFilters, class) || !matchScenarioFilter(scenarioFilters, scenario) {
 				return nil
 			}

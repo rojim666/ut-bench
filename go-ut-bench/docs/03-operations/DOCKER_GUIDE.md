@@ -1,5 +1,7 @@
 # Docker 使用指南
 
+> 当前 Docker 运行模式：`utbench:latest` 是统一运行容器。Web/CLI 选择 Docker 执行时，`run` 会在同一个容器内完成 generate -> evaluate -> report；容器默认保留网络访问，不额外禁止 Python/Go/Java/C++ 在测试过程中下载依赖。CLI Agent 如需 Docker 沙箱，会通过挂载的 docker.sock 启动子容器。
+
 UT-Bench 的 Docker 体系分为两种镜像：
 
 | 镜像 | Dockerfile | 用途 |

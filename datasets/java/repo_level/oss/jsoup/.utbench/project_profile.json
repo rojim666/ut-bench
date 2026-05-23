@@ -1,0 +1,16 @@
+﻿{
+    "schema_version":  "v0.1.0",
+    "dataset_class":  "repo_level",
+    "lang":  "java",
+    "scenario":  "oss",
+    "project_name":  "jsoup",
+    "repo_url":  "https://github.com/jhy/jsoup.git",
+    "commit_sha":  "6d8f80d65d514dbd6a2e1e37cb37b44bc534cbaf",
+    "branch":  "master",
+    "license_file":  "LICENSE",
+    "imported_at":  "2026-05-14T01:16:02",
+    "preprocessing_notes":  [
+                                "shallow cloned with depth 1",
+                                "excluded nested .git, .github, dependency caches, and common build/output directories"
+                            ]
+}

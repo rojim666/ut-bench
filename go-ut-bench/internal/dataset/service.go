@@ -44,6 +44,9 @@ func NewService() *Service {
 //  4. Languages 必须为支持的语言
 //  5. MaxSamples 和 MutationTimeout 不能为负数
 func (s *Service) ValidateSpec(spec contracts.RunSpec) error {
+	if spec.BenchmarkProfile != "" && NormalizeBenchmarkProfile(spec.BenchmarkProfile) == "" {
+		return fmt.Errorf("unsupported benchmark profile: %s", spec.BenchmarkProfile)
+	}
 	if strings.TrimSpace(spec.DatasetRoot) == "" {
 		return errors.New("dataset root is required")
 	}
@@ -127,20 +130,50 @@ func (s *Service) ValidateSpec(spec contracts.RunSpec) error {
 //   - Scenario: 第三级目录名（boundary/simple_function等）
 //   - SampleID: 文件名（去掉扩展名）
 func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef, error) {
+	spec = ApplyBenchmarkProfile(spec)
 	if err := s.ValidateSpec(spec); err != nil {
 		return nil, err
 	}
 
-	if strings.TrimSpace(spec.DatasetManifest) != "" || strings.TrimSpace(spec.DatasetLevel) != "" {
+	if strings.TrimSpace(spec.DatasetManifest) != "" {
 		return s.discoverFromManifest(spec)
 	}
 
-	datasetRoot := absoluteCleanPath(spec.DatasetRoot)
+	datasetRoots := resolveDatasetRoots(spec)
 	langs := spec.Languages
 	if len(langs) == 0 {
 		langs = append([]string{}, contracts.SupportedLanguages...)
 	}
 
+	var all []contracts.SampleRef
+	seen := map[string]struct{}{}
+	for _, datasetRoot := range datasetRoots {
+		discovered, err := s.discoverSamplesFromRoot(spec, datasetRoot, langs)
+		if err != nil {
+			return nil, err
+		}
+		for _, sample := range discovered {
+			key := sampleDedupKey(sample)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			all = append(all, sample)
+		}
+	}
+
+	sortSampleRefs(all)
+	if spec.MaxSamples > 0 {
+		all = applyMaxSamplesPerLanguageScenario(all, spec.MaxSamples)
+	}
+	if len(all) == 0 {
+		return nil, fmt.Errorf("no dataset samples found (langs=%v classes=%v)", langs, spec.DatasetClasses)
+	}
+
+	return all, nil
+}
+
+func (s *Service) discoverSamplesFromRoot(spec contracts.RunSpec, datasetRoot string, langs []string) ([]contracts.SampleRef, error) {
 	var all []contracts.SampleRef
 	for _, langRaw := range langs {
 		lang := strings.ToLower(strings.TrimSpace(langRaw))
@@ -171,9 +204,10 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 				if strings.HasSuffix(strings.ToLower(d.Name()), "_test"+filepath.Ext(d.Name())) {
 					return nil
 				}
-				id := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
-				cat := classifySampleClass(id, rel)
-				scenario := classifySampleScenario(id, rel)
+				baseID := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
+				cat := classifySampleClass(baseID, rel)
+				scenario := classifySampleScenario(baseID, rel)
+				id := buildStableSampleID(baseID, rel, cat, scenario)
 				if !matchDatasetClassFilter(spec.DatasetClasses, cat) {
 					return nil
 				}
@@ -232,10 +266,11 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 			metaPath := filepath.Join(path, "meta.json")
 			if _, err1 := os.Stat(entryPath); err1 == nil {
 				if _, err2 := os.Stat(metaPath); err2 == nil {
-					id := filepath.Base(path)
+					baseID := filepath.Base(path)
 					rel, _ := filepath.Rel(langDir, path)
-					cat := classifySampleClass(id, rel)
-					scenario := classifySampleScenario(id, rel)
+					cat := classifySampleClass(baseID, rel)
+					scenario := classifySampleScenario(baseID, rel)
+					id := buildStableSampleID(baseID, rel, cat, scenario)
 					if !matchDatasetClassFilter(spec.DatasetClasses, cat) {
 						return filepath.SkipDir
 					}
@@ -276,15 +311,6 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 			return nil, err
 		}
 	}
-
-	sortSampleRefs(all)
-	if spec.MaxSamples > 0 {
-		all = applyMaxSamplesPerLanguageScenario(all, spec.MaxSamples)
-	}
-	if len(all) == 0 {
-		return nil, fmt.Errorf("no dataset samples found (langs=%v classes=%v)", langs, spec.DatasetClasses)
-	}
-
 	return all, nil
 }
 
@@ -574,6 +600,12 @@ func ValidateLayout(datasetRoot string) error {
 // classifySampleClass 从样本ID和相对路径推断数据集类别
 // 根据路径中的 self_contained/repo_level 关键字判断
 func classifySampleClass(sampleID string, relPath string) contracts.DatasetClass {
+	if classDir, _, _, ok := splitDatasetRelativeLayout(relPath); ok {
+		if classDir == datasetClassDirRepoLevel {
+			return contracts.DatasetClassRepoLevel
+		}
+		return contracts.DatasetClassSelfContained
+	}
 	lower := strings.ToLower(sampleID + "|" + relPath)
 	lower = strings.ReplaceAll(lower, "\\", "/")
 	if strings.Contains(lower, "self_contained") {
@@ -596,6 +628,11 @@ func classifySampleClass(sampleID string, relPath string) contracts.DatasetClass
 // 第二级目录名作为自定义 scenario（例如 dogfood），通过 normalizeScenario 校验。
 // 仍无法识别时返回 "unknown"。
 func classifySampleScenario(sampleID string, relPath string) string {
+	if _, scenario, _, ok := splitDatasetRelativeLayout(relPath); ok {
+		if n := normalizeScenario(scenario); n != "" {
+			return n
+		}
+	}
 	lower := strings.ToLower(sampleID + "|" + relPath)
 	lower = strings.ReplaceAll(lower, "\\", "/")
 	for _, scenario := range contracts.SupportedScenarios {
@@ -605,7 +642,7 @@ func classifySampleScenario(sampleID string, relPath string) string {
 	}
 	// 自定义 scenario 提取：路径第二段（class 目录之后）
 	parts := strings.Split(strings.ReplaceAll(relPath, "\\", "/"), "/")
-	if len(parts) >= 2 && strings.Contains(parts[0], "_code_files_") {
+	if len(parts) >= 2 && normalizeDatasetClassDirName(parts[0]) != "" {
 		if n := normalizeScenario(parts[1]); n != "" && n != "unknown" {
 			return n
 		}
@@ -661,11 +698,11 @@ func matchDatasetProjectFilter(project string, class contracts.DatasetClass, rel
 	if class != contracts.DatasetClassRepoLevel {
 		return false
 	}
-	parts := strings.Split(filepath.ToSlash(relPath), "/")
-	if len(parts) < 3 || !strings.Contains(parts[0], "_code_files_repo_level") {
+	classDir, _, remainder, ok := splitDatasetRelativeLayout(relPath)
+	if !ok || classDir != datasetClassDirRepoLevel || len(remainder) == 0 {
 		return false
 	}
-	return parts[2] == project
+	return remainder[0] == project
 }
 
 func validDatasetProjectToken(value string) bool {
@@ -825,6 +862,9 @@ func SynthesizeRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool)
 	if strings.HasSuffix(base, "_test"+ext) || strings.HasPrefix(base, "test_") {
 		return nil, false
 	}
+	if isSelfContainedDatasetPath(samplePath) {
+		return nil, false
+	}
 	switch ext {
 	case ".go":
 		return synthesizeGoRepoLevelMeta(samplePath)
@@ -837,6 +877,15 @@ func SynthesizeRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool)
 	default:
 		return nil, false
 	}
+}
+
+func isSelfContainedDatasetPath(samplePath string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(samplePath), "/") {
+		if normalizeDatasetClassDirName(part) == datasetClassDirSelfContained {
+			return true
+		}
+	}
+	return false
 }
 
 func synthesizeGoRepoLevelMeta(samplePath string) (*contracts.RepoLevelMeta, bool) {
@@ -1053,14 +1102,13 @@ func findCppWorkspaceRoot(samplePath string) (string, bool) {
 }
 
 func repoLevelDatasetProjectRoot(samplePath, lang string) (string, bool) {
-	marker := lang + "_code_files_repo_level"
 	slashPath := filepath.ToSlash(filepath.Clean(samplePath))
 	parts := strings.Split(slashPath, "/")
 	for i, part := range parts {
-		if part != marker {
+		if normalizeDatasetClassDirName(part) != datasetClassDirRepoLevel {
 			continue
 		}
-		if i+2 >= len(parts) {
+		if i == 0 || i+2 >= len(parts) {
 			return "", false
 		}
 		root := strings.Join(parts[:i+3], "/")

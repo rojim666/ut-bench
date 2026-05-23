@@ -23,9 +23,11 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	skill := req.Subject.Skill
 	sample := req.Sample
 	strategy := resolveGenerationStrategy(sample)
+	outputRoot := agentWorkspaceOutputRoot(req.OutputRoot)
+	metaRoot := agentWorkspaceOutputRoot(req.MetaRoot)
 
 	// 1. 准备独立 workspace
-	workRoot := filepath.Join(req.OutputRoot, "runs", req.RunID, "agent_workspaces", subjectID, sample.Language, sample.ID)
+	workRoot := joinArtifactPath(outputRoot, "runs", req.RunID, "agent_workspaces", subjectID, sample.Language, sample.ID)
 	if err := os.RemoveAll(workRoot); err != nil {
 		return agentError("workspace_error", err)
 	}
@@ -83,10 +85,13 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	}
 
 	// 6. 执行前快照
+	if err := ensureAgentWorkspaceWritable(workRoot); err != nil {
+		return agentError("workspace_error", err)
+	}
 	before, _ := snapshotWorkspace(workRoot)
 
 	// 7. 准备 trace 输出目录
-	traceDir := filepath.Join(req.MetaRoot, "agent_traces", subjectID, sample.Language)
+	traceDir := joinArtifactPath(metaRoot, "agent_traces", subjectID, sample.Language)
 	tracePath := filepath.Join(traceDir, sample.ID+".trace.jsonl")
 	rawTracePath := filepath.Join(traceDir, sample.ID+".raw.jsonl")
 	rawStdoutPath := filepath.Join(traceDir, sample.ID+".stdout.txt")
@@ -135,7 +140,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	envMap["UTBENCH_RUN_ID"] = req.RunID
 
 	// 9. 平台托管的样本依赖准备
-	sandboxReq := buildSandboxRunRequest(req.OutputRoot, framework, sample.Language, workRoot, cmdText, envMap, envFromHost)
+	sandboxReq := buildSandboxRunRequest(outputRoot, framework, sample.Language, workRoot, cmdText, envMap, envFromHost)
 	// 注意：源文件已经被 prepareAgentWorkspace 拷贝进 workspace 并 chmod 0444（只读），
 	// 不再额外通过 `-v sourceFile:/workspace/readonly_sources/<basename>:ro` 单文件挂载。
 	// 在 Docker Desktop (Windows/WSL2) 上单文件 bind-mount 与 workspace 主挂载并发会触发 9P
@@ -362,7 +367,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	}
 
 	// 18. 查找生成的测试文件
-	generatedPath := findGeneratedTest(workRoot, outputFile, framework.OutputGlobs, changes, sample.Language)
+	generatedPath := findGeneratedTestStrict(workRoot, outputFile, changes, sample.Language)
 	if generatedPath == "" {
 		errorKind := "agent_output_error"
 		failureDetail := summarizeAgentCommandError(runOutput.Stderr, "", 1200)

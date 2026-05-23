@@ -24,6 +24,9 @@ func TestBuildDockerRunArgsUsesMountedSource(t *testing.T) {
 
 	mustContain(t, joined, "-v /repo/datasets:/app/datasets")
 	mustContain(t, joined, "-v /repo/artifacts:/app/artifacts")
+	mustContain(t, joined, "-e UTBENCH_SANDBOX_HOST_PROJECT_ROOT=/repo")
+	mustContain(t, joined, "-e UTBENCH_SANDBOX_CONTAINER_PROJECT_ROOT=/app")
+	mustContain(t, joined, "-v /var/run/docker.sock:/var/run/docker.sock")
 	mustContain(t, joined, "utbench:latest")
 	mustContain(t, joined, "--output-root /app/artifacts")
 	mustContain(t, joined, "--models deepseek")
@@ -101,7 +104,64 @@ func TestBuildDockerRunArgsPassesReuseGeneratedWithDBPath(t *testing.T) {
 	joined := strings.Join(args, " ")
 
 	mustContain(t, joined, "--reuse-generated")
-	mustContain(t, joined, "--db-path /app/storage/utbench.db")
+	mustContain(t, joined, "--db-path /tmp/utbench.db")
+}
+
+func TestBuildDockerRunArgsDoesNotDuplicateDBPath(t *testing.T) {
+	spec := contracts.RunSpec{
+		RunID:           "run-1",
+		Models:          []string{"deepseek"},
+		Languages:       []string{"go"},
+		ReuseGenerated:  true,
+		ReuseEvaluation: true,
+	}
+	cfg := DockerConfig{EvalImageName: "utbench:latest", ProjectRoot: "/repo"}
+
+	args := buildDockerRunArgs(spec, orchestrator.Options{Ingest: true}, cfg)
+	joined := strings.Join(args, " ")
+
+	if got := strings.Count(joined, "--db-path"); got != 1 {
+		t.Fatalf("expected one --db-path, got %d in %q", got, joined)
+	}
+	mustContain(t, joined, "--db-path /tmp/utbench.db")
+}
+
+func TestBuildDockerRunArgsMapsHostAbsoluteDBPath(t *testing.T) {
+	spec := contracts.RunSpec{
+		RunID:     "run-1",
+		Models:    []string{"deepseek"},
+		Languages: []string{"go"},
+	}
+	cfg := DockerConfig{EvalImageName: "utbench:latest", ProjectRoot: "/repo"}
+
+	args := buildDockerRunArgs(spec, orchestrator.Options{
+		Ingest: true,
+		DBPath: "/repo/custom/utbench.db",
+	}, cfg)
+	joined := strings.Join(args, " ")
+
+	mustContain(t, joined, "--db-path /app/custom/utbench.db")
+}
+
+func TestBuildDockerRunArgsPassesBenchmarkManifestAndMutationFalse(t *testing.T) {
+	spec := contracts.RunSpec{
+		RunID:            "run-1",
+		Models:           []string{"deepseek"},
+		Languages:        []string{"python", "go"},
+		BenchmarkProfile: "small",
+		DatasetLevel:     "l1",
+		DatasetManifest:  "./configs/dataset_small.json",
+		MutationEnabled:  false,
+	}
+	cfg := DockerConfig{EvalImageName: "utbench:latest", ProjectRoot: "/repo"}
+
+	args := buildDockerRunArgs(spec, orchestrator.Options{}, cfg)
+	joined := strings.Join(args, " ")
+
+	mustContain(t, joined, "--benchmark-profile small")
+	mustContain(t, joined, "--level l1")
+	mustContain(t, joined, "--dataset-manifest /app/configs/dataset_small.json")
+	mustContain(t, joined, "--mutation-enabled=false")
 }
 
 func TestBuildDockerEvaluateArgsMapsWindowsRelativeManifest(t *testing.T) {

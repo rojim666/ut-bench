@@ -1,0 +1,16 @@
+﻿{
+    "schema_version":  "v0.1.0",
+    "dataset_class":  "repo_level",
+    "lang":  "cpp",
+    "scenario":  "oss",
+    "project_name":  "fmt",
+    "repo_url":  "https://github.com/fmtlib/fmt.git",
+    "commit_sha":  "2f18a88e68af42bdda0e5210f80fac07ae756bd6",
+    "branch":  "main",
+    "license_file":  "LICENSE",
+    "imported_at":  "2026-05-14T01:16:10",
+    "preprocessing_notes":  [
+                                "shallow cloned with depth 1",
+                                "excluded nested .git, .github, dependency caches, and common build/output directories"
+                            ]
+}

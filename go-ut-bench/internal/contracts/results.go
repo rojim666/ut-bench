@@ -341,18 +341,19 @@ type ErrorPattern struct {
 
 // RunConfig 运行配置信息
 type RunConfig struct {
-	Models          []string  `json:"models"`                // 评测的模型列表
-	Languages       []string  `json:"languages"`             // 评测的语言列表
-	DatasetClass    string    `json:"dataset_class"`         // 数据集类别
-	DatasetLevel    string    `json:"dataset_level"`         // 数据集难度级别
-	MaxSamples      int       `json:"max_samples"`           // 最大样本数
-	MutationEnabled bool      `json:"mutation_enabled"`      // 是否启用变异测试
-	MaxTokens       int       `json:"max_tokens,omitempty"`  // max_tokens 参数
-	Temperature     float64   `json:"temperature,omitempty"` // temperature 参数
-	PromptVersion   string    `json:"prompt_version"`        // 提示词版本
-	StartedAtUTC    time.Time `json:"started_at_utc"`        // 开始时间
-	EndedAtUTC      time.Time `json:"ended_at_utc"`          // 结束时间
-	DurationSeconds int       `json:"duration_seconds"`      // 运行时长（秒）
+	BenchmarkProfile string    `json:"benchmark_profile,omitempty"` // benchmark profile: small/medium/large/custom
+	Models           []string  `json:"models"`                      // 评测的模型列表
+	Languages        []string  `json:"languages"`                   // 评测的语言列表
+	DatasetClass     string    `json:"dataset_class"`               // 数据集类别
+	DatasetLevel     string    `json:"dataset_level"`               // 数据集难度级别
+	MaxSamples       int       `json:"max_samples"`                 // 最大样本数
+	MutationEnabled  bool      `json:"mutation_enabled"`            // 是否启用变异测试
+	MaxTokens        int       `json:"max_tokens,omitempty"`        // max_tokens 参数
+	Temperature      float64   `json:"temperature,omitempty"`       // temperature 参数
+	PromptVersion    string    `json:"prompt_version"`              // 提示词版本
+	StartedAtUTC     time.Time `json:"started_at_utc"`              // 开始时间
+	EndedAtUTC       time.Time `json:"ended_at_utc"`                // 结束时间
+	DurationSeconds  int       `json:"duration_seconds"`            // 运行时长（秒）
 }
 
 // ReportPayload 报告的完整数据结构

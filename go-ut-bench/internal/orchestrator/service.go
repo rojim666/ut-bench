@@ -41,6 +41,7 @@ type Options struct {
 	SourceRunID string
 	// ManifestPath 覆盖 evaluate 阶段的默认 manifest 路径
 	ManifestPath string
+	StrictIngest bool
 	// EvaluationPath 覆盖 report 阶段的默认 evaluation 结果路径
 	EvaluationPath string
 }
@@ -54,6 +55,7 @@ type Result struct {
 	ReportJSONPath string // 报告 JSON 文件路径
 	ReportHTMLPath string // 报告 HTML 文件路径
 	Ingested       bool   // 是否已入库数据库
+	IngestError    string // 入库失败但 run 被保留为成功时的 warning 信息
 }
 
 // New 创建编排服务实例
@@ -191,31 +193,43 @@ func (s *Service) Run(ctx context.Context, spec contracts.RunSpec, opts Options)
 	// Ingest the run directory into the v2 SQLite store. The store indexes the
 	// manifest, evaluation result, report and linked artifacts when present.
 	ingested := false
+	var ingestErr error
 	dbPath := opts.DBPath
 	if dbPath == "" {
 		dbPath = spec.DBPath
 	}
-	if opts.Ingest || (spec.ReuseGenerated && dbPath != "") {
+	if opts.Ingest {
 		sqliteStore, err := store.OpenSQLite(dbPath)
 		if err != nil {
-			return Result{}, err
+			ingestErr = err
+		} else {
+			if err := sqliteStore.Init(ctx); err != nil {
+				ingestErr = err
+			} else {
+				runDir := filepath.Join(spec.OutputRoot, "runs", spec.RunID)
+				if _, err := sqliteStore.IngestRun(ctx, store.IngestRunOptions{RunDir: runDir}); err != nil {
+					ingestErr = err
+				} else {
+					ingested = true
+				}
+			}
+			if err := sqliteStore.Close(); err != nil && ingestErr == nil {
+				ingestErr = err
+			}
 		}
-		defer sqliteStore.Close()
-
-		if err := sqliteStore.Init(ctx); err != nil {
-			return Result{}, err
+		if ingestErr != nil {
+			if opts.StrictIngest {
+				return Result{}, ingestErr
+			}
+			fmt.Fprintf(os.Stderr, "warning: evaluation and report generated successfully, but db ingest failed: %v\n", ingestErr)
 		}
-		runDir := filepath.Join(spec.OutputRoot, "runs", spec.RunID)
-		if _, err := sqliteStore.IngestRun(ctx, store.IngestRunOptions{RunDir: runDir}); err != nil {
-			return Result{}, err
-		}
-		ingested = true
 	}
 
 	// Build result paths
 	result := Result{
-		RunID:    spec.RunID,
-		Ingested: ingested,
+		RunID:       spec.RunID,
+		Ingested:    ingested,
+		IngestError: ingestErrorString(ingestErr),
 	}
 	if manifestPath != "" {
 		result.ManifestPath = manifestPath
@@ -242,6 +256,9 @@ func (s *Service) Run(ctx context.Context, spec contracts.RunSpec, opts Options)
 		"ingested":         ingested,
 		"db_path":          dbPath,
 	}
+	if result.IngestError != "" {
+		summaryData["ingest_error"] = result.IngestError
+	}
 	if !spec.CreatedAtUTC.IsZero() {
 		summaryData["started_at_utc"] = spec.CreatedAtUTC
 	}
@@ -260,6 +277,13 @@ func (s *Service) Run(ctx context.Context, spec contracts.RunSpec, opts Options)
 	_ = contracts.WriteJSON(runSummaryPath, summaryData)
 
 	return result, nil
+}
+
+func ingestErrorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func fileExists(path string) bool {

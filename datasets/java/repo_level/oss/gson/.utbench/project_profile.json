@@ -1,0 +1,16 @@
+﻿{
+    "schema_version":  "v0.1.0",
+    "dataset_class":  "repo_level",
+    "lang":  "java",
+    "scenario":  "oss",
+    "project_name":  "gson",
+    "repo_url":  "https://github.com/google/gson.git",
+    "commit_sha":  "abfef5e8455483b878a8dea14dd42fa55832a56c",
+    "branch":  "main",
+    "license_file":  "LICENSE",
+    "imported_at":  "2026-05-14T01:15:56",
+    "preprocessing_notes":  [
+                                "shallow cloned with depth 1",
+                                "excluded nested .git, .github, dependency caches, and common build/output directories"
+                            ]
+}

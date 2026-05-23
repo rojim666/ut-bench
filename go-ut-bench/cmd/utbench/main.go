@@ -108,6 +108,55 @@ Quick Start:
   3. .\utbench web --addr :8080       # 启动 Web UI 开始使用`)
 }
 
+func defaultDBPath() string {
+	if v := strings.TrimSpace(os.Getenv("UTBENCH_DB_PATH")); v != "" {
+		return v
+	}
+	if isLikelyContainerRuntime() {
+		return "/tmp/utbench.db"
+	}
+	return "./storage/utbench.db"
+}
+
+func isLikelyContainerRuntime() bool {
+	if strings.TrimSpace(os.Getenv("UTBENCH_SANDBOX_CONTAINER_PROJECT_ROOT")) == "/app" {
+		return true
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	return false
+}
+
+func effectiveOutputRoot(outputRoot string) string {
+	raw := strings.TrimSpace(outputRoot)
+	containerOutputRoot := strings.TrimSpace(os.Getenv("UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT"))
+	if !isLikelyContainerRuntime() || containerOutputRoot == "" {
+		return outputRoot
+	}
+	hostOutputRoot := filepath.ToSlash(strings.TrimRight(strings.TrimSpace(os.Getenv("UTBENCH_SANDBOX_HOST_OUTPUT_ROOT")), `/\`))
+	rawSlash := filepath.ToSlash(strings.TrimRight(raw, `/\`))
+	if raw == "" || raw == "." || rawSlash == "./artifacts" || rawSlash == "artifacts" {
+		return containerOutputRoot
+	}
+	if hostOutputRoot != "" && strings.EqualFold(rawSlash, hostOutputRoot) {
+		return containerOutputRoot
+	}
+	if isWindowsAbsPath(rawSlash) {
+		return containerOutputRoot
+	}
+	return outputRoot
+}
+
+func isWindowsAbsPath(p string) bool {
+	slash := filepath.ToSlash(strings.TrimSpace(p))
+	if len(slash) >= 3 && slash[1] == ':' && slash[2] == '/' {
+		c := slash[0]
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	}
+	return false
+}
+
 func runAssets(args []string) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		printAssetsUsage()
@@ -152,7 +201,7 @@ func runAssetsSubjects(args []string) error {
 		fmt.Println("Flags:")
 		fs.PrintDefaults()
 	}
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	limit := fs.Int("limit", 100, "Limit")
 	jsonOut := fs.Bool("json", false, "Print JSON")
 	if err := fs.Parse(args); err != nil {
@@ -185,7 +234,7 @@ func runAssetsGenerations(args []string) error {
 		fmt.Println("Flags:")
 		fs.PrintDefaults()
 	}
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	subjectID := fs.String("subject", "", "Subject ID filter")
 	lang := fs.String("lang", "", "Language filter")
 	sample := fs.String("sample", "", "Sample ID filter")
@@ -221,7 +270,7 @@ func runAssetsEvaluations(args []string) error {
 		fmt.Println("Flags:")
 		fs.PrintDefaults()
 	}
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	subjectID := fs.String("subject", "", "Subject ID filter")
 	lang := fs.String("lang", "", "Language filter")
 	sample := fs.String("sample", "", "Sample ID filter")
@@ -257,7 +306,7 @@ func runAssetsExplainReuse(args []string) error {
 		fmt.Println("Flags:")
 		fs.PrintDefaults()
 	}
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	subjectID := fs.String("subject", "", "Subject ID")
 	lang := fs.String("lang", "", "Language")
 	sample := fs.String("sample", "", "Sample ID")
@@ -434,7 +483,7 @@ func runWeb(args []string) error {
 	configPath := fs.String("config", "./configs/models.yaml", "Model config path")
 	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	agentsConfigPath := fs.String("agents-config", "", "Agent/skill config path (auto-detected from --config dir if omitted)")
 	imageName := fs.String("docker-image", "", "Deprecated alias for --docker-eval-image")
 	evalImageName := fs.String("docker-eval-image", "utbench:latest", "Docker image for containerized evaluation runs")
@@ -500,6 +549,7 @@ func runWeb(args []string) error {
 	if strings.TrimSpace(*imageName) != "" {
 		*evalImageName = *imageName
 	}
+	effectiveWebOutputRoot := effectiveOutputRoot(*outputRoot)
 	dockerCfg := web.DockerConfig{
 		EvalImageName: *evalImageName,
 		ProjectRoot:   absProjectRoot,
@@ -512,9 +562,9 @@ func runWeb(args []string) error {
 	} else {
 		fmt.Printf("[web] agents config: not found (searched in %s)\n", filepath.Dir(*configPath))
 	}
-	mgr := web.NewRunManager(*configPath, *agentsConfigPath, *datasetRoot, *outputRoot, *dbPath, dockerCfg)
+	mgr := web.NewRunManager(*configPath, *agentsConfigPath, *datasetRoot, effectiveWebOutputRoot, *dbPath, dockerCfg)
 	bld := web.NewBuildManager(absProjectRoot)
-	server, err := web.NewServer(mgr, bld, *configPath, *outputRoot, *dbPath, dockerCfg)
+	server, err := web.NewServer(mgr, bld, *configPath, effectiveWebOutputRoot, *dbPath, dockerCfg)
 	if err != nil {
 		return fmt.Errorf("create web server: %w", err)
 	}
@@ -661,15 +711,18 @@ func runRun(args []string) error {
 	}
 
 	ingest := fs.Bool("ingest", false, "Ingest results into SQLite after run")
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	noIngest := fs.Bool("no-ingest", false, "Disable SQLite ingest even if --ingest is present")
+	strictIngest := fs.Bool("strict-ingest", false, "Fail the run when SQLite ingest fails")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	verbose := fs.Bool("v", false, "Verbose output")
 	config := fs.String("config", "../benchmark/config/models.yaml", "Model config path")
 	agentsConfig := fs.String("agents-config", "", "Agent/skill config path")
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
 	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	datasetManifest := fs.String("dataset-manifest", "", "Dataset manifest path")
-	datasetLevel := fs.String("level", "", "Dataset level")
-	datasetClass := fs.String("class", "self_contained", "Dataset class(es), comma-separated (self_contained, module_level)")
+	benchmarkProfile := fs.String("benchmark-profile", "", "Benchmark profile (small, medium, large)")
+	datasetLevel := fs.String("level", "", "Dataset level directories, comma-separated (for example l1 or l1,l2)")
+	datasetClass := fs.String("class", "self_contained", "Dataset class(es), comma-separated (self_contained, repo_level)")
 	datasetScenario := fs.String("scenario", "", "Dataset scenario (boundary, simple_function, complex_dependency, interface_mock)")
 	datasetProject := fs.String("project", "", "Repo-level dataset project filter")
 	maxSamples := fs.Int("max-samples", 0, "Max samples")
@@ -704,6 +757,7 @@ func runRun(args []string) error {
 		OutputRoot:       *outputRoot,
 		DatasetRoot:      *datasetRoot,
 		DatasetManifest:  *datasetManifest,
+		BenchmarkProfile: dataset.NormalizeBenchmarkProfile(*benchmarkProfile),
 		DatasetLevel:     *datasetLevel,
 		DatasetClasses:   parseCommaList(*datasetClass),
 		DatasetScenario:  *datasetScenario,
@@ -726,6 +780,7 @@ func runRun(args []string) error {
 		RunID:            *runID,
 		CreatedAtUTC:     time.Now().UTC(),
 	}
+	spec = dataset.ApplyBenchmarkProfile(spec)
 	ensureRunID(&spec)
 
 	logDir := filepath.Join(*outputRoot, "runs", spec.RunID, "logs")
@@ -750,7 +805,7 @@ func runRun(args []string) error {
 	}
 
 	svc := orchestrator.New(datasetSvc, runnerSvc, evaluatorSvc, reporterSvc)
-	opts := orchestrator.Options{Ingest: *ingest, DBPath: *dbPath}
+	opts := orchestrator.Options{Ingest: *ingest && !*noIngest, DBPath: *dbPath, StrictIngest: *strictIngest}
 
 	result, err := svc.Run(ctx, spec, opts)
 	if err != nil {
@@ -764,6 +819,8 @@ func runRun(args []string) error {
 	fmt.Printf("  Report HTML: %s\n", result.ReportHTMLPath)
 	if result.Ingested {
 		fmt.Printf("  Ingested:   yes\n")
+	} else if result.IngestError != "" {
+		fmt.Printf("  Ingested:   no (warning: %s)\n", result.IngestError)
 	}
 	return nil
 }
@@ -782,7 +839,8 @@ func runGenerate(args []string) error {
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
 	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
 	datasetManifest := fs.String("dataset-manifest", "", "Dataset manifest path")
-	datasetLevel := fs.String("level", "", "Dataset level")
+	benchmarkProfile := fs.String("benchmark-profile", "", "Benchmark profile (small, medium, large)")
+	datasetLevel := fs.String("level", "", "Dataset level directories, comma-separated (for example l1 or l1,l2)")
 	datasetClass := fs.String("class", "self_contained", "Dataset class")
 	datasetScenario := fs.String("scenario", "", "Dataset scenario")
 	datasetProject := fs.String("project", "", "Repo-level dataset project filter")
@@ -791,7 +849,7 @@ func runGenerate(args []string) error {
 	resetCheckpoint := fs.Bool("reset-checkpoint", false, "Reset checkpoint")
 	dryRun := fs.Bool("dry-run", false, "Dry run")
 	reuseGenerated := fs.Bool("reuse-generated", true, "Reuse matching generated tests from SQLite before calling models")
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	models := fs.String("models", "", "Comma-separated models")
 	subjects := fs.String("subjects", "", "Comma-separated subjects (framework__model__skill)")
 	langs := fs.String("langs", "", "Comma-separated languages")
@@ -807,6 +865,7 @@ func runGenerate(args []string) error {
 		OutputRoot:       *outputRoot,
 		DatasetRoot:      *datasetRoot,
 		DatasetManifest:  *datasetManifest,
+		BenchmarkProfile: dataset.NormalizeBenchmarkProfile(*benchmarkProfile),
 		DatasetLevel:     *datasetLevel,
 		DatasetClasses:   parseCommaList(*datasetClass),
 		DatasetScenario:  *datasetScenario,
@@ -823,6 +882,7 @@ func runGenerate(args []string) error {
 		RunID:            *runID,
 		CreatedAtUTC:     time.Now().UTC(),
 	}
+	spec = dataset.ApplyBenchmarkProfile(spec)
 	ensureRunID(&spec)
 
 	logger := obs.NewLogger(*verbose, "")
@@ -877,7 +937,7 @@ func runEvaluate(args []string) error {
 	verbose := fs.Bool("v", false, "Verbose output")
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
 	manifestPath := fs.String("manifest", "", "Path to generated_manifest.json (required)")
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	reuseEvaluation := fs.Bool("reuse-evaluation", false, "Reuse matching evaluation results from SQLite when environment keys match")
 	mutationEnabled := fs.Bool("mutation-enabled", true, "Enable mutation testing")
 	mutationTimeout := fs.Int("mutation-timeout", 600, "Mutation timeout (seconds)")
@@ -1046,7 +1106,7 @@ func runDBInit(args []string) error {
 		fmt.Println("Flags:")
 		fs.PrintDefaults()
 	}
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1062,7 +1122,7 @@ func runDBInit(args []string) error {
 
 func runDBIngestManifest(args []string) error {
 	fs := flag.NewFlagSet("utbench db ingest-manifest", flag.ContinueOnError)
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	manifestPath := fs.String("manifest", "", "Path to generated_manifest.json (required)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1086,7 +1146,7 @@ func runDBIngestManifest(args []string) error {
 
 func runDBIngestEvaluation(args []string) error {
 	fs := flag.NewFlagSet("utbench db ingest-evaluation", flag.ContinueOnError)
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	evaluationPath := fs.String("evaluation", "", "Path to evaluation_result.json (required)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1110,7 +1170,7 @@ func runDBIngestEvaluation(args []string) error {
 
 func runDBIngestReport(args []string) error {
 	fs := flag.NewFlagSet("utbench db ingest-report", flag.ContinueOnError)
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	reportPath := fs.String("report", "", "Path to report_summary.json (required)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1134,7 +1194,7 @@ func runDBIngestReport(args []string) error {
 
 func runDBIngestRun(args []string) error {
 	fs := flag.NewFlagSet("utbench db ingest-run", flag.ContinueOnError)
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
 	runID := fs.String("run-id", "", "Run ID")
 	runDir := fs.String("run-dir", "", "Run directory")
@@ -1164,7 +1224,7 @@ func runDBIngestRun(args []string) error {
 
 func runDBOverview(args []string) error {
 	fs := flag.NewFlagSet("utbench db overview", flag.ContinueOnError)
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	limit := fs.Int("limit", 10, "Latest run limit")
 	jsonOut := fs.Bool("json", false, "Print JSON")
 	if err := fs.Parse(args); err != nil {
@@ -1199,7 +1259,7 @@ func runDBOverview(args []string) error {
 
 func runDBListRuns(args []string) error {
 	fs := flag.NewFlagSet("utbench db list-runs", flag.ContinueOnError)
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	limit := fs.Int("limit", 50, "Limit")
 	jsonOut := fs.Bool("json", false, "Print JSON")
 	if err := fs.Parse(args); err != nil {
@@ -1226,7 +1286,7 @@ func runDBListRuns(args []string) error {
 
 func runDBListResults(args []string) error {
 	fs := flag.NewFlagSet("utbench db list-results", flag.ContinueOnError)
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	runID := fs.String("run-id", "", "Run ID filter")
 	model := fs.String("model", "", "Model filter")
 	lang := fs.String("lang", "", "Language filter")
@@ -1265,7 +1325,7 @@ func runDBReport(args []string) error {
 		fmt.Println("Flags:")
 		fs.PrintDefaults()
 	}
-	dbPath := fs.String("db-path", "./storage/utbench.db", "SQLite database path")
+	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
 	outputRoot := fs.String("output-root", "./artifacts", "Output root directory")
 	configPath := fs.String("config", "./configs/models.yaml", "Model config path")
 	runIDs := fs.String("run-ids", "", "Comma-separated source run IDs")
@@ -1355,6 +1415,7 @@ func runDataset(args []string) error {
 		fmt.Println("  stats            Show dataset file counts")
 		fmt.Println("  index            Build dataset index")
 		fmt.Println("  manifest         Build dataset manifest (L1/L2)")
+		fmt.Println("  materialize-levels Generate or validate datasets/l1~l3 directories")
 		fmt.Println("\nRun 'utbench dataset <subcommand> --help' for subcommand flags.")
 	}
 
@@ -1377,10 +1438,12 @@ func runDatasetSubcommand(svc *dataset.Service, subCmd string, remaining []strin
 		return datasetIndex(svc, remaining)
 	case "manifest":
 		return datasetManifest(svc, remaining)
+	case "materialize-levels":
+		return datasetMaterializeLevels(svc, remaining)
 	case "validate":
 		return datasetValidate(svc, remaining)
 	default:
-		return fmt.Errorf("unknown sub-command: %s (use: stats, index, manifest, validate)", subCmd)
+		return fmt.Errorf("unknown sub-command: %s (use: stats, index, manifest, materialize-levels, validate)", subCmd)
 	}
 }
 
@@ -1459,6 +1522,36 @@ func datasetManifest(svc *dataset.Service, args []string) error {
 		return fmt.Errorf("build manifest: %w", err)
 	}
 	fmt.Printf("Built manifest with %d samples -> %s\n", summary.Total, summary.Path)
+	return nil
+}
+
+func datasetMaterializeLevels(svc *dataset.Service, args []string) error {
+	fs := flag.NewFlagSet("utbench dataset materialize-levels", flag.ContinueOnError)
+	datasetRoot := fs.String("dataset-root", "../datasets", "Dataset root directory")
+	configRoot := fs.String("config-root", "./configs", "Config directory containing dataset manifests")
+	levels := fs.String("levels", "l1,l2,l3", "Comma-separated levels to materialize")
+	check := fs.Bool("check", false, "Only validate existing level directories without rewriting files")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	summary, err := svc.MaterializeLevels(dataset.MaterializeLevelsOptions{
+		DatasetRoot: *datasetRoot,
+		ConfigRoot:  *configRoot,
+		Levels:      parseCommaList(*levels),
+		Check:       *check,
+	})
+	if err != nil {
+		return err
+	}
+	mode := "materialized"
+	if *check {
+		mode = "validated"
+	}
+	for _, item := range summary.Levels {
+		fmt.Printf("%s %s -> %s (samples=%d files=%d repo_roots=%d)\n",
+			mode, item.Level, item.TargetRoot, item.Samples, item.Files, item.RepoRoots)
+	}
 	return nil
 }
 

@@ -1,9 +1,0 @@
-./aggregation.go
-./embed.go
-./html_prompt_charts.go
-./html_sections.go
-./ranking.go
-./runtime_summary.go
-./service.go
-./service_html_new.go
-./service_insights.go

@@ -262,6 +262,36 @@ func main() {
 	}
 }
 
+func TestFindGeneratedTestStrictIgnoresPreexistingWorkspaceTests(t *testing.T) {
+	tmp := t.TempDir()
+	staleDir := filepath.Join(tmp, "go_code_files_repo_level", "oss", "fatih-color")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staleTest := filepath.Join(staleDir, "color_test.go")
+	if err := os.WriteFile(staleTest, []byte("package color\n\nimport \"testing\"\n\nfunc TestStale(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := findGeneratedTestStrict(tmp, filepath.Join(tmp, "generated_test.go"), nil, "go")
+	if got != "" {
+		t.Fatalf("expected no generated test, got %q", got)
+	}
+}
+
+func TestFindGeneratedTestStrictAllowsChangedTestAfterCommandError(t *testing.T) {
+	tmp := t.TempDir()
+	generated := filepath.Join(tmp, "test_generated.py")
+	if err := os.WriteFile(generated, []byte("def test_generated():\n    assert True\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := findGeneratedTestStrict(tmp, filepath.Join(tmp, "generated_test.py"), []string{"test_generated.py"}, "python")
+	if got != generated {
+		t.Fatalf("generated test = %q, want %q", got, generated)
+	}
+}
+
 func TestFrameworkDockerImageAndPreflightCommands(t *testing.T) {
 	// 新优先级: Sandbox.Image → DockerImage → DockerImages[lang] → images["default"]
 	fw := agentconfig.FrameworkSpec{
@@ -779,5 +809,12 @@ func TestGenerateWithCLIAgentFailsOnSandboxPreflight(t *testing.T) {
 	}
 	if len(result.Trace.PreflightChecks) != 1 || result.Trace.PreflightChecks[0].Passed {
 		t.Fatalf("expected failed preflight checks, got %+v", result.Trace.PreflightChecks)
+	}
+}
+
+func TestFrameworkForbiddenCommandPatternsDefaultAllowsDependencyInstall(t *testing.T) {
+	got := frameworkForbiddenCommandPatterns(agentconfig.FrameworkSpec{})
+	if len(got) != 0 {
+		t.Fatalf("expected no default forbidden command patterns, got %+v", got)
 	}
 }

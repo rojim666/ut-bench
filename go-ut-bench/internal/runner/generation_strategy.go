@@ -12,7 +12,7 @@ type generationStrategySpec struct {
 
 func resolveGenerationStrategy(sample contracts.SampleRef) generationStrategySpec {
 	mode := contracts.DatasetModeForClass(sample.Category)
-	if loadRepoLevelMetaForRunner(sample.Path) != nil {
+	if repoLevelMetaForSample(sample) != nil {
 		mode = contracts.DatasetModeProjectLevel
 	}
 
@@ -28,4 +28,15 @@ func resolveGenerationStrategy(sample contracts.SampleRef) generationStrategySpe
 		spec.RequireGeneratedTestFile = true
 	}
 	return spec
+}
+
+func repoLevelMetaForSample(sample contracts.SampleRef) *repoLevelMetaForRunner {
+	switch sample.Category {
+	case contracts.DatasetClassSelfContained:
+		return nil
+	case contracts.DatasetClassRepoLevel:
+		return loadRepoLevelMetaForRunner(sample.Path)
+	default:
+		return loadRepoLevelMetaForRunner(sample.Path)
+	}
 }

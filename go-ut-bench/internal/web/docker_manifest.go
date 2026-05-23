@@ -30,7 +30,7 @@ func (m *RunManager) writeDockerGeneratedManifest(spec contracts.RunSpec, source
 		manifest.Spec.AgentsConfigPath = pathpkg.Join("/app/configs", filepath.Base(manifest.Spec.AgentsConfigPath))
 	}
 	if strings.TrimSpace(manifest.Spec.DBPath) != "" {
-		manifest.Spec.DBPath = "/app/storage/utbench.db"
+		manifest.Spec.DBPath = containerDefaultDBPath
 	}
 	manifest.PromptSnapshotDir = mapper(manifest.PromptSnapshotDir)
 	for i := range manifest.Cases {

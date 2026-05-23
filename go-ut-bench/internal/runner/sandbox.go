@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -69,7 +70,7 @@ func runDockerSandbox(ctx context.Context, req SandboxRunRequest, timeout int) (
 		return SandboxRunResult{}, err
 	}
 	// Docker 要求绝对路径作为 volume mount 源
-	if !filepath.IsAbs(mountSource) {
+	if !isDockerBindSourceAbs(mountSource) {
 		if absPath, err := filepath.Abs(mountSource); err == nil {
 			fmt.Fprintf(os.Stderr, "[sandbox] workspace mount: converted relative %q to absolute %q\n", mountSource, absPath)
 			mountSource = absPath
@@ -108,22 +109,26 @@ func runDockerSandbox(ctx context.Context, req SandboxRunRequest, timeout int) (
 		image = "utbench-agent:latest"
 	}
 	// 挂载 workspace（读写，Agent 需要写入测试文件）
-	args = append(args, "-v", mountSource+":/workspace", "-w", "/workspace")
+	args = appendDockerBindMount(args, mountSource, "/workspace", false)
+	args = append(args, "-w", "/workspace")
 	// 只读挂载源码文件，防止 Agent 意外修改被测源码
 	for _, roPath := range req.ReadOnlyMounts {
 		roPath = strings.TrimSpace(roPath)
 		if roPath == "" {
 			continue
 		}
+		if mapped, ok := mapContainerPathToDockerHost(roPath); ok {
+			roPath = mapped
+		}
 		// 将相对路径转换为绝对路径，Docker 要求绝对路径
-		if !filepath.IsAbs(roPath) {
+		if !isDockerBindSourceAbs(roPath) {
 			if absPath, err := filepath.Abs(roPath); err == nil {
 				fmt.Fprintf(os.Stderr, "[sandbox] ReadOnlyMount: converted relative %q to absolute %q\n", roPath, absPath)
 				roPath = absPath
 			}
 		}
 		containerRO := "/workspace/readonly_sources/" + filepath.Base(roPath)
-		args = append(args, "-v", roPath+":"+containerRO+":ro")
+		args = appendDockerBindMount(args, roPath, containerRO, true)
 	}
 	args = append(args, image, sandboxShell(), "-c", req.Command)
 	var stdout, stderr bytes.Buffer
@@ -145,10 +150,43 @@ func runDockerSandbox(ctx context.Context, req SandboxRunRequest, timeout int) (
 	return result, err
 }
 
+func appendDockerBindMount(args []string, source, target string, readonly bool) []string {
+	source = filepath.ToSlash(strings.TrimSpace(source))
+	target = filepath.ToSlash(strings.TrimSpace(target))
+	if isWindowsAbsPath(source) {
+		spec := "type=bind,source=" + source + ",target=" + target
+		if readonly {
+			spec += ",readonly"
+		}
+		return append(args, "--mount", spec)
+	}
+	suffix := ""
+	if readonly {
+		suffix = ":ro"
+	}
+	return append(args, "-v", source+":"+target+suffix)
+}
+
+func isDockerBindSourceAbs(p string) bool {
+	return filepath.IsAbs(p) || isWindowsAbsPath(p) || strings.HasPrefix(filepath.ToSlash(p), "//")
+}
+
+func isWindowsAbsPath(p string) bool {
+	slash := filepath.ToSlash(strings.TrimSpace(p))
+	if len(slash) >= 3 && slash[1] == ':' && slash[2] == '/' {
+		c := slash[0]
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	}
+	return false
+}
+
 func resolveDockerWorkspaceMount(req SandboxRunRequest) (string, error) {
 	workspace := strings.TrimSpace(req.Workspace)
 	if workspace == "" {
 		return "", fmt.Errorf("docker sandbox workspace is empty")
+	}
+	if mapped, ok := mapContainerPathToDockerHost(workspace); ok {
+		return mapped, nil
 	}
 	hostOutputRoot := strings.TrimSpace(os.Getenv("UTBENCH_SANDBOX_HOST_OUTPUT_ROOT"))
 	containerOutputRoot := strings.TrimSpace(os.Getenv("UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT"))
@@ -185,6 +223,115 @@ func resolveDockerWorkspaceMount(req SandboxRunRequest) (string, error) {
 		return "", fmt.Errorf("docker sandbox workspace %s looks container-local; set UTBENCH_SANDBOX_HOST_OUTPUT_ROOT to the host artifacts path when using DOOD", workspace)
 	}
 	return workspace, nil
+}
+
+func mapContainerPathToDockerHost(value string) (string, bool) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return "", false
+	}
+	pairs := [][2]string{
+		{os.Getenv("UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT"), os.Getenv("UTBENCH_SANDBOX_HOST_OUTPUT_ROOT")},
+		{os.Getenv("UTBENCH_SANDBOX_CONTAINER_DATASET_ROOT"), os.Getenv("UTBENCH_SANDBOX_HOST_DATASET_ROOT")},
+		{os.Getenv("UTBENCH_SANDBOX_CONTAINER_PROJECT_ROOT"), os.Getenv("UTBENCH_SANDBOX_HOST_PROJECT_ROOT")},
+	}
+	slashRaw := filepath.ToSlash(raw)
+	for _, pair := range pairs {
+		containerRoot := strings.TrimRight(filepath.ToSlash(strings.TrimSpace(pair[0])), "/")
+		hostRoot := strings.TrimSpace(pair[1])
+		if containerRoot == "" || hostRoot == "" {
+			continue
+		}
+		if slashRaw == containerRoot {
+			return filepath.ToSlash(hostRoot), true
+		}
+		if strings.HasPrefix(slashRaw, containerRoot+"/") {
+			rel := strings.TrimPrefix(slashRaw, containerRoot+"/")
+			return filepath.ToSlash(filepath.Join(hostRoot, filepath.FromSlash(rel))), true
+		}
+	}
+	return "", false
+}
+
+func mapDockerHostPathToContainer(value string) (string, bool) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return "", false
+	}
+	pairs := [][2]string{
+		{os.Getenv("UTBENCH_SANDBOX_HOST_OUTPUT_ROOT"), os.Getenv("UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT")},
+		{os.Getenv("UTBENCH_SANDBOX_HOST_DATASET_ROOT"), os.Getenv("UTBENCH_SANDBOX_CONTAINER_DATASET_ROOT")},
+		{os.Getenv("UTBENCH_SANDBOX_HOST_PROJECT_ROOT"), os.Getenv("UTBENCH_SANDBOX_CONTAINER_PROJECT_ROOT")},
+	}
+	slashRaw := cleanSlashPath(raw)
+	for _, pair := range pairs {
+		hostRoot := cleanSlashPath(pair[0])
+		containerRoot := strings.TrimRight(filepath.ToSlash(strings.TrimSpace(pair[1])), "/")
+		if hostRoot == "" || containerRoot == "" {
+			continue
+		}
+		if sameDockerHostPath(slashRaw, hostRoot) {
+			return containerRoot, true
+		}
+		prefix := hostRoot + "/"
+		if hasDockerHostPathPrefix(slashRaw, prefix) {
+			rel := slashRaw[len(prefix):]
+			return pathJoinSlash(containerRoot, rel), true
+		}
+	}
+	return "", false
+}
+
+func agentWorkspaceOutputRoot(outputRoot string) string {
+	if mapped, ok := mapDockerHostPathToContainer(outputRoot); ok {
+		return mapped
+	}
+	return outputRoot
+}
+
+func joinArtifactPath(root string, elems ...string) string {
+	if isContainerPath(root) {
+		parts := make([]string, 0, len(elems)+1)
+		parts = append(parts, strings.TrimRight(filepath.ToSlash(root), "/"))
+		for _, elem := range elems {
+			parts = append(parts, filepath.ToSlash(elem))
+		}
+		return path.Join(parts...)
+	}
+	all := append([]string{root}, elems...)
+	return filepath.Join(all...)
+}
+
+func pathJoinSlash(root, rel string) string {
+	root = strings.TrimRight(filepath.ToSlash(strings.TrimSpace(root)), "/")
+	rel = strings.TrimLeft(filepath.ToSlash(strings.TrimSpace(rel)), "/")
+	if rel == "" {
+		return root
+	}
+	return root + "/" + rel
+}
+
+func isContainerPath(p string) bool {
+	slash := filepath.ToSlash(strings.TrimSpace(p))
+	return strings.HasPrefix(slash, "/") && !isWindowsAbsPath(slash)
+}
+
+func cleanSlashPath(p string) string {
+	return strings.TrimRight(filepath.ToSlash(strings.TrimSpace(p)), "/")
+}
+
+func sameDockerHostPath(a, b string) bool {
+	if isWindowsAbsPath(a) || isWindowsAbsPath(b) {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func hasDockerHostPathPrefix(value, prefix string) bool {
+	if isWindowsAbsPath(value) || isWindowsAbsPath(prefix) {
+		return strings.HasPrefix(strings.ToLower(value), strings.ToLower(prefix))
+	}
+	return strings.HasPrefix(value, prefix)
 }
 
 func runLocalSandbox(ctx context.Context, req SandboxRunRequest) (SandboxRunResult, error) {
