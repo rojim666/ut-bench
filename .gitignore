@@ -94,3 +94,11 @@ desktop.ini
 *.bak
 *.swp
 *.swo
+
+# 旧流程遗留临时文件
+tbody_content.txt
+opencode.json3
+
+# GStack
+.codebuddy/skills/gstack
+
