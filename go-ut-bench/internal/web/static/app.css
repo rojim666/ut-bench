@@ -4,7 +4,7 @@
 *{scrollbar-width:thin;scrollbar-color:var(--scroll-thumb) transparent}
 *,::before,::after{box-sizing:border-box}
 html,body{height:100%;margin:0}
-body{font-family:"LXGW WenKai","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg);letter-spacing:.01em;display:flex;overflow:hidden;min-height:100vh}
+body{font-family:"Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;background:var(--bg);color:var(--fg);letter-spacing:.01em;display:flex;overflow:hidden;min-height:100vh}
 body>aside{width:15rem;flex:0 0 15rem;height:100vh;overflow:hidden}
 body>main{flex:1 1 auto;min-width:0;height:100vh;display:flex;flex-direction:column;overflow:hidden}
 body>main>header{height:3.5rem;flex:0 0 3.5rem}
@@ -294,7 +294,7 @@ body>main>.flex-1{flex:1 1 auto;min-height:0;overflow-y:auto}
 .automation-switch.active{border-color:rgba(16,185,129,.26);background:var(--success-bg);color:var(--green)}
 .alarm-face{display:grid;grid-template-columns:170px 220px minmax(0,1fr);gap:14px;align-items:center;border:1px solid var(--border-subtle);border-radius:8px;background:var(--bg-overlay);padding:14px}
 .alarm-date-input{width:100%;height:76px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elevated);color:var(--fg);padding:0 14px;font-size:16px;font-weight:750}
-.alarm-time-input{width:100%;height:76px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elevated);color:var(--fg);padding:0 16px;font-family:"Bahnschrift","Aptos Display",system-ui,sans-serif;font-size:34px;font-weight:800;letter-spacing:0}
+.alarm-time-input{width:100%;height:76px;border:1px solid var(--border);border-radius:8px;background:var(--bg-elevated);color:var(--fg);padding:0 16px;font-family:"Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;font-size:34px;font-weight:800;letter-spacing:0}
 .alarm-time-input:disabled{opacity:.55}
 .alarm-face-meta{display:grid;gap:6px;min-width:0}
 .alarm-face-meta strong{color:var(--fg);font-size:18px;line-height:1.25;overflow-wrap:anywhere}

@@ -98,50 +98,6 @@
             </div>
           </div>
           <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
-            <div class="section-title">被测对象 Subject（自由组合）</div>
-            <div class="text-[12px] mb-3" style="color:var(--fg-muted)">自由搭配 Framework + Model + Skill 组合。每行生成一个 Subject，可添加多个。</div>
-
-            <div x-show="config?.agents_config_error" class="mb-3 rounded-lg p-3 text-[12px]" style="background:var(--badge-bg);border:1px solid var(--border);color:var(--fg-muted)">
-              <strong>Agents Config:</strong> <span x-text="config?.agents_config_error"></span>
-              <br>当前仅支持 model_api（纯 API 模式）。如需 Framework/Skill，请确保启动时指定了 <code class="font-mono">--agents-config</code>。
-            </div>
-
-            <div class="space-y-2" id="combo-rows" x-html="renderCombinationRows()" @change="handleComboRowsChange($event)" @click="handleComboRowsClick($event)"></div>
-
-            <button type="button" class="btn-pill mt-2" style="background:var(--accent);color:var(--accent-fg)"
-              @click="addCombination()">+ 添加组合</button>
-
-            <div class="mt-4 rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border)">
-              <div class="flex flex-wrap items-center gap-2 text-[12px]">
-                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">已选 Subject <span x-text="selectedSubjectCount"></span></span>
-                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">有效被测对象 <span x-text="selectedExecutionTargetCount"></span></span>
-                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">Framework <span x-text="selectedFrameworkCount"></span></span>
-                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">Skill <span x-text="selectedSkillCount"></span></span>
-              </div>
-              <div class="mt-2 text-[12px]" style="color:var(--fg-muted)" x-text="subjectPlanHint"></div>
-            </div>
-          </div>
-
-          <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
-            <div class="section-title">模型检测</div>
-            <div class="text-[12px] mb-3" style="color:var(--fg-muted)">
-              检测已注册模型的 API Key 配置状态；执行对象请在上方 Subject 组合中选择。
-            </div>
-            <div class="flex flex-wrap gap-2.5">
-              <template x-for="m in config?.models ?? []" :key="m.name">
-                <div class="chip" :class="m.api_key_set ? 'active' : ''" :title="m.api_key_set ? 'API Key 已配置' : 'API Key 未配置: ' + m.api_key_env">
-                  <span class="inline-block w-2 h-2 rounded-full shrink-0" :style="m.api_key_set ? 'background:var(--green)' : 'background:var(--red)'"></span>
-                  <span x-text="m.name" class="font-medium"></span>
-                  <span x-text="m.model_id" class="text-[11px]" style="color:var(--fg-muted)"></span>
-                  <span class="text-[11px]" :style="m.api_key_set ? 'color:var(--green)' : 'color:var(--red)'" x-text="m.api_key_set ? '可用' : '缺密钥'"></span>
-                </div>
-              </template>
-            </div>
-            <div x-show="(config?.models ?? []).some(m => !m.api_key_set)" class="mt-2 text-[11px]" style="color:var(--yellow)">
-              <span class="inline-block w-2 h-2 rounded-full mr-1" style="background:var(--red)"></span>红点表示 API Key 未配置，运行时会失败。请在 <span class="font-mono">.env</span> 中设置对应变量，或到「注册表」页面编辑。
-            </div>
-          </div>
-          <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
             <div class="section-title">语言</div>
             <div class="flex flex-wrap gap-2.5">
               <template x-for="lang in config?.languages ?? []" :key="lang">
@@ -204,6 +160,50 @@
                 <label class="label-text">并发数 <span class="font-normal" style="color:var(--fg-subtle)">（0 = 自动）</span></label>
                 <input x-model.number="form.workers" type="number" min="0" class="input-base">
               </div>
+            </div>
+          </div>
+          <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
+            <div class="section-title">被测对象 Subject（自由组合）</div>
+            <div class="text-[12px] mb-3" style="color:var(--fg-muted)">自由搭配 Framework + Model + Skill 组合。每行生成一个 Subject，可添加多个。</div>
+
+            <div x-show="config?.agents_config_error" class="mb-3 rounded-lg p-3 text-[12px]" style="background:var(--badge-bg);border:1px solid var(--border);color:var(--fg-muted)">
+              <strong>Agents Config:</strong> <span x-text="config?.agents_config_error"></span>
+              <br>当前仅支持 model_api（纯 API 模式）。如需 Framework/Skill，请确保启动时指定了 <code class="font-mono">--agents-config</code>。
+            </div>
+
+            <div class="space-y-2" id="combo-rows" x-html="renderCombinationRows()" @change="handleComboRowsChange($event)" @click="handleComboRowsClick($event)"></div>
+
+            <button type="button" class="btn-pill mt-2" style="background:var(--accent);color:var(--accent-fg)"
+              @click="addCombination()">+ 添加组合</button>
+
+            <div class="mt-4 rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border)">
+              <div class="flex flex-wrap items-center gap-2 text-[12px]">
+                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">已选 Subject <span x-text="selectedSubjectCount"></span></span>
+                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">有效被测对象 <span x-text="selectedExecutionTargetCount"></span></span>
+                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">Framework <span x-text="selectedFrameworkCount"></span></span>
+                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">Skill <span x-text="selectedSkillCount"></span></span>
+              </div>
+              <div class="mt-2 text-[12px]" style="color:var(--fg-muted)" x-text="subjectPlanHint"></div>
+            </div>
+          </div>
+
+          <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
+            <div class="section-title">模型检测</div>
+            <div class="text-[12px] mb-3" style="color:var(--fg-muted)">
+              检测已注册模型的 API Key 配置状态；执行对象请在上方 Subject 组合中选择。
+            </div>
+            <div class="flex flex-wrap gap-2.5">
+              <template x-for="m in config?.models ?? []" :key="m.name">
+                <div class="chip" :class="m.api_key_set ? 'active' : ''" :title="m.api_key_set ? 'API Key 已配置' : 'API Key 未配置: ' + m.api_key_env">
+                  <span class="inline-block w-2 h-2 rounded-full shrink-0" :style="m.api_key_set ? 'background:var(--green)' : 'background:var(--red)'"></span>
+                  <span x-text="m.name" class="font-medium"></span>
+                  <span x-text="m.model_id" class="text-[11px]" style="color:var(--fg-muted)"></span>
+                  <span class="text-[11px]" :style="m.api_key_set ? 'color:var(--green)' : 'color:var(--red)'" x-text="m.api_key_set ? '可用' : '缺密钥'"></span>
+                </div>
+              </template>
+            </div>
+            <div x-show="(config?.models ?? []).some(m => !m.api_key_set)" class="mt-2 text-[11px]" style="color:var(--yellow)">
+              <span class="inline-block w-2 h-2 rounded-full mr-1" style="background:var(--red)"></span>红点表示 API Key 未配置，运行时会失败。请在 <span class="font-mono">.env</span> 中设置对应变量，或到「注册表」页面编辑。
             </div>
           </div>
           <div class="form-section">

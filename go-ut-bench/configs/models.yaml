@@ -75,7 +75,7 @@ models:
         config:
             anthropic_endpoint: ""
             api_endpoint: https://apiai.sztu.edu.cn/v1
-            api_key_env: GLM_5.1_API_KEY
+            api_key_env: BIGMODEL_API_KEY
             model: glm-5.1
             parameters:
                 max_tokens: 4096
