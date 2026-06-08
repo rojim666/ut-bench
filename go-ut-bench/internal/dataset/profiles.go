@@ -15,6 +15,7 @@ type BenchmarkProfile struct {
 	Languages      []string
 	DatasetClasses []string
 	MaxSamples     int
+	Fixed          bool
 }
 
 var benchmarkProfiles = map[string]BenchmarkProfile{
@@ -24,6 +25,7 @@ var benchmarkProfiles = map[string]BenchmarkProfile{
 		Languages:      []string{"python", "go"},
 		DatasetClasses: []string{"self_contained"},
 		MaxSamples:     5,
+		Fixed:          true,
 	},
 	"medium": {
 		Name:           "medium",
@@ -31,6 +33,7 @@ var benchmarkProfiles = map[string]BenchmarkProfile{
 		Languages:      []string{"python", "go", "java", "cpp"},
 		DatasetClasses: []string{"self_contained"},
 		MaxSamples:     30,
+		Fixed:          true,
 	},
 	"large": {
 		Name:           "large",
@@ -38,13 +41,18 @@ var benchmarkProfiles = map[string]BenchmarkProfile{
 		Languages:      []string{"python", "go", "java", "cpp"},
 		DatasetClasses: []string{"self_contained"},
 		MaxSamples:     50,
+		Fixed:          true,
+	},
+	"custom": {
+		Name:  "custom",
+		Fixed: false,
 	},
 }
 
 // NormalizeBenchmarkProfile 规范化 benchmark profile 名称。
 func NormalizeBenchmarkProfile(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "small", "medium", "large":
+	case "small", "medium", "large", "custom":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return ""
@@ -69,9 +77,12 @@ func ApplyBenchmarkProfile(spec contracts.RunSpec) contracts.RunSpec {
 		return spec
 	}
 	spec.BenchmarkProfile = profile.Name
-	if strings.TrimSpace(spec.DatasetManifest) != "" {
+	if !profile.Fixed {
 		return spec
 	}
+	spec.DatasetManifest = ""
+	spec.DatasetScenario = ""
+	spec.DatasetProject = ""
 	spec.DatasetLevel = strings.Join(profile.Levels, ",")
 	spec.Languages = append([]string{}, profile.Languages...)
 	spec.DatasetClasses = append([]string{}, profile.DatasetClasses...)

@@ -60,8 +60,8 @@
           </div>
           <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
             <div class="section-title">评测规格</div>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <button type="button" class="text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'small' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('small')">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 benchmark-profile-grid">
+              <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'small' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('small')">
                 <div class="flex items-center justify-between gap-2">
                   <div class="font-mono text-[13px] font-bold">small</div>
                   <span class="text-[11px]" style="color:var(--green)">mutation off</span>
@@ -70,7 +70,7 @@
                 <div class="text-[11px] mt-1" style="color:var(--fg-muted)">快速确认生成、评估、报告链路。</div>
                 <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1</div>
               </button>
-              <button type="button" class="text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'medium' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('medium')">
+              <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'medium' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('medium')">
                 <div class="flex items-center justify-between gap-2">
                   <div class="font-mono text-[13px] font-bold">medium</div>
                   <span class="text-[11px]" style="color:var(--yellow)">mutation on</span>
@@ -79,7 +79,7 @@
                 <div class="text-[11px] mt-1" style="color:var(--fg-muted)">启用 mutation 与断言密度，用于模型/prompt/agent/skill 对比。</div>
                 <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1 + datasets/l2</div>
               </button>
-              <button type="button" class="text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'large' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('large')">
+              <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'large' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('large')">
                 <div class="flex items-center justify-between gap-2">
                   <div class="font-mono text-[13px] font-bold">large</div>
                   <span class="text-[11px]" style="color:var(--yellow)">mutation on</span>
@@ -88,12 +88,22 @@
                 <div class="text-[11px] mt-1" style="color:var(--fg-muted)">固定全量 manifest，适合产出正式可复现报告。</div>
                 <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1 + datasets/l2 + datasets/l3</div>
               </button>
+              <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'custom' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('custom')">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="font-mono text-[13px] font-bold">custom</div>
+                  <span class="text-[11px]" style="color:var(--accent)">editable</span>
+                </div>
+                <div class="text-[12px] mt-1" style="color:var(--fg)">自定义规格</div>
+                <div class="text-[11px] mt-1" style="color:var(--fg-muted)">手动配置语言、数据集筛选、样本上限与 mutation 策略。</div>
+                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">manual filters</div>
+              </button>
             </div>
             <div class="mt-3 text-[12px] rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border);color:var(--fg-muted)">
               <div>当前规格：<b style="color:var(--fg)" x-text="form.benchmark_profile || 'custom'"></b> · <span x-text="benchmarkProfileSummary"></span></div>
               <div x-show="form.dataset_manifest" class="font-mono mt-1" x-text="'manifest=' + form.dataset_manifest"></div>
               <div x-show="!form.dataset_manifest && form.level" class="font-mono mt-1" x-text="'levels=' + form.level"></div>
-              <div x-show="form.benchmark_profile === 'custom'" class="mt-1" style="color:var(--yellow)">已手动修改语言或数据集筛选，本次运行会记录为 custom。</div>
+              <div x-show="isPresetBenchmarkProfileLocked" class="mt-1" style="color:var(--accent)">已选固定规格：语言、数据集筛选、样本上限和 mutation 已锁定。如需修改，请先切换到 custom。</div>
+              <div x-show="form.benchmark_profile === 'custom'" class="mt-1" style="color:var(--yellow)">custom 规格允许手动修改语言、数据集筛选、样本上限和 mutation 配置。</div>
               <div x-show="benchmarkMutationHint" class="mt-1" style="color:var(--yellow)" x-text="benchmarkMutationHint"></div>
             </div>
           </div>
@@ -101,8 +111,8 @@
             <div class="section-title">语言</div>
             <div class="flex flex-wrap gap-2.5">
               <template x-for="lang in config?.languages ?? []" :key="lang">
-                <label :class="form.languages.includes(lang) ? 'active' : ''" class="chip">
-                  <input type="checkbox" :value="lang" x-model="form.languages" class="w-3.5 h-3.5" @change="markBenchmarkCustom()">
+                <label :class="form.languages.includes(lang) ? 'active' : ''" class="chip" :style="isPresetBenchmarkProfileLocked ? 'opacity:.65;cursor:not-allowed' : ''">
+                  <input type="checkbox" :value="lang" x-model="form.languages" class="w-3.5 h-3.5" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom()">
                   <span x-text="lang"></span>
                 </label>
               </template>
@@ -113,21 +123,21 @@
             <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div>
                 <label class="label-text">类型</label>
-                <select x-model="form.class" class="input-base" @change="markBenchmarkCustom(); normalizeDatasetScenario()">
+                <select x-model="form.class" class="input-base" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom(); normalizeDatasetScenario()">
                   <option value="">全部</option>
                   <template x-for="c in config?.classes ?? []" :key="c"><option :value="c" x-text="c"></option></template>
                 </select>
               </div>
               <div>
                 <label class="label-text">场景</label>
-                <select x-model="form.scenario" class="input-base" @change="markBenchmarkCustom(); normalizeDatasetProject()">
+                <select x-model="form.scenario" class="input-base" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom(); normalizeDatasetProject()">
                   <option value="">全部场景</option>
                   <template x-for="sc in datasetScenariosForClass(form.class)" :key="sc"><option :value="sc" x-text="sc"></option></template>
                 </select>
               </div>
               <div x-show="form.class === 'repo_level'">
                 <label class="label-text">项目</label>
-                <select x-model="form.project" class="input-base" :disabled="!form.scenario" @change="markBenchmarkCustom()">
+                <select x-model="form.project" class="input-base" :disabled="isPresetBenchmarkProfileLocked || !form.scenario" @change="markBenchmarkCustom()">
                   <option value="">全部项目</option>
                   <template x-for="p in datasetProjectsForSelection()" :key="p.name">
                     <option :value="p.name" x-text="datasetProjectLabel(p)"></option>
@@ -136,7 +146,7 @@
               </div>
               <div>
                 <label class="label-text">等级</label>
-                <input x-model="form.level" type="text" placeholder="l1, l2..." class="input-base" :disabled="form.class === 'repo_level'" @input="markBenchmarkCustom()">
+                <input x-model="form.level" type="text" placeholder="l1, l2..." class="input-base" :disabled="isPresetBenchmarkProfileLocked || form.class === 'repo_level'" @input="markBenchmarkCustom()">
               </div>
             </div>
             <div x-show="form.class === 'repo_level'" class="mt-3 text-[12px] rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border);color:var(--fg-muted)">
@@ -150,7 +160,7 @@
             <div class="grid grid-cols-2 gap-4">
               <div>
                 <label class="label-text">每语言/场景样本上限 <span class="font-normal" style="color:var(--fg-subtle)">（0 = 无限制）</span></label>
-                <input x-model.number="form.max_samples" type="number" min="0" class="input-base" @input="markBenchmarkCustom()">
+                <input x-model.number="form.max_samples" type="number" min="0" class="input-base" :disabled="isPresetBenchmarkProfileLocked" @input="markBenchmarkCustom()">
                 <div class="text-[11px] mt-1" style="color:var(--fg-subtle)">
                   预计生成任务：<span style="color:var(--fg)" x-text="estimatedTaskCount"></span>
                   <span x-text="estimatedTaskFormula"></span>
@@ -217,7 +227,7 @@
                 </div>
               </label>
               <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
-                <input type="checkbox" x-model="form.mutation_enabled" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)" @change="markBenchmarkCustom()">
+                <input type="checkbox" x-model="form.mutation_enabled" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom()">
                 <div>
                   <div class="text-[13px] font-medium">变异测试</div>
                   <div class="text-[12px]" style="color:var(--fg-muted)">启用变异分析</div>
@@ -257,7 +267,7 @@
               </label>
               <div x-show="form.mutation_enabled">
                 <label class="label-text">变异超时（秒）</label>
-                <input x-model.number="form.mutation_timeout" type="number" min="60" class="input-base">
+                <input x-model.number="form.mutation_timeout" type="number" min="60" class="input-base" :disabled="isPresetBenchmarkProfileLocked">
               </div>
             </div>
           </div>

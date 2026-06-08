@@ -155,6 +155,7 @@
       { key:'small', label:'small', title:'冒烟验证', manifest:'', languages:['python','go'], level:'l1', mutation:false, samples:'40', detail:'直接使用 datasets/l1，快速确认生成、评估、报告链路。' },
       { key:'medium', label:'medium', title:'对比实验', manifest:'', languages:['python','go','java','cpp'], level:'l1,l2', mutation:true, samples:'480', detail:'组合 datasets/l1,l2，启用 mutation 与断言密度，用于模型/prompt/agent/skill 对比。' },
       { key:'large', label:'large', title:'正式基准', manifest:'', languages:['python','go','java','cpp'], level:'l1,l2,l3', mutation:true, samples:'800', detail:'组合 datasets/l1,l2,l3，适合产出正式可复现报告。' },
+      { key:'custom', label:'custom', title:'自定义规格', manifest:'', languages:[], level:'', mutation:null, samples:'自定义', detail:'手动配置语言、数据集筛选、样本上限和 mutation 策略。' },
     ],
     env: null,
     envChecking: false,
@@ -817,9 +818,13 @@
       return (this.benchmarkProfiles || []).find(p => p.key === this.form.benchmark_profile) || null
     },
 
+    get isPresetBenchmarkProfileLocked() {
+      return ['small', 'medium', 'large'].includes(this.form.benchmark_profile)
+    },
+
     get benchmarkProfileSummary() {
       const p = this.selectedBenchmarkProfile
-      if (!p) return '自定义配置'
+      if (!p || p.key === 'custom') return '手动配置语言、数据集筛选、样本上限与 mutation'
       const mutation = p.mutation ? 'mutation 开启' : 'mutation 关闭'
       return `${p.title} · ${p.samples} 样本 · ${mutation}`
     },
@@ -1312,6 +1317,10 @@
     applyBenchmarkProfile(key) {
       const profile = (this.benchmarkProfiles || []).find(p => p.key === key)
       if (!profile) return
+      if (profile.key === 'custom') {
+        this.form.benchmark_profile = 'custom'
+        return
+      }
       this.form.benchmark_profile = profile.key
       this.form.dataset_manifest = ''
       this.form.languages = [...profile.languages]
@@ -1325,6 +1334,7 @@
     },
 
     markBenchmarkCustom() {
+      if (this.isPresetBenchmarkProfileLocked) return
       if (['small', 'medium', 'large'].includes(this.form.benchmark_profile)) {
         this.form.benchmark_profile = 'custom'
       }
