@@ -1,20 +1,14 @@
       <!-- AGENTS -->
-      <div x-show="page === 'agents'" class="max-w-none animate-fadeUp">
-        <div class="agent-workbench-hero mb-4">
-          <div class="min-w-0">
-            <div class="db-eyebrow">Agent Workbench</div>
-            <div class="db-title">Agent 接入与调配工作台</div>
-            <div class="text-[12px] mt-2" style="color:var(--fg-muted)">
-              用一个入口安装 Agent Runtime、检查密钥与沙箱、选择 Subject 并跳转新建任务。
-            </div>
-            <div class="agent-pipeline mt-4">
-              <span>配置</span><i></i><span>密钥</span><i></i><span>沙箱</span><i></i><span>试跑</span><i></i><span>评测</span>
-            </div>
+      <div x-show="page === 'agents'" class="cloud-page animate-fadeUp">
+        <div class="cloud-page-head">
+          <div class="cloud-page-head-main">
+            <h2 class="page-title">Agent 接入与调配工作台</h2>
+            <p class="page-subtitle">以运行时资源、Skill 包和 Subject 组合为核心，管理 Agent 接入与评测调度。</p>
           </div>
-          <div class="agent-hero-actions">
-            <button class="btn-primary" @click="openAgentWizard()">+ 安装 Agent</button>
-            <button class="btn-ghost" @click="loadConfig()">刷新配置</button>
+          <div class="cloud-page-head-actions">
             <button class="btn-ghost" @click="copyText(config?.agents_config_path || '', 'Agent 配置路径')">复制路径</button>
+            <button class="btn-ghost" @click="loadConfig()">刷新配置</button>
+            <button class="btn-primary" @click="openAgentWizard()">安装 Agent</button>
           </div>
         </div>
 
@@ -23,26 +17,31 @@
           <div class="text-[12px] mt-2" style="color:var(--fg-muted)" x-text="config?.agents_config_error"></div>
         </div>
 
-        <div class="agent-summary-grid mb-4">
-          <div class="agent-summary-card">
+        <div class="cloud-summary-grid">
+          <div class="cloud-stat-card">
             <span>Framework</span>
             <strong x-text="(config?.frameworks ?? []).length"></strong>
+            <span>已接入运行时</span>
           </div>
-          <div class="agent-summary-card">
+          <div class="cloud-stat-card">
             <span>可运行</span>
             <strong class="kpi-completed" x-text="agentReadinessCounts().ready"></strong>
+            <span>密钥和沙箱已就绪</span>
           </div>
-          <div class="agent-summary-card">
+          <div class="cloud-stat-card">
             <span>待处理</span>
             <strong class="kpi-running" x-text="agentReadinessCounts().warning"></strong>
+            <span>需补齐配置或镜像</span>
           </div>
-          <div class="agent-summary-card">
+          <div class="cloud-stat-card">
             <span>Subject</span>
             <strong x-text="(config?.subjects ?? []).length"></strong>
+            <span>可用于新建任务</span>
           </div>
-          <div class="agent-summary-card">
+          <div class="cloud-stat-card">
             <span>Skill</span>
             <strong class="kpi-completed" x-text="(config?.skills ?? []).length"></strong>
+            <span>可注入测试策略</span>
           </div>
         </div>
 
@@ -69,7 +68,7 @@
             </div>
             <div class="agent-strip-actions">
               <span class="agent-strip-stat"><b x-text="(config?.skills ?? []).length"></b> 已注册</span>
-              <span class="agent-strip-stat"><b x-text="(config?.subjects ?? []).filter(s => s.skill).length"></b> Subject</span>
+              <span class="agent-strip-stat"><b x-text="configuredSkillSubjectCount()"></b> Subject</span>
               <button type="button" @click.stop="openSkillModal()" class="btn-primary text-[11px] py-1 px-2.5">导入 Skill</button>
             </div>
           </div>

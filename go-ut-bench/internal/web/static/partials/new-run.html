@@ -1,8 +1,18 @@
       <!-- NEW RUN -->
-      <div x-show="page === 'new-run'" class="max-w-3xl animate-fadeUp">
-        <form @submit.prevent="submitRun()" class="space-y-5">
+      <div x-show="page === 'new-run'" class="cloud-page animate-fadeUp">
+        <div class="cloud-page-head">
+          <div class="cloud-page-head-main">
+            <h2 class="page-title">新建评测任务</h2>
+            <p class="page-subtitle">按评测规格、数据集、Subject 和执行策略配置一次可复现的基准运行。</p>
+          </div>
+          <div class="cloud-page-head-actions">
+            <button type="button" @click="goto('runs')" class="btn-ghost">返回列表</button>
+          </div>
+        </div>
+        <form @submit.prevent="submitRun()" class="cloud-layout cloud-layout-wide">
+          <div class="cloud-main cloud-panel-stack">
           <div class="form-section">
-            <div class="section-title">任务配置</div>
+            <div class="section-title mb-4">任务配置</div>
             <div class="grid grid-cols-3 gap-4">
               <div>
                 <label class="label-text">任务 ID <span class="font-normal" style="color:var(--fg-subtle)">（可选，留空自动生成）</span></label>
@@ -151,7 +161,7 @@
             </div>
             <div x-show="form.class === 'repo_level'" class="mt-3 text-[12px] rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border);color:var(--fg-muted)">
               <span x-show="!form.scenario">项目级数据集先选择场景，再选择具体项目；不选项目时会评测该场景下所有项目。</span>
-              <span x-show="form.scenario && !form.project">当前场景包含 <b style="color:var(--fg)" x-text="datasetProjectsForSelection().length"></b> 个项目，预计可展开 <b style="color:var(--fg)" x-text="datasetProjectsForSelection().reduce((n,p)=>n+Number(p.sample_count||0),0)"></b> 个文件模块。</span>
+              <span x-show="form.scenario && !form.project">当前场景包含 <b style="color:var(--fg)" x-text="datasetProjectsForSelection().length"></b> 个项目，预计可展开 <b style="color:var(--fg)" x-text="selectedDatasetProjectTotalSamples()"></b> 个文件模块。</span>
               <span x-show="form.project">当前项目可展开 <b style="color:var(--fg)" x-text="selectedDatasetProjectSampleCount"></b> 个文件模块；样本上限会作用在展开后的 target files 上。</span>
             </div>
           </div>
@@ -212,7 +222,7 @@
                 </div>
               </template>
             </div>
-            <div x-show="(config?.models ?? []).some(m => !m.api_key_set)" class="mt-2 text-[11px]" style="color:var(--yellow)">
+            <div x-show="hasMissingConfiguredModelKey()" class="mt-2 text-[11px]" style="color:var(--yellow)">
               <span class="inline-block w-2 h-2 rounded-full mr-1" style="background:var(--red)"></span>红点表示 API Key 未配置，运行时会失败。请在 <span class="font-mono">.env</span> 中设置对应变量，或到「注册表」页面编辑。
             </div>
           </div>
@@ -271,12 +281,77 @@
               </div>
             </div>
           </div>
-          <div class="flex items-center gap-3 pt-1">
-            <button type="submit" :disabled="formSubmitting || submitDisabled" class="btn-primary">
-              <span x-show="!formSubmitting" x-text="submitButtonText"></span>
-              <span x-show="formSubmitting">启动中...</span>
-            </button>
-            <span x-show="formError" class="text-[13px]" style="color:var(--red)" x-text="formError"></span>
           </div>
+
+          <aside class="cloud-side">
+            <section class="cloud-card">
+              <div class="cloud-card-head">
+                <div>
+                  <div class="cloud-card-title">执行摘要</div>
+                  <div class="cloud-card-sub">提交前确认关键资源与策略。</div>
+                </div>
+              </div>
+              <div class="cloud-card-body">
+                <div class="cloud-resource-list">
+                  <div class="cloud-resource-item">
+                    <div class="cloud-resource-title"><strong>流程</strong><span class="tag-pill" x-text="form.phase"></span></div>
+                    <div class="cloud-resource-meta">
+                      <span x-text="'模式 ' + form.mode"></span>
+                      <span x-text="'规格 ' + (form.benchmark_profile || 'custom')"></span>
+                    </div>
+                  </div>
+                  <div class="cloud-resource-item">
+                    <div class="cloud-resource-title"><strong>规模</strong><span class="tag-pill" x-text="estimatedTaskCount + ' tasks'"></span></div>
+                    <div class="cloud-panel-note mt-2" x-text="estimatedTaskFormula || benchmarkProfileSummary"></div>
+                  </div>
+                  <div class="cloud-resource-item">
+                    <div class="cloud-resource-title"><strong>Subject</strong><span class="tag-pill" x-text="selectedSubjectCount"></span></div>
+                    <div class="cloud-resource-meta">
+                      <span x-text="'Framework ' + selectedFrameworkCount"></span>
+                      <span x-text="'Skill ' + selectedSkillCount"></span>
+                    </div>
+                  </div>
+                  <div class="cloud-resource-item">
+                    <div class="cloud-resource-title"><strong>执行面</strong><span class="tag-pill" :style="form.use_docker ? 'background:var(--accent-bg);color:var(--accent)' : 'background:var(--badge-bg);color:var(--fg-muted)'" x-text="form.use_docker ? 'Docker' : '本地'"></span></div>
+                    <div class="cloud-resource-meta">
+                      <span x-text="form.mutation_enabled ? 'mutation on' : 'mutation off'"></span>
+                      <span x-text="form.ingest ? '完成后入库' : '仅保存产物'"></span>
+                    </div>
+                  </div>
+                </div>
+                <div x-show="formError" class="mt-3 text-[12px] rounded p-2.5" style="background:var(--error-bg);color:var(--red);border:1px solid var(--error-border)" x-text="formError"></div>
+                <button type="submit" :disabled="formSubmitting || submitDisabled" class="btn-primary w-full justify-center mt-4">
+                  <span x-show="!formSubmitting" x-text="submitButtonText"></span>
+                  <span x-show="formSubmitting">启动中...</span>
+                </button>
+              </div>
+            </section>
+            <section class="cloud-card">
+              <div class="cloud-card-head">
+                <div>
+                  <div class="cloud-card-title">环境状态</div>
+                  <div class="cloud-card-sub">影响 Docker 运行和 mutation 工具链。</div>
+                </div>
+              </div>
+              <div class="cloud-card-body cloud-panel-stack">
+                <div class="cloud-resource-item">
+                  <div class="cloud-resource-title">
+                    <strong>Docker</strong>
+                    <span class="tag-pill" :style="env?.docker_available ? 'background:var(--success-bg);color:var(--green)' : 'background:var(--error-bg);color:var(--red)'" x-text="env?.docker_available ? '可用' : '不可用'"></span>
+                  </div>
+                </div>
+                <div class="cloud-resource-item">
+                  <div class="cloud-resource-title">
+                    <strong>评测镜像</strong>
+                    <span class="tag-pill" :style="env?.eval_image_present ? 'background:var(--success-bg);color:var(--green)' : 'background:var(--warn-bg);color:var(--yellow)'" x-text="env?.eval_image_present ? '已就绪' : '待构建'"></span>
+                  </div>
+                  <button x-show="env?.docker_available && !env?.eval_image_present" type="button" @click="openBuildImage('eval', false)" class="btn-ghost mt-3">构建镜像</button>
+                </div>
+                <button type="button" @click="recheckEnv()" :disabled="envChecking" class="btn-ghost">
+                  <span x-text="envChecking ? '检测中...' : '重新检测环境'"></span>
+                </button>
+              </div>
+            </section>
+          </aside>
         </form>
       </div>

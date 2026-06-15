@@ -249,7 +249,7 @@
     },
     modelFormError: '',
     modelKeyVisible: {},
-    theme: localStorage.getItem('utbench-theme') || 'dark',
+    theme: localStorage.getItem('utbench-theme') || 'light',
     modelTesting: {},
     modelTestingAll: false,
     modelTestResults: {},
@@ -283,21 +283,24 @@
         if (!name) return
         const r = await fetch(`/partials/${name}.html`, { cache: 'no-store' })
         if (!r.ok) throw new Error(`load partial ${name}: HTTP ${r.status}`)
-        if (window.Alpine?.destroyTree) {
-          try { window.Alpine.destroyTree(node) } catch {}
+        const html = await r.text()
+        const replace = () => {
+          if (node._partialInitialized && window.Alpine?.destroyTree) {
+            try { window.Alpine.destroyTree(node) } catch {}
+          }
+          node.innerHTML = html
         }
-        node.innerHTML = await r.text()
+        if (window.Alpine?.mutateDom) window.Alpine.mutateDom(replace)
+        else replace()
         node._partialInitialized = false
       }))
-      if (window.Alpine) {
-        nodes.forEach(node => {
-          if (node._partialInitialized) return
-          Array.from(node.children).forEach(child => window.Alpine.initTree(child))
-          node._partialInitialized = true
-        })
-      }
       this.partialsLoaded = true
       this.syncPageVisibility()
+    },
+    initPartialNode(node) {
+      if (!node || node._partialInitialized || !window.Alpine) return
+      Array.from(node.children).forEach(child => window.Alpine.initTree(child))
+      node._partialInitialized = true
     },
     _startTimers() {
       this._stopTimers()
@@ -396,7 +399,7 @@
     envStatusStyle(s) {
       const map = {
         ok: 'background:var(--success-bg);color:var(--green)',
-        docker_ok: 'background:rgba(14,165,233,.1);color:var(--accent)',
+        docker_ok: 'background:rgba(0,82,217,.10);color:var(--accent)',
         warning: 'background:var(--warn-bg);color:var(--yellow)',
         missing: 'background:var(--error-bg);color:var(--red)',
         unknown: 'background:var(--badge-bg);color:var(--fg-muted)',
@@ -540,9 +543,9 @@
 
     envTopologyStyle(mode) {
       const map = {
-        'container_control+nested_docker': 'background:rgba(16,185,129,.1);color:var(--green)',
-        'container_control': 'background:rgba(245,158,11,.12);color:var(--yellow)',
-        'host_control+docker_available': 'background:rgba(14,165,233,.1);color:var(--accent)',
+        'container_control+nested_docker': 'background:rgba(7,193,96,.10);color:var(--green)',
+        'container_control': 'background:rgba(237,123,47,.10);color:var(--yellow)',
+        'host_control+docker_available': 'background:rgba(0,82,217,.10);color:var(--accent)',
         'host_control': 'background:rgba(100,116,139,.14);color:var(--fg-muted)',
       }
       return map[mode] || 'background:var(--badge-bg);color:var(--fg-muted)'
@@ -554,8 +557,8 @@
 
     envImageStatusStyle(present) {
       return present
-        ? 'background:rgba(16,185,129,.1);color:var(--green)'
-        : 'background:rgba(245,158,11,.12);color:var(--yellow)'
+        ? 'background:rgba(7,193,96,.10);color:var(--green)'
+        : 'background:rgba(237,123,47,.10);color:var(--yellow)'
     },
 
     async reattachBuild(preferredTarget = '') {
@@ -642,6 +645,10 @@
         if (this.statusFilter && r.status !== this.statusFilter) return false
         return true
       })
+    },
+    runCountByStatus(...statuses) {
+      const set = new Set(statuses)
+      return (this.runs || []).filter(r => set.has(r.status)).length
     },
 
     // ─── 评测资产（磁盘扫描） ───────────────────────────────────────────────
@@ -898,6 +905,35 @@
     get filteredGeneratedSets() {
       const status = this.generatedSetStatusFilter || ''
       return (this.generatedSets || []).filter(s => !status || s.status === status)
+    },
+
+    generatedSetsByStatus(status) {
+      return (this.generatedSets || []).filter(s => s.status === status)
+    },
+    configuredSkillSubjectCount() {
+      return (this.config?.subjects || []).filter(s => s.skill).length
+    },
+    hasMissingConfiguredModelKey() {
+      return (this.config?.models || []).some(m => !m.api_key_set)
+    },
+    selectedDatasetProjectTotalSamples() {
+      return this.datasetProjectsForSelection().reduce((n, p) => n + Number(p.sample_count || 0), 0)
+    },
+    automationCountByEnabled(enabled) {
+      return (this.automations || []).filter(a => !!a.enabled === enabled).length
+    },
+    notificationChannelName(id) {
+      return (this.notificationChannels || []).find(c => c.channel_id === id)?.name || id || '—'
+    },
+    modelCountByState(state) {
+      const list = this.models || []
+      if (state === 'enabled') return list.filter(m => m.enabled).length
+      if (state === 'keyed') return list.filter(m => m.api_key_set || m.api_key).length
+      if (state === 'missing_key') return list.filter(m => !(m.api_key_set || m.api_key)).length
+      return list.length
+    },
+    modelsMissingKey() {
+      return (this.models || []).filter(m => !(m.api_key_set || m.api_key))
     },
 
     async loadGeneratedSets() {
@@ -3498,13 +3534,14 @@
       this.normalizeComboSkillVersion(combo)
     },
     syncPageVisibility() {
-      const pages = ['dashboard', 'new-run', 'runs', 'automations', 'agents', 'database', 'environment', 'models', 'run-detail']
-      const modals = ['model-form-modal', 'agent-form-modal', 'skill-form-modal', 'build-image-modal']
+      const pages = ['dashboard', 'new-run', 'runs', 'generated-sets', 'automations', 'agents', 'database', 'environment', 'models', 'run-detail']
+      const modals = ['environment-install-modal', 'model-form-modal', 'agent-form-modal', 'skill-form-modal', 'build-image-modal']
       requestAnimationFrame(() => {
         for (const id of pages) {
           const node = document.getElementById('partial-' + id)
           if (!node) continue
           const active = this.page === id
+          if (active) this.initPartialNode(node)
           node.style.display = active ? '' : 'none'
           if (active && node.firstElementChild) {
             node.firstElementChild.style.display = ''
@@ -3513,6 +3550,7 @@
         for (const id of modals) {
           const node = document.getElementById('partial-' + id)
           if (!node) continue
+          this.initPartialNode(node)
           node.style.display = ''
         }
       })
@@ -4116,19 +4154,19 @@
         data: {
           labels,
           datasets: [
-            { label:'编译',  data: dims.map(d => +((d.compile_pass_rate||0)*100).toFixed(1)), backgroundColor:'rgba(14,165,233,.7)' },
-            { label:'样测',  data: dims.map(d => +((d.avg_test_pass_rate||0)*100).toFixed(1)), backgroundColor:'rgba(16,185,129,.7)' },
-            { label:'覆盖率',data: dims.map(d => +((d.avg_line_coverage||0)*100).toFixed(1)), backgroundColor:'rgba(245,158,11,.7)' },
-            { label:'变异',  data: dims.map(d => +((d.avg_mutation_score||0)*100).toFixed(1)), backgroundColor:'rgba(239,68,68,.7)' },
+            { label:'编译',  data: dims.map(d => +((d.compile_pass_rate||0)*100).toFixed(1)), backgroundColor:'rgba(0,82,217,.7)' },
+            { label:'样测',  data: dims.map(d => +((d.avg_test_pass_rate||0)*100).toFixed(1)), backgroundColor:'rgba(7,193,96,.7)' },
+            { label:'覆盖率',data: dims.map(d => +((d.avg_line_coverage||0)*100).toFixed(1)), backgroundColor:'rgba(237,123,47,.7)' },
+            { label:'变异',  data: dims.map(d => +((d.avg_mutation_score||0)*100).toFixed(1)), backgroundColor:'rgba(227,77,89,.7)' },
           ]
         },
         options: {
           responsive: true, maintainAspectRatio: false,
           scales: {
-            y: { min:0, max:100, ticks:{ color:'#334155', font:{size:11} }, grid:{ color:'#0f172a' } },
-            x: { ticks:{ color:'#64748b', font:{size:11} }, grid:{ display:false } }
+            y: { min:0, max:100, ticks:{ color:'#191919', font:{size:11} }, grid:{ color:'#E7E7E7' } },
+            x: { ticks:{ color:'#999999', font:{size:11} }, grid:{ display:false } }
           },
-          plugins: { legend: { labels:{ color:'#64748b', font:{size:11}, boxWidth:10, padding:15 } } }
+          plugins: { legend: { labels:{ color:'#999999', font:{size:11}, boxWidth:10, padding:15 } } }
         }
       })
     },
@@ -4643,9 +4681,9 @@
       return badges
     },
     analysisBadgeStyle(tone) {
-      if (tone === 'good') return 'background:rgba(16,185,129,.10);color:var(--green);border-color:rgba(16,185,129,.28)'
+      if (tone === 'good') return 'background:rgba(7,193,96,.10);color:var(--green);border-color:rgba(7,193,96,.28)'
       if (tone === 'bad') return 'background:var(--error-bg);color:var(--red);border-color:var(--error-border)'
-      if (tone === 'warn') return 'background:var(--warn-bg);color:var(--yellow);border-color:rgba(245,158,11,.28)'
+      if (tone === 'warn') return 'background:var(--warn-bg);color:var(--yellow);border-color:rgba(237,123,47,.28)'
       return 'background:var(--bg-muted);color:var(--fg-muted);border-color:var(--border)'
     },
     optimizationItems(target = '') {
@@ -4712,13 +4750,13 @@
       return source || '未知来源'
     },
     analysisSourceBadgeStyle(source) {
-      if ((source || 'rule') === 'llm') return 'background:rgba(14,165,233,.10);color:var(--accent);border-color:rgba(14,165,233,.30)'
+      if ((source || 'rule') === 'llm') return 'background:rgba(0,82,217,.10);color:var(--accent);border-color:rgba(0,82,217,.30)'
       return 'background:var(--bg-muted);color:var(--fg-muted);border-color:var(--border)'
     },
     findingBadgeStyle(sev) {
       if (sev === 'P0') return 'background:var(--error-bg);color:var(--red);border-color:var(--error-border)'
-      if (sev === 'P1') return 'background:var(--warn-bg);color:var(--yellow);border-color:rgba(245,158,11,.35)'
-      if (sev === 'P2') return 'background:rgba(14,165,233,.10);color:var(--accent);border-color:rgba(14,165,233,.30)'
+      if (sev === 'P1') return 'background:var(--warn-bg);color:var(--yellow);border-color:rgba(237,123,47,.35)'
+      if (sev === 'P2') return 'background:rgba(0,82,217,.10);color:var(--accent);border-color:rgba(0,82,217,.30)'
       return 'background:var(--bg-muted);color:var(--fg-muted);border-color:var(--border)'
     },
     fmtInt(v) { return (v==null || v===0) ? '—' : Math.round(v).toLocaleString('zh-CN') },
@@ -4745,11 +4783,11 @@
       const tokArr = dims.map(d => d.tokens_per_pass || 0).filter(v => v > 0)
       const maxTok = tokArr.length ? Math.max(...tokArr) : 1
       const palette = [
-        { border:'#0ea5e9', bg:'rgba(14,165,233,.15)' },
-        { border:'#10b981', bg:'rgba(16,185,129,.15)' },
-        { border:'#f59e0b', bg:'rgba(245,158,11,.15)' },
-        { border:'#ef4444', bg:'rgba(239,68,68,.15)' },
-        { border:'#a855f7', bg:'rgba(168,85,247,.15)' },
+        { border:'#0052D9', bg:'rgba(0,82,217,.15)' },
+        { border:'#07C160', bg:'rgba(7,193,96,.15)' },
+        { border:'#ED7B2F', bg:'rgba(237,123,47,.15)' },
+        { border:'#E34D59', bg:'rgba(227,77,89,.15)' },
+        { border:'#8B5CF6', bg:'rgba(139,92,246,.15)' },
       ]
       new Chart(canvas, {
         type: 'radar',
@@ -4776,13 +4814,13 @@
           scales: {
             r: {
               min: 0, max: 100,
-              ticks: { stepSize: 25, color: '#475569', font:{size:10}, backdropColor: 'transparent' },
-              grid: { color: '#1e293b' },
-              angleLines: { color: '#1e293b' },
-              pointLabels: { color: '#cbd5e1', font: { size: 12, weight: '500' } }
+              ticks: { stepSize: 25, color: '#999999', font:{size:10}, backdropColor: 'transparent' },
+              grid: { color: '#E7E7E7' },
+              angleLines: { color: '#E7E7E7' },
+              pointLabels: { color: '#191919', font: { size: 12, weight: '500' } }
             }
           },
-          plugins: { legend: { labels: { color:'#94a3b8', font:{size:11}, boxWidth:12, padding:12 } } }
+          plugins: { legend: { labels: { color:'#999999', font:{size:11}, boxWidth:12, padding:12 } } }
         }
       })
     },
@@ -4814,7 +4852,7 @@
       const clamped = Math.max(0, Math.min(1, v))
       const hue = 10 + clamped * 130 // 10(红) → 140(绿)
       const alpha = 0.15 + clamped * 0.45
-      const fg = clamped > 0.55 ? '#0b1120' : '#e2e8f0'
+      const fg = clamped > 0.55 ? '#191919' : '#FFFFFF'
       return `background:hsla(${hue},70%,50%,${alpha});color:${fg};font-weight:600`
     },
   }

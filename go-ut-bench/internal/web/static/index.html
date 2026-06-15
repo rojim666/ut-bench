@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>UTBench · 单元测试基准</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-webfont@1.7.0/style.css" />
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -14,8 +13,8 @@
 <body class="h-screen flex overflow-hidden" x-data="app()" x-cloak>
 
   <!-- Sidebar -->
-  <aside class="w-60 flex-shrink-0 border-r flex flex-col" style="background:var(--bg);border-color:var(--border)">
-    <div class="px-5 py-5 flex items-center gap-3 border-b" style="border-color:var(--border-subtle)">
+  <aside class="app-sidebar w-60 flex-shrink-0 flex flex-col">
+    <div class="app-brand px-4 py-4 flex items-center gap-3 border-b">
       <div class="brand-mark" aria-hidden="true">
         <svg width="19" height="19" viewBox="0 0 24 24" fill="none">
           <path class="brand-mark-box" d="M7.25 4.75h8.2M5.75 7.4v10.85h11.1v-5.7" />
@@ -24,11 +23,11 @@
         </svg>
       </div>
       <div>
-        <div class="font-semibold text-[15px] tracking-tight" style="font-family:'Microsoft YaHei','PingFang SC','Hiragino Sans GB',sans-serif">UTBench</div>
+        <div class="font-semibold text-[15px] tracking-tight" style="font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">UTBench</div>
         <div class="text-[11px]" style="color:var(--fg-muted)">单元测试基准平台</div>
       </div>
     </div>
-    <nav class="flex-1 py-3 px-3">
+    <nav class="app-nav flex-1 py-2 px-2">
       <template x-for="item in nav" :key="item.id">
         <div @click="goto(item.id)" :class="page === item.id ? 'active' : ''" class="nav-item">
           <span x-html="item.icon"></span>
@@ -36,41 +35,39 @@
         </div>
       </template>
     </nav>
-    <div class="px-5 py-3 border-t text-[11px]" style="border-color:var(--border-subtle);color:var(--fg-muted)">
-      <div class="truncate">配置: <span x-text="config?.config_path ?? '...'" class="font-mono" style="color:var(--fg-subtle)"></span></div>
+    <div class="app-sidebar-footer px-4 py-3 border-t">
+      <!-- Environment status -->
+      <template x-if="env">
+        <div class="flex flex-wrap gap-1.5 mb-2">
+          <span class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded" :style="`background:${env.docker_available ? 'rgba(7,193,96,.08)' : 'rgba(227,77,89,.08)'};color:${env.docker_available ? 'var(--green)' : 'var(--red)'}`">
+            <span class="w-1 h-1 rounded-full" :style="`background:${env.docker_available ? 'var(--green)' : 'var(--red)'}`"></span>
+            <span x-text="env.docker_available ? 'Docker' : '无Docker'"></span>
+          </span>
+          <span class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded" :style="envImageStatusStyle(env.eval_image_present)">
+            <span x-text="env.eval_image_present ? '镜像就绪' : '无镜像'"></span>
+          </span>
+          <button x-show="env.docker_available && !env.eval_image_present" @click="openBuildImage('eval', false)" class="text-[10px] px-1.5 py-0.5 rounded" style="color:var(--accent);background:var(--accent-bg)">构建</button>
+          <button @click="recheckEnv()" :disabled="envChecking" class="text-[10px] px-1.5 py-0.5 rounded" style="color:var(--fg-muted)" title="重新检测">
+            <svg :class="envChecking ? 'animate-spin' : ''" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M21 3v6h-6"/></svg>
+          </button>
+        </div>
+      </template>
+      <!-- Env recommendation -->
+      <template x-if="env && env.recommendation">
+        <div class="text-[10px] mb-2 leading-tight" style="color:var(--yellow)" x-text="env.recommendation"></div>
+      </template>
+      <div class="truncate text-[11px]" style="color:var(--fg-muted)">配置: <span x-text="config?.config_path ?? '...'" class="font-mono" style="color:var(--fg-subtle)"></span></div>
     </div>
   </aside>
   <!-- Main -->
-  <main class="flex-1 flex flex-col overflow-hidden bg-grid" style="background-color:var(--bg)">
+  <main class="flex-1 flex flex-col overflow-hidden" style="background-color:var(--bg)">
 
     <!-- Header -->
-    <header class="h-14 border-b flex items-center px-6 flex-shrink-0 glass" style="border-color:var(--border)">
-      <h1 class="text-[15px] font-semibold tracking-wide" style="font-family:'Microsoft YaHei','PingFang SC','Hiragino Sans GB',sans-serif" x-text="pageTitle"></h1>
-      <div class="ml-auto flex items-center gap-3">
-        <template x-if="env">
-          <div class="flex items-center gap-2 text-[12px] flex-wrap justify-end">
-            <span class="tag-pill" :style="`background:${env.docker_available ? 'rgba(16,185,129,.1)' : 'rgba(239,68,68,.1)'};color:${env.docker_available ? 'var(--green)' : 'var(--red)'}`">
-              <span class="w-1.5 h-1.5 rounded-full" :style="`background:${env.docker_available ? 'var(--green)' : 'var(--red)'}`"></span>
-              <span x-text="env.docker_available ? 'Docker 就绪' : '无 Docker'"></span>
-              <span x-show="env.docker_version" class="opacity-60" x-text="'v'+env.docker_version"></span>
-            </span>
-            <span class="tag-pill" :style="envTopologyStyle(env.topology_mode)" :title="env.topology_mode || ''">
-              <span x-text="'拓扑 ' + envTopologyText(env.topology_mode)"></span>
-            </span>
-            <span class="tag-pill" :style="envImageStatusStyle(env.eval_image_present)" :title="env.eval_image_name || ''">
-              <span x-text="'评测镜像 ' + envImageStatusText(env.eval_image_present)"></span>
-            </span>
-            <button x-show="env.docker_available && !env.eval_image_present" @click="openBuildImage('eval', false)" class="btn-primary text-[11px] py-1 px-2.5">构建镜像</button>
-            <button x-show="env.eval_image_present" @click="openBuildImage('eval', true)" class="btn-ghost text-[11px] py-1 px-2.5" title="快速重建">重建</button>
-            <button @click="recheckEnv()" :disabled="envChecking" class="btn-ghost text-[11px] py-1 px-2.5 flex items-center gap-1" title="重新检测 Docker / 镜像 / 原生工具链">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="envChecking ? 'animate-spin' : ''"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M21 3v6h-6"/></svg>
-              <span x-text="envChecking ? '检测中...' : '检查环境'"></span>
-            </button>
-          </div>
-        </template>
-        <span x-show="toast" class="text-[12px] px-2 py-1 rounded" :style="toastStyle" x-text="toast"></span>
-        <span x-show="runsLoading" class="text-[12px]" style="color:var(--fg-muted)">更新中...</span>
+    <header class="app-header h-14 border-b flex items-center px-6 flex-shrink-0">
+      <h1 class="text-[16px] font-semibold" style="color:var(--fg)" x-text="pageTitle"></h1>
+      <div class="ml-auto flex items-center gap-2">
         <button @click="loadRuns()" class="btn-ghost text-[12px]">刷新</button>
+        <div class="w-px h-4" style="background:var(--border)"></div>
         <button @click="toggleTheme()" class="btn-ghost text-[12px] p-1.5" :title="theme==='dark'?'切换日间模式':'切换夜间模式'">
           <svg x-show="theme === 'dark'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
           <svg x-show="theme === 'light'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -78,16 +75,15 @@
       </div>
     </header>
 
-    <!-- Env recommendation banner -->
-    <template x-if="env && env.recommendation">
-      <div class="px-6 py-2.5 text-[12px] border-b flex items-center gap-2" style="background:var(--warn-bg);border-color:var(--border);color:var(--yellow)">
-        <svg class="flex-shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        <span x-text="env.recommendation"></span>
+    <!-- Toast notification -->
+    <template x-if="toast">
+      <div class="px-6 py-2 text-[12px] border-b flex items-center gap-2" :style="toastStyle">
+        <span x-text="toast"></span>
       </div>
     </template>
 
     <!-- Content -->
-    <div class="flex-1 overflow-y-auto p-6">
+    <div class="app-content flex-1 overflow-y-auto p-6">
       <div id="partial-dashboard" data-partial="dashboard" x-ignore></div>
       <div id="partial-new-run" data-partial="new-run" x-ignore></div>
       <div id="partial-runs" data-partial="runs" x-ignore></div>

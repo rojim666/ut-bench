@@ -1,77 +1,78 @@
 ﻿      <!-- RUN DETAIL -->
-      <div x-show="page === 'run-detail'" :class="detailTab === 'analysis' ? 'max-w-none' : 'max-w-6xl'" class="space-y-4 animate-fadeUp">
+      <div x-show="page === 'run-detail'" class="cloud-page animate-fadeUp">
         <template x-if="currentRun">
           <div>
             <!-- Detail Header -->
-            <div class="form-section flex items-start gap-4">
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-3 mb-2">
+            <div class="cloud-page-head">
+              <div class="cloud-page-head-main">
+                <div class="flex items-center gap-3">
+                  <button @click="goto('runs')" class="btn-ghost" style="padding:0 8px;height:28px">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                  </button>
                   <span :class="'status-' + currentRun.status" class="inline-flex items-center text-[12px] font-medium px-2.5 py-1 rounded-full" style="background:var(--badge-bg)">
                     <span class="status-dot"></span><span x-text="statusText(currentRun.status, currentRun.paused)"></span>
                   </span>
+                  <h2 class="page-title" style="font-size:18px">
+                    <span x-show="currentRun.label" x-text="currentRun.label"></span>
+                    <span x-show="!currentRun.label" class="font-mono" x-text="currentRun.run_id"></span>
+                  </h2>
+                  <span x-show="currentRun.label" class="font-mono text-[12px]" style="color:var(--fg-muted)" x-text="currentRun.run_id"></span>
                   <span x-show="currentRun.paused" class="text-[10px] px-1.5 py-0.5 rounded" style="background:var(--warn-bg);color:var(--yellow)">暂停</span>
-                  <span x-show="currentRun.label" class="font-semibold text-[14px]" style="color:var(--fg)" x-text="currentRun.label"></span>
-                  <span x-show="currentRun.label" class="text-[11px]" style="color:var(--fg-muted)">·</span>
-                  <span class="font-mono text-[13px]" style="color:var(--fg-muted)" x-text="currentRun.run_id"></span>
                 </div>
-                <div class="flex flex-wrap gap-x-6 gap-y-1 text-[12px]" style="color:var(--fg-muted)">
-                  <span>被测对象: <span style="color:var(--fg)" x-text="runSubjectSummary(currentRun)"></span></span>
+                <div class="flex flex-wrap gap-x-5 gap-y-1 text-[12px] mt-2" style="color:var(--fg-muted)">
                   <span>模型: <span style="color:var(--fg)" x-text="runModelSummary(currentRun)"></span></span>
                   <span>语言: <span style="color:var(--fg)" x-text="(currentRun.spec?.languages ?? []).join(', ') || '—'"></span></span>
-                  <span>规格: <span style="color:var(--fg)" x-text="currentRun.spec?.benchmark_profile || '—'"></span></span>
-                  <span>类型: <span style="color:var(--fg)" x-text="(currentRun.spec?.dataset_classes ?? []).join(', ') || '—'"></span></span>
-                  <span>场景: <span style="color:var(--fg)" x-text="currentRun.spec?.dataset_scenario || '—'"></span></span>
-                  <span x-show="currentRun.spec?.dataset_project">项目: <span style="color:var(--fg)" x-text="currentRun.spec?.dataset_project"></span></span>
                   <span>样本: <span style="color:var(--fg)" x-text="currentRun.spec?.max_samples ?? '—'"></span></span>
-                  <span>并发: <span style="color:var(--fg)" x-text="currentRun.spec?.workers ?? 0"></span></span>
-                  <span>复用生成: <span style="color:var(--fg)" x-text="currentRun.spec?.reuse_generated !== false ? '开启' : '关闭'"></span></span>
-                  <span>复用评测: <span style="color:var(--fg)" x-text="currentRun.spec?.reuse_evaluation ? '开启' : '关闭'"></span></span>
-                  <span>后端: <span style="color:var(--fg)" x-text="currentRun.use_docker ? 'Docker' : '本地进程'"></span></span>
-                  <span x-show="currentReport?.runtime_summary?.sandbox_providers?.length">沙箱: <span style="color:var(--fg)" x-text="(currentReport?.runtime_summary?.sandbox_providers ?? []).join(', ')"></span></span>
-                  <span x-show="currentReport?.runtime_summary?.agent_frameworks?.length">Agent: <span style="color:var(--fg)" x-text="(currentReport?.runtime_summary?.agent_frameworks ?? []).join(', ')"></span></span>
-                  <span x-show="currentReport?.runtime_summary?.evaluator_env_fingerprint">评测指纹: <code class="font-mono text-[11px]" style="color:var(--fg-muted)" x-text="(currentReport?.runtime_summary?.evaluator_env_fingerprint || '').slice(0, 12) + '...'"></code></span>
                   <span>启动: <span style="color:var(--fg)" x-text="fmtTime(currentRun.started_at)"></span></span>
                   <span x-show="currentRun.ended_at">耗时: <span style="color:var(--fg)" x-text="duration(currentRun.started_at, currentRun.ended_at)"></span></span>
                 </div>
-                <div x-show="currentRun.error" class="mt-2 text-[12px] rounded-lg p-2.5" style="background:var(--error-bg);color:var(--red);border:1px solid var(--error-border)" x-text="currentRun.error"></div>
+                <div x-show="currentRun.error" class="mt-2 text-[12px] rounded p-2.5" style="background:var(--error-bg);color:var(--red);border:1px solid var(--error-border)" x-text="currentRun.error"></div>
               </div>
-              <div class="flex gap-2 flex-shrink-0 flex-wrap justify-end">
+              <div class="cloud-page-head-actions">
                 <template x-if="currentRun.status === 'running'">
                   <span class="inline-flex gap-1.5">
-                    <button x-show="!currentRun.paused" @click="runControl(currentRun.run_id, 'pause')" class="btn-ghost" title="暂停">暂停</button>
-                    <button x-show="currentRun.paused" @click="runControl(currentRun.run_id, 'resume')" class="btn-ghost" title="继续">继续</button>
-                    <button @click="runControl(currentRun.run_id, 'cancel')" class="btn-ghost" style="color:var(--red)" title="取消">取消</button>
-                    <button @click="refreshDetail()" class="btn-ghost">刷新</button>
+                    <button x-show="!currentRun.paused" @click="runControl(currentRun.run_id, 'pause')" class="btn-ghost">暂停</button>
+                    <button x-show="currentRun.paused" @click="runControl(currentRun.run_id, 'resume')" class="btn-ghost">继续</button>
+                    <button @click="runControl(currentRun.run_id, 'cancel')" class="btn-ghost" style="color:var(--red)">取消</button>
                   </span>
                 </template>
-                <button x-show="currentRun.status === 'completed' || currentRun.status === 'failed' || currentRun.status === 'canceled'" @click="reevaluateRun(currentRun.run_id)" :disabled="runActionBusy === 'reevaluate'" class="btn-ghost" style="color:var(--accent)" title="重新运行 evaluator：重新编译、运行测试、覆盖率和变异测试">
-                  <span x-text="runActionBusy === 'reevaluate' ? '评测中...' : '重新评测'"></span>
-                </button>
-                <button x-show="currentRun.status === 'completed' || currentRun.status === 'failed' || currentRun.status === 'canceled'" @click="regenerateReport(currentRun.run_id)" :disabled="runActionBusy === 'report'" class="btn-ghost" style="color:var(--green)" title="根据 evaluation_result.json 重新生成报告">
-                  <span x-text="runActionBusy === 'report' ? '生成中...' : '从 JSON 生成报告'"></span>
-                </button>
-                <button x-show="currentRun.status === 'completed' || currentRun.status === 'failed' || currentRun.status === 'canceled'" @click="ingestRunToDB(currentRun.run_id)" :disabled="dbIngesting" class="btn-ghost" style="color:var(--green)" title="补录该任务到数据库">
-                  <span x-text="dbIngesting ? '入库中...' : '入库'"></span>
-                </button>
-                <button x-show="currentRun.status === 'completed' || currentRun.status === 'failed' || currentRun.status === 'canceled'" @click="promoteRunToGeneratedSet(currentRun.run_id)" :disabled="generatedSetSaving" class="btn-ghost" style="color:var(--accent)" title="保存本轮模型生成的测试代码，后续可直接复用评测">
-                  <span x-text="generatedSetSaving ? '保存中...' : '保存为生成集'"></span>
-                </button>
-                <button x-show="currentRun.status === 'completed' || currentRun.status === 'failed' || currentRun.status === 'canceled'" @click="rerunRun(currentRun.run_id)" class="btn-ghost" style="color:var(--yellow)" title="以相同配置再跑一次">重跑</button>
-                <button @click="renameRun(currentRun.run_id, currentRun.label)" class="btn-ghost" style="color:var(--fg-muted)" title="设置备注名">备注</button>
-                <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="deleteRun(currentRun.run_id)" class="btn-ghost" style="color:var(--red)" title="删除该任务及所有产物">删除</button>
-                <button @click="goto('runs')" class="btn-ghost">返回</button>
-                <button x-show="currentRun.status === 'completed'" @click="openHtmlReport()" class="btn-warm text-[12px]">
+                <button x-show="currentRun.status === 'completed'" @click="openHtmlReport()" class="btn-primary">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
-                  打开 HTML 报告
+                  HTML 报告
                 </button>
+                <button @click="goto('runs')" class="btn-ghost">返回列表</button>
+                <!-- More actions dropdown -->
+                <div class="btn-dropdown" x-data="{open:false}" @click.away="open=false">
+                  <button @click="open=!open" class="btn-ghost" style="padding:0 10px">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                  </button>
+                  <div x-show="open" class="btn-dropdown-menu">
+                    <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="open=false;reevaluateRun(currentRun.run_id)" :disabled="runActionBusy === 'reevaluate'" x-text="runActionBusy === 'reevaluate' ? '评测中...' : '重新评测'"></button>
+                    <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="open=false;regenerateReport(currentRun.run_id)" :disabled="runActionBusy === 'report'" x-text="runActionBusy === 'report' ? '生成中...' : '从JSON生成报告'"></button>
+                    <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="open=false;ingestRunToDB(currentRun.run_id)" :disabled="dbIngesting" x-text="dbIngesting ? '入库中...' : '入库'"></button>
+                    <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="open=false;promoteRunToGeneratedSet(currentRun.run_id)" :disabled="generatedSetSaving" x-text="generatedSetSaving ? '保存中...' : '保存为生成集'"></button>
+                    <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="open=false;rerunRun(currentRun.run_id)">重跑</button>
+                    <button @click="open=false;renameRun(currentRun.run_id, currentRun.label)">备注</button>
+                    <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" class="danger" @click="open=false;deleteRun(currentRun.run_id)">删除</button>
+                  </div>
+                </div>
               </div>
             </div>
 
+            <div class="cloud-summary-grid">
+              <div class="cloud-stat-card"><span>运行状态</span><strong style="font-size:18px" x-text="statusText(currentRun.status, currentRun.paused)"></strong><span x-text="currentRun.run_id"></span></div>
+              <div class="cloud-stat-card"><span>被测对象</span><strong style="font-size:18px" x-text="runModelSummary(currentRun)"></strong><span>模型 / Subject</span></div>
+              <div class="cloud-stat-card"><span>语言</span><strong style="font-size:18px" x-text="(currentRun.spec?.languages ?? []).join(', ') || '—'"></strong><span>评测语言范围</span></div>
+              <div class="cloud-stat-card"><span>耗时</span><strong style="font-size:18px" x-text="duration(currentRun.started_at, currentRun.ended_at)"></strong><span x-text="fmtTime(currentRun.started_at)"></span></div>
+            </div>
+
             <!-- Tabs -->
-            <div class="flex gap-0 border-b mb-4" style="border-color:var(--border)">
+            <div class="cloud-card p-0">
+              <div class="flex gap-0 border-b" style="border-color:var(--border)">
               <button @click="detailTab = 'logs'" :class="detailTab === 'logs' ? 'active' : ''" class="tab-btn">日志</button>
               <button @click="detailTab = 'report'; loadReport()" :class="detailTab === 'report' ? 'active' : ''" class="tab-btn">报告</button>
               <button @click="detailTab = 'analysis'; loadAnalysis(false)" :class="detailTab === 'analysis' ? 'active' : ''" class="tab-btn">AI 分析</button>
+              </div>
             </div>
 
             <!-- Logs -->
@@ -229,7 +230,7 @@
                             <td class="text-[12px]">
                               <div class="flex flex-wrap gap-1.5">
                                 <template x-for="m in Object.entries(f.by_model || {}).sort((a,b)=>b[1]-a[1])" :key="m[0]">
-                                  <span class="tag-pill" style="background:rgba(239,68,68,.08);color:var(--red);font-size:11px">
+                                  <span class="tag-pill" style="background:rgba(227,77,89,.08);color:var(--red);font-size:11px">
                                     <span class="font-medium" x-text="m[0]"></span>
                                     <span class="opacity-70" x-text="'×'+m[1]"></span>
                                   </span>
@@ -374,7 +375,7 @@
                           看 trace、诊断或优化方案时，可以直接追问当前对象。回答会基于当前选择对象和分析报告流式生成。
                         </div>
                         <template x-for="m in analysisChatMessages()" :key="'side-' + m.message_id">
-                          <div class="rounded border p-3" :style="m.role === 'user' ? 'border-color:rgba(14,165,233,.35);background:rgba(14,165,233,.08)' : 'border-color:var(--border);background:var(--bg-elevated)'">
+                          <div class="rounded border p-3" :style="m.role === 'user' ? 'border-color:rgba(0,82,217,.30);background:rgba(0,82,217,.08)' : 'border-color:var(--border);background:var(--bg-elevated)'">
                             <div class="flex items-center gap-2 mb-2 text-[11px]" style="color:var(--fg-muted)">
                               <span class="tag-pill" x-text="m.role === 'user' ? '你' : 'AI 助手'"></span>
                               <span x-show="m.status" x-text="m.status"></span>
@@ -417,7 +418,7 @@
                       </div>
                       <div x-show="analysisChatMessages().length" class="max-h-[180px] overflow-y-auto p-2 space-y-2" style="background:var(--bg-muted)">
                         <template x-for="m in analysisChatMessages().slice(-4)" :key="'dock-' + m.message_id">
-                          <div class="rounded border px-3 py-2" :style="m.role === 'user' ? 'border-color:rgba(14,165,233,.35);background:rgba(14,165,233,.08)' : 'border-color:var(--border);background:var(--bg-elevated)'">
+                          <div class="rounded border px-3 py-2" :style="m.role === 'user' ? 'border-color:rgba(0,82,217,.30);background:rgba(0,82,217,.08)' : 'border-color:var(--border);background:var(--bg-elevated)'">
                             <div class="text-[11px] mb-1" style="color:var(--fg-muted)" x-text="m.role === 'user' ? '你' : 'AI 助手'"></div>
                             <div class="text-[12px] whitespace-pre-wrap break-words line-clamp-4" style="color:var(--fg)" x-text="m.content"></div>
                           </div>
@@ -715,7 +716,7 @@
                 <div class="px-4 py-2 text-[12px]" style="color:var(--fg-muted)" x-text="analysisSelectionLabel()"></div>
                 <div x-show="analysisSelection.length" class="px-4 pb-3 flex flex-wrap gap-2">
                   <template x-for="s in analysisSelection" :key="'basket-' + analysisSubjectKey(s)">
-                    <button @click="toggleAnalysisSubject(s)" class="tag-pill border font-mono" style="border-color:rgba(14,165,233,.35);color:var(--accent)" x-text="s.subject_id + ' / ' + s.sample_id + ' / ' + s.language + ' ×'"></button>
+                    <button @click="toggleAnalysisSubject(s)" class="tag-pill border font-mono" style="border-color:rgba(0,82,217,.30);color:var(--accent)" x-text="s.subject_id + ' / ' + s.sample_id + ' / ' + s.language + ' ×'"></button>
                   </template>
                 </div>
                 <div class="max-h-[260px] overflow-auto">
@@ -723,7 +724,7 @@
                     <thead><tr><th>选择</th><th>Subject</th><th>样本</th><th>语言</th><th>编译</th><th>测试</th><th>覆盖率</th><th>变异</th><th>Trace</th></tr></thead>
                     <tbody>
                       <template x-for="s in analysisSubjectRows().slice(0, analysisSubjectLimit)" :key="analysisSubjectKey(s)">
-                        <tr :style="isAnalysisSubjectSelected(s) ? 'background:rgba(14,165,233,.08)' : ''">
+                        <tr :style="isAnalysisSubjectSelected(s) ? 'background:rgba(0,82,217,.08)' : ''">
                           <td><input type="checkbox" :checked="isAnalysisSubjectSelected(s)" @change="toggleAnalysisSubject(s)"></td>
                           <td class="text-[12px]">
                             <div class="font-mono" x-text="s.subject_id"></div>
@@ -923,7 +924,7 @@
                         <thead><tr><th>Subject</th><th>样本</th><th>Trace</th><th>读源码</th><th>写测试</th><th>运行测试</th><th>策略命令</th><th>噪声</th></tr></thead>
                         <tbody>
                           <template x-for="s in currentAnalysis.subjects || []" :key="s.subject_id + s.sample_id">
-                            <tr :style="isAnalysisSubjectInReportSelection(s) ? 'background:rgba(14,165,233,.08)' : ''">
+                            <tr :style="isAnalysisSubjectInReportSelection(s) ? 'background:rgba(0,82,217,.08)' : ''">
                               <td class="font-mono text-[12px]" x-text="s.subject_id"></td>
                               <td class="font-mono text-[12px]" x-text="s.sample_id"></td>
                               <td class="text-[12px]" x-text="s.trace_step_count"></td>
@@ -1175,7 +1176,7 @@
                           可以询问“这个 Agent 为什么没跑测试？”、“这三个 Agent 哪个策略最好？”、“这个成功样本有哪些步骤值得迁移？”等问题。回答会基于当前选择对象和分析报告流式生成。
                         </div>
                         <template x-for="m in analysisChatMessages()" :key="m.message_id">
-                          <div class="rounded border p-3" :style="m.role === 'user' ? 'border-color:rgba(14,165,233,.35);background:rgba(14,165,233,.08)' : 'border-color:var(--border);background:var(--bg-elevated)'">
+                          <div class="rounded border p-3" :style="m.role === 'user' ? 'border-color:rgba(0,82,217,.30);background:rgba(0,82,217,.08)' : 'border-color:var(--border);background:var(--bg-elevated)'">
                             <div class="flex items-center gap-2 mb-2 text-[11px]" style="color:var(--fg-muted)">
                               <span class="tag-pill" x-text="m.role === 'user' ? '你' : 'AI 助手'"></span>
                               <span x-show="m.status" x-text="m.status"></span>

@@ -1,37 +1,44 @@
       <!-- ENVIRONMENT -->
-      <div x-show="page === 'environment'" class="max-w-7xl animate-fadeUp">
-        <div class="flex flex-wrap items-center gap-3 mb-4">
-          <div class="text-[12px]" style="color:var(--fg-muted)">
-            <span x-show="!environmentLoading && environment">上次检查：<span x-text="fmtTime(environment?.checked_at)" style="color:var(--fg)"></span></span>
-            <span x-show="environmentLoading">检查中...</span>
+      <div x-show="page === 'environment'" class="cloud-page animate-fadeUp">
+        <div class="cloud-page-head">
+          <div class="cloud-page-head-main">
+            <h2 class="page-title">环境检查</h2>
+            <p class="page-subtitle" x-show="!environmentLoading && environment">上次检查：<span x-text="fmtTime(environment?.checked_at)"></span></p>
           </div>
-          <button @click="loadEnvironment(true)" :disabled="environmentLoading" class="btn-primary text-[12px] ml-auto">
-            <span x-text="environmentLoading ? '检查中...' : '重新检查'"></span>
-          </button>
+          <div class="cloud-page-head-actions">
+            <button @click="loadEnvironment(true)" :disabled="environmentLoading" class="btn-primary">
+              <span x-text="environmentLoading ? '检查中...' : '重新检查'"></span>
+            </button>
+          </div>
         </div>
 
         <template x-if="environment">
           <div class="space-y-5">
-            <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
-              <div class="kpi-card">
-                <div class="kpi-value kpi-total" x-text="environment.summary?.total ?? 0"></div>
-                <div class="kpi-label">检查项</div>
+            <div class="cloud-summary-grid">
+              <div class="cloud-stat-card">
+                <span>检查项</span>
+                <strong x-text="environment.summary?.total ?? 0"></strong>
+                <span>全部环境资源</span>
               </div>
-              <div class="kpi-card">
-                <div class="kpi-value kpi-completed" x-text="environment.summary?.ok ?? 0"></div>
-                <div class="kpi-label">正常</div>
+              <div class="cloud-stat-card">
+                <span>正常</span>
+                <strong class="kpi-completed" x-text="environment.summary?.ok ?? 0"></strong>
+                <span>可直接运行</span>
               </div>
-              <div class="kpi-card">
-                <div class="kpi-value kpi-running" x-text="environment.summary?.warning ?? 0"></div>
-                <div class="kpi-label">警告</div>
+              <div class="cloud-stat-card">
+                <span>警告</span>
+                <strong class="kpi-running" x-text="environment.summary?.warning ?? 0"></strong>
+                <span>建议处理</span>
               </div>
-              <div class="kpi-card">
-                <div class="kpi-value kpi-failed" x-text="environment.summary?.missing ?? 0"></div>
-                <div class="kpi-label">缺失</div>
+              <div class="cloud-stat-card">
+                <span>缺失</span>
+                <strong class="kpi-failed" x-text="environment.summary?.missing ?? 0"></strong>
+                <span>会阻断部分能力</span>
               </div>
-              <div class="kpi-card">
-                <div class="kpi-value kpi-running" x-text="environment.summary?.installable ?? 0"></div>
-                <div class="kpi-label">可安装</div>
+              <div class="cloud-stat-card">
+                <span>可安装</span>
+                <strong class="kpi-running" x-text="environment.summary?.installable ?? 0"></strong>
+                <span>支持自动修复</span>
               </div>
             </div>
 

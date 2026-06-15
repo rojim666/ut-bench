@@ -1,25 +1,30 @@
       <!-- GENERATED SETS -->
-      <div x-show="page === 'generated-sets'" class="max-w-none animate-fadeUp space-y-4">
-        <div class="form-section">
-          <div class="flex flex-wrap items-start gap-4">
-            <div class="min-w-0 flex-1">
-              <div class="section-title">生成集管理</div>
-              <div class="text-[12px]" style="color:var(--fg-muted)">管理模型生成的测试样本，保留备注、代码文件路径和可复评 manifest。</div>
-            </div>
-            <div class="flex flex-wrap gap-2 items-center">
-              <select x-model="generatedSetStatusFilter" @change="loadGeneratedSets()" class="input-base w-32 text-[12px]">
-                <option value="">全部状态</option>
-                <option value="candidate">候选</option>
-                <option value="accepted">已确认</option>
-                <option value="archived">归档</option>
-              </select>
-              <button @click="loadGeneratedSets()" class="btn-ghost text-[12px]">刷新</button>
-            </div>
+      <div x-show="page === 'generated-sets'" class="cloud-page animate-fadeUp">
+        <div class="cloud-page-head">
+          <div class="cloud-page-head-main">
+            <h2 class="page-title">生成集管理</h2>
+            <p class="page-subtitle">以资源列表和详情面板管理生成样本，保留备注、代码路径和可复评 manifest。</p>
+          </div>
+          <div class="cloud-page-head-actions">
+            <select x-model="generatedSetStatusFilter" @change="loadGeneratedSets()" class="input-base" style="width:128px">
+              <option value="">全部状态</option>
+              <option value="candidate">候选</option>
+              <option value="accepted">已确认</option>
+              <option value="archived">归档</option>
+            </select>
+            <button @click="loadGeneratedSets()" class="btn-ghost">刷新</button>
           </div>
         </div>
 
+        <div class="cloud-summary-grid">
+          <div class="cloud-stat-card"><span>生成集</span><strong x-text="generatedSets.length"></strong><span>全部资源数量</span></div>
+          <div class="cloud-stat-card"><span>候选</span><strong class="kpi-running" x-text="generatedSetsByStatus('candidate').length"></strong><span>待筛选样本集</span></div>
+          <div class="cloud-stat-card"><span>已确认</span><strong class="kpi-completed" x-text="generatedSetsByStatus('accepted').length"></strong><span>可复用生成结果</span></div>
+          <div class="cloud-stat-card"><span>归档</span><strong x-text="generatedSetsByStatus('archived').length"></strong><span>历史留存</span></div>
+        </div>
+
         <div class="grid grid-cols-1 xl:grid-cols-5 gap-4">
-          <div class="xl:col-span-2 form-section p-0 overflow-hidden">
+          <div class="xl:col-span-2 cloud-card">
             <div class="px-4 py-3 border-b flex items-center justify-between" style="border-color:var(--border)">
               <span class="text-[13px] font-medium">生成集</span>
               <span class="text-[11px]" style="color:var(--fg-muted)" x-text="filteredGeneratedSets.length + ' 个'"></span>
@@ -55,8 +60,8 @@
             </div>
           </div>
 
-          <div class="xl:col-span-3 space-y-4">
-            <div x-show="!selectedGeneratedSet" class="form-section py-16 text-center">
+          <div class="xl:col-span-3 cloud-panel-stack">
+            <div x-show="!selectedGeneratedSet" class="cloud-card py-16 text-center">
               <div class="text-[13px]" style="color:var(--fg-muted)">选择左侧生成集查看样本和复评入口。</div>
             </div>
 

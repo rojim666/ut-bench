@@ -1,15 +1,21 @@
-<div class="max-w-none animate-fadeUp space-y-4">
-  <section class="automation-hero">
-    <div>
-      <div class="db-eyebrow">Automation</div>
-      <div class="db-title">定时评测与通知</div>
-      <p class="agent-muted mt-2">按固定周期或 Cron 触发评测，完成后通过 Webhook / SMTP 推送结果。</p>
+<div class="cloud-page animate-fadeUp">
+  <div class="cloud-page-head">
+    <div class="cloud-page-head-main">
+      <h2 class="page-title">定时评测与通知</h2>
+      <p class="page-subtitle">按固定周期或 Cron 触发评测，并通过 Webhook / SMTP 管理结果投递。</p>
     </div>
-    <div class="agent-hero-actions">
+    <div class="cloud-page-head-actions">
       <button class="btn-ghost" @click="loadAutomations()">刷新</button>
       <button class="btn-primary" @click="openAutomationForm()">新建计划</button>
     </div>
-  </section>
+  </div>
+
+  <div class="cloud-summary-grid">
+    <div class="cloud-stat-card"><span>计划总数</span><strong x-text="automations.length"></strong><span>定时评测资源</span></div>
+    <div class="cloud-stat-card"><span>启用计划</span><strong class="kpi-completed" x-text="automationCountByEnabled(true)"></strong><span>会自动触发</span></div>
+    <div class="cloud-stat-card"><span>通知渠道</span><strong x-text="notificationChannels.length"></strong><span>Webhook / SMTP</span></div>
+    <div class="cloud-stat-card"><span>最近执行</span><strong class="kpi-running" x-text="automationRecentRuns.length"></strong><span>最近自动运行记录</span></div>
+  </div>
 
   <div class="automation-grid automation-workzone">
     <section class="form-section automation-pane">
@@ -124,7 +130,7 @@
         <tbody>
           <template x-for="item in notificationDeliveries" :key="item.delivery_id">
             <tr>
-              <td x-text="notificationChannels.find(c => c.channel_id === item.channel_id)?.name || item.channel_id"></td>
+              <td x-text="notificationChannelName(item.channel_id)"></td>
               <td x-text="item.status"></td>
               <td x-text="item.attempt"></td>
               <td class="font-mono text-[11px]" x-text="item.request_summary || '—'"></td>
