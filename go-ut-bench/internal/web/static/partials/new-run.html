@@ -9,286 +9,290 @@
             <button type="button" @click="goto('runs')" class="btn-ghost">返回列表</button>
           </div>
         </div>
-        <form @submit.prevent="submitRun()" class="cloud-layout cloud-layout-wide">
-          <div class="cloud-main cloud-panel-stack">
-          <div class="form-section">
-            <div class="section-title mb-4">任务配置</div>
-            <div class="grid grid-cols-3 gap-4">
-              <div>
-                <label class="label-text">任务 ID <span class="font-normal" style="color:var(--fg-subtle)">（可选，留空自动生成）</span></label>
-                <input x-model="form.run_id" type="text" placeholder="auto-generated" class="input-base">
-              </div>
-              <div>
-                <label class="label-text">模式</label>
-                <select x-model="form.mode" class="input-base">
-                  <option value="full">完整</option>
-                  <option value="incremental">增量</option>
-                </select>
-              </div>
-              <div>
-                <label class="label-text">执行阶段</label>
-                <select x-model="form.phase" class="input-base">
-                  <option value="full">全量运行 (生成 → 评测 → 报告)</option>
-                  <option value="generate">仅生成</option>
-                  <option value="evaluate">仅评测</option>
-                  <option value="report">仅报告</option>
-                </select>
-              </div>
-            </div>
-            <div x-show="form.phase !== 'full'" class="mt-3 text-[12px] rounded-lg p-2.5" style="background:var(--warn-bg);color:var(--yellow);border:1px solid var(--warn-border)">
-              <span x-show="form.phase === 'generate'">仅执行生成阶段，生成测试代码并保存 manifest。</span>
-              <span x-show="form.phase === 'evaluate'">仅执行评测阶段，需要已有 manifest 文件（<code class="font-mono text-[11px]">generated_manifest.json</code>）。</span>
-              <span x-show="form.phase === 'report'">仅生成报告，需要已有评测结果（<code class="font-mono text-[11px]">evaluation_result.json</code>）。</span>
-            </div>
-          </div>
-          <!-- 数据源选择区域：仅evaluate/report阶段显示 -->
-          <div x-show="form.phase === 'evaluate' || form.phase === 'report'" class="form-section">
-            <div class="section-title">数据源</div>
-            <div class="grid grid-cols-2 gap-4">
-              <div>
-                <label class="label-text">来源任务 <span class="font-normal" style="color:var(--fg-subtle)">（选择已有任务作为数据源）</span></label>
-                <select x-model="form.source_run_id" class="input-base">
-                  <option value="">— 选择任务 —</option>
-                  <template x-for="r in completedRuns" :key="r.run_id">
-                    <option :value="r.run_id" x-text="r.run_id + ' (' + fmtTime(r.started_at) + ')'"></option>
-                  </template>
-                </select>
-              </div>
-              <div x-show="form.phase === 'evaluate'">
-                <label class="label-text">Manifest 路径 <span class="font-normal" style="color:var(--fg-subtle)">（可选，覆盖默认路径）</span></label>
-                <input x-model="form.manifest_path" type="text" placeholder="留空使用来源任务的 manifest" class="input-base font-mono text-[12px]">
-              </div>
-              <div x-show="form.phase === 'report'">
-                <label class="label-text">评测结果路径 <span class="font-normal" style="color:var(--fg-subtle)">（可选，覆盖默认路径）</span></label>
-                <input x-model="form.evaluation_path" type="text" placeholder="留空使用来源任务的 evaluation_result.json" class="input-base font-mono text-[12px]">
-              </div>
-            </div>
-            <div x-show="form.source_run_id" class="mt-2 text-[11px]" style="color:var(--fg-muted)">
-              <span x-show="form.phase === 'evaluate'">将使用 <code class="font-mono">artifacts/runs/<span x-text="form.source_run_id"></span>/generated/generated_manifest.json</code></span>
-              <span x-show="form.phase === 'report'">将使用 <code class="font-mono">artifacts/runs/<span x-text="form.source_run_id"></span>/evaluation/evaluation_result.json</code></span>
-            </div>
-          </div>
-          <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
-            <div class="section-title">评测规格</div>
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 benchmark-profile-grid">
-              <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'small' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('small')">
-                <div class="flex items-center justify-between gap-2">
-                  <div class="font-mono text-[13px] font-bold">small</div>
-                  <span class="text-[11px]" style="color:var(--green)">mutation off</span>
+        <form @submit.prevent="submitRun()" class="run-form-layout">
+          <div class="run-form-main">
+            <div class="form-section">
+              <div class="section-title mb-4">任务配置</div>
+              <div class="run-form-grid">
+                <div>
+                  <label class="label-text">任务 ID <span class="font-normal" style="color:var(--fg-subtle)">（可选，留空自动生成）</span></label>
+                  <input x-model="form.run_id" type="text" placeholder="auto-generated" class="input-base">
                 </div>
-                <div class="text-[12px] mt-1" style="color:var(--fg)">冒烟验证</div>
-                <div class="text-[11px] mt-1" style="color:var(--fg-muted)">快速确认生成、评估、报告链路。</div>
-                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1</div>
-              </button>
-              <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'medium' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('medium')">
-                <div class="flex items-center justify-between gap-2">
-                  <div class="font-mono text-[13px] font-bold">medium</div>
-                  <span class="text-[11px]" style="color:var(--yellow)">mutation on</span>
+                <div>
+                  <label class="label-text">模式</label>
+                  <select x-model="form.mode" class="input-base">
+                    <option value="full">完整</option>
+                    <option value="incremental">增量</option>
+                  </select>
                 </div>
-                <div class="text-[12px] mt-1" style="color:var(--fg)">对比实验</div>
-                <div class="text-[11px] mt-1" style="color:var(--fg-muted)">启用 mutation 与断言密度，用于模型/prompt/agent/skill 对比。</div>
-                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1 + datasets/l2</div>
-              </button>
-              <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'large' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('large')">
-                <div class="flex items-center justify-between gap-2">
-                  <div class="font-mono text-[13px] font-bold">large</div>
-                  <span class="text-[11px]" style="color:var(--yellow)">mutation on</span>
-                </div>
-                <div class="text-[12px] mt-1" style="color:var(--fg)">正式基准</div>
-                <div class="text-[11px] mt-1" style="color:var(--fg-muted)">固定全量 manifest，适合产出正式可复现报告。</div>
-                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1 + datasets/l2 + datasets/l3</div>
-              </button>
-              <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'custom' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('custom')">
-                <div class="flex items-center justify-between gap-2">
-                  <div class="font-mono text-[13px] font-bold">custom</div>
-                  <span class="text-[11px]" style="color:var(--accent)">editable</span>
-                </div>
-                <div class="text-[12px] mt-1" style="color:var(--fg)">自定义规格</div>
-                <div class="text-[11px] mt-1" style="color:var(--fg-muted)">手动配置语言、数据集筛选、样本上限与 mutation 策略。</div>
-                <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">manual filters</div>
-              </button>
-            </div>
-            <div class="mt-3 text-[12px] rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border);color:var(--fg-muted)">
-              <div>当前规格：<b style="color:var(--fg)" x-text="form.benchmark_profile || 'custom'"></b> · <span x-text="benchmarkProfileSummary"></span></div>
-              <div x-show="form.dataset_manifest" class="font-mono mt-1" x-text="'manifest=' + form.dataset_manifest"></div>
-              <div x-show="!form.dataset_manifest && form.level" class="font-mono mt-1" x-text="'levels=' + form.level"></div>
-              <div x-show="isPresetBenchmarkProfileLocked" class="mt-1" style="color:var(--accent)">已选固定规格：语言、数据集筛选、样本上限和 mutation 已锁定。如需修改，请先切换到 custom。</div>
-              <div x-show="form.benchmark_profile === 'custom'" class="mt-1" style="color:var(--yellow)">custom 规格允许手动修改语言、数据集筛选、样本上限和 mutation 配置。</div>
-              <div x-show="benchmarkMutationHint" class="mt-1" style="color:var(--yellow)" x-text="benchmarkMutationHint"></div>
-            </div>
-          </div>
-          <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
-            <div class="section-title">语言</div>
-            <div class="flex flex-wrap gap-2.5">
-              <template x-for="lang in config?.languages ?? []" :key="lang">
-                <label :class="form.languages.includes(lang) ? 'active' : ''" class="chip" :style="isPresetBenchmarkProfileLocked ? 'opacity:.65;cursor:not-allowed' : ''">
-                  <input type="checkbox" :value="lang" x-model="form.languages" class="w-3.5 h-3.5" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom()">
-                  <span x-text="lang"></span>
-                </label>
-              </template>
-            </div>
-          </div>
-          <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
-            <div class="section-title">数据集筛选</div>
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div>
-                <label class="label-text">类型</label>
-                <select x-model="form.class" class="input-base" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom(); normalizeDatasetScenario()">
-                  <option value="">全部</option>
-                  <template x-for="c in config?.classes ?? []" :key="c"><option :value="c" x-text="c"></option></template>
-                </select>
-              </div>
-              <div>
-                <label class="label-text">场景</label>
-                <select x-model="form.scenario" class="input-base" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom(); normalizeDatasetProject()">
-                  <option value="">全部场景</option>
-                  <template x-for="sc in datasetScenariosForClass(form.class)" :key="sc"><option :value="sc" x-text="sc"></option></template>
-                </select>
-              </div>
-              <div x-show="form.class === 'repo_level'">
-                <label class="label-text">项目</label>
-                <select x-model="form.project" class="input-base" :disabled="isPresetBenchmarkProfileLocked || !form.scenario" @change="markBenchmarkCustom()">
-                  <option value="">全部项目</option>
-                  <template x-for="p in datasetProjectsForSelection()" :key="p.name">
-                    <option :value="p.name" x-text="datasetProjectLabel(p)"></option>
-                  </template>
-                </select>
-              </div>
-              <div>
-                <label class="label-text">等级</label>
-                <input x-model="form.level" type="text" placeholder="l1, l2..." class="input-base" :disabled="isPresetBenchmarkProfileLocked || form.class === 'repo_level'" @input="markBenchmarkCustom()">
-              </div>
-            </div>
-            <div x-show="form.class === 'repo_level'" class="mt-3 text-[12px] rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border);color:var(--fg-muted)">
-              <span x-show="!form.scenario">项目级数据集先选择场景，再选择具体项目；不选项目时会评测该场景下所有项目。</span>
-              <span x-show="form.scenario && !form.project">当前场景包含 <b style="color:var(--fg)" x-text="datasetProjectsForSelection().length"></b> 个项目，预计可展开 <b style="color:var(--fg)" x-text="selectedDatasetProjectTotalSamples()"></b> 个文件模块。</span>
-              <span x-show="form.project">当前项目可展开 <b style="color:var(--fg)" x-text="selectedDatasetProjectSampleCount"></b> 个文件模块；样本上限会作用在展开后的 target files 上。</span>
-            </div>
-          </div>
-          <div class="form-section">
-            <div class="section-title">执行设置</div>
-            <div class="grid grid-cols-2 gap-4">
-              <div>
-                <label class="label-text">每语言/场景样本上限 <span class="font-normal" style="color:var(--fg-subtle)">（0 = 无限制）</span></label>
-                <input x-model.number="form.max_samples" type="number" min="0" class="input-base" :disabled="isPresetBenchmarkProfileLocked" @input="markBenchmarkCustom()">
-                <div class="text-[11px] mt-1" style="color:var(--fg-subtle)">
-                  预计生成任务：<span style="color:var(--fg)" x-text="estimatedTaskCount"></span>
-                  <span x-text="estimatedTaskFormula"></span>
+                <div>
+                  <label class="label-text">执行阶段</label>
+                  <select x-model="form.phase" class="input-base">
+                    <option value="full">全量运行（生成 → 评测 → 报告）</option>
+                    <option value="generate">仅生成</option>
+                    <option value="evaluate">仅评测</option>
+                    <option value="report">仅报告</option>
+                  </select>
                 </div>
               </div>
-              <div>
-                <label class="label-text">并发数 <span class="font-normal" style="color:var(--fg-subtle)">（0 = 自动）</span></label>
-                <input x-model.number="form.workers" type="number" min="0" class="input-base">
+              <div x-show="form.phase !== 'full'" class="mt-3 text-[12px] rounded-lg p-2.5" style="background:var(--warn-bg);color:var(--yellow);border:1px solid var(--warn-border)">
+                <span x-show="form.phase === 'generate'">仅执行生成阶段，输出测试代码并保存生成 manifest。</span>
+                <span x-show="form.phase === 'evaluate'">仅执行评测阶段，需要已有 manifest 文件（例如 <code class="font-mono text-[11px]">generated_manifest.json</code>）。</span>
+                <span x-show="form.phase === 'report'">仅生成报告，需要已有评测结果（例如 <code class="font-mono text-[11px]">evaluation_result.json</code>）。</span>
               </div>
-            </div>
-          </div>
-          <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
-            <div class="section-title">被测对象 Subject（自由组合）</div>
-            <div class="text-[12px] mb-3" style="color:var(--fg-muted)">自由搭配 Framework + Model + Skill 组合。每行生成一个 Subject，可添加多个。</div>
-
-            <div x-show="config?.agents_config_error" class="mb-3 rounded-lg p-3 text-[12px]" style="background:var(--badge-bg);border:1px solid var(--border);color:var(--fg-muted)">
-              <strong>Agents Config:</strong> <span x-text="config?.agents_config_error"></span>
-              <br>当前仅支持 model_api（纯 API 模式）。如需 Framework/Skill，请确保启动时指定了 <code class="font-mono">--agents-config</code>。
             </div>
 
-            <div class="space-y-2" id="combo-rows" x-html="renderCombinationRows()" @change="handleComboRowsChange($event)" @click="handleComboRowsClick($event)"></div>
-
-            <button type="button" class="btn-pill mt-2" style="background:var(--accent);color:var(--accent-fg)"
-              @click="addCombination()">+ 添加组合</button>
-
-            <div class="mt-4 rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border)">
-              <div class="flex flex-wrap items-center gap-2 text-[12px]">
-                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">已选 Subject <span x-text="selectedSubjectCount"></span></span>
-                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">有效被测对象 <span x-text="selectedExecutionTargetCount"></span></span>
-                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">Framework <span x-text="selectedFrameworkCount"></span></span>
-                <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">Skill <span x-text="selectedSkillCount"></span></span>
+            <div x-show="form.phase === 'evaluate' || form.phase === 'report'" class="form-section">
+              <div class="section-title">数据源</div>
+              <div class="run-form-grid compact-2">
+                <div>
+                  <label class="label-text">来源任务 <span class="font-normal" style="color:var(--fg-subtle)">（选择已有任务作为输入）</span></label>
+                  <select x-model="form.source_run_id" class="input-base">
+                    <option value="">— 选择任务 —</option>
+                    <template x-for="r in completedRuns" :key="r.run_id">
+                      <option :value="r.run_id" x-text="r.run_id + ' (' + fmtTime(r.started_at) + ')'"></option>
+                    </template>
+                  </select>
+                </div>
+                <div x-show="form.phase === 'evaluate'">
+                  <label class="label-text">Manifest 路径 <span class="font-normal" style="color:var(--fg-subtle)">（可选，覆盖默认路径）</span></label>
+                  <input x-model="form.manifest_path" type="text" placeholder="留空时使用来源任务的 manifest" class="input-base font-mono text-[12px]">
+                </div>
+                <div x-show="form.phase === 'report'">
+                  <label class="label-text">评测结果路径 <span class="font-normal" style="color:var(--fg-subtle)">（可选，覆盖默认路径）</span></label>
+                  <input x-model="form.evaluation_path" type="text" placeholder="留空时使用来源任务的 evaluation_result.json" class="input-base font-mono text-[12px]">
+                </div>
               </div>
-              <div class="mt-2 text-[12px]" style="color:var(--fg-muted)" x-text="subjectPlanHint"></div>
+              <div x-show="form.source_run_id" class="mt-2 text-[11px]" style="color:var(--fg-muted)">
+                <span x-show="form.phase === 'evaluate'">将使用 <code class="font-mono">artifacts/runs/<span x-text="form.source_run_id"></span>/generated/generated_manifest.json</code></span>
+                <span x-show="form.phase === 'report'">将使用 <code class="font-mono">artifacts/runs/<span x-text="form.source_run_id"></span>/evaluation/evaluation_result.json</code></span>
+              </div>
             </div>
-          </div>
 
-          <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
-            <div class="section-title">模型检测</div>
-            <div class="text-[12px] mb-3" style="color:var(--fg-muted)">
-              检测已注册模型的 API Key 配置状态；执行对象请在上方 Subject 组合中选择。
-            </div>
-            <div class="flex flex-wrap gap-2.5">
-              <template x-for="m in config?.models ?? []" :key="m.name">
-                <div class="chip" :class="m.api_key_set ? 'active' : ''" :title="m.api_key_set ? 'API Key 已配置' : 'API Key 未配置: ' + m.api_key_env">
-                  <span class="inline-block w-2 h-2 rounded-full shrink-0" :style="m.api_key_set ? 'background:var(--green)' : 'background:var(--red)'"></span>
-                  <span x-text="m.name" class="font-medium"></span>
-                  <span x-text="m.model_id" class="text-[11px]" style="color:var(--fg-muted)"></span>
-                  <span class="text-[11px]" :style="m.api_key_set ? 'color:var(--green)' : 'color:var(--red)'" x-text="m.api_key_set ? '可用' : '缺密钥'"></span>
-                </div>
-              </template>
-            </div>
-            <div x-show="hasMissingConfiguredModelKey()" class="mt-2 text-[11px]" style="color:var(--yellow)">
-              <span class="inline-block w-2 h-2 rounded-full mr-1" style="background:var(--red)"></span>红点表示 API Key 未配置，运行时会失败。请在 <span class="font-mono">.env</span> 中设置对应变量，或到「注册表」页面编辑。
-            </div>
-          </div>
-          <div class="form-section">
-            <div class="section-title">高级选项</div>
-            <div class="grid grid-cols-2 gap-x-5 gap-y-3">
-              <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
-                <input type="checkbox" x-model="form.dry_run" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)">
-                <div>
-                  <div class="text-[13px] font-medium">空跑模式</div>
-                  <div class="text-[12px]" style="color:var(--fg-muted)">跳过真实 API 调用</div>
-                </div>
-              </label>
-              <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
-                <input type="checkbox" x-model="form.mutation_enabled" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom()">
-                <div>
-                  <div class="text-[13px] font-medium">变异测试</div>
-                  <div class="text-[12px]" style="color:var(--fg-muted)">启用变异分析</div>
-                </div>
-              </label>
-              <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
-                <input type="checkbox" x-model="form.ingest" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)">
-                <div>
-                  <div class="text-[13px] font-medium">入库保存</div>
-                  <div class="text-[12px]" style="color:var(--fg-muted)">完成后写入 SQLite，供数据管理和跨运行报告使用</div>
-                </div>
-              </label>
-              <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
-                <input type="checkbox" x-model="form.reuse_generated" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)">
-                <div>
-                  <div class="text-[13px] font-medium">复用历史生成</div>
-                  <div class="text-[12px]" style="color:var(--fg-muted)">同模型、同源码、同 prompt 版本时复用数据库里的测试代码</div>
-                </div>
-              </label>
-              <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
-                <input type="checkbox" x-model="form.reuse_evaluation" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)">
-                <div>
-                  <div class="text-[13px] font-medium">复用历史评测</div>
-                  <div class="text-[12px]" style="color:var(--fg-muted)">同 generated test、同 evaluator 环境、同 mutation 配置时复用评测结果</div>
-                </div>
-              </label>
-              <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors"
-                     :class="(env && !env.docker_available) ? 'opacity-50 pointer-events-none' : ''">
-                <input type="checkbox" x-model="form.use_docker" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)" :disabled="env && !env.docker_available">
-                <div>
-                  <div class="text-[13px] font-medium flex items-center gap-2">
-                    Docker 执行
-                    <span x-show="env && !env.image_present && env.docker_available" class="text-[10px] px-1.5 py-0.5 rounded" style="background:var(--warn-bg);color:var(--yellow)">需镜像</span>
+            <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
+              <div class="section-title">评测规格</div>
+              <div class="grid grid-cols-1 md:grid-cols-4 gap-3 benchmark-profile-grid">
+                <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'small' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('small')">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="font-mono text-[13px] font-bold">small</div>
+                    <span class="text-[11px]" style="color:var(--green)">mutation off</span>
                   </div>
-                  <div class="text-[12px]" style="color:var(--fg-muted)">在 <code class="font-mono text-[11px]">utbench:latest</code> 容器中运行（Windows 下 mutmut/mull 必需）</div>
+                  <div class="text-[12px] mt-1" style="color:var(--fg)">冒烟验证</div>
+                  <div class="text-[11px] mt-1" style="color:var(--fg-muted)">快速确认生成、评估和报告链路是否可用。</div>
+                  <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1</div>
+                </button>
+                <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'medium' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('medium')">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="font-mono text-[13px] font-bold">medium</div>
+                    <span class="text-[11px]" style="color:var(--yellow)">mutation on</span>
+                  </div>
+                  <div class="text-[12px] mt-1" style="color:var(--fg)">对比实验</div>
+                  <div class="text-[11px] mt-1" style="color:var(--fg-muted)">启用 mutation 和断言密度，适合模型、prompt、agent、skill 的横向比较。</div>
+                  <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1 + datasets/l2</div>
+                </button>
+                <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'large' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('large')">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="font-mono text-[13px] font-bold">large</div>
+                    <span class="text-[11px]" style="color:var(--yellow)">mutation on</span>
+                  </div>
+                  <div class="text-[12px] mt-1" style="color:var(--fg)">正式基准</div>
+                  <div class="text-[11px] mt-1" style="color:var(--fg-muted)">固定全量 manifest，适合输出正式、可复现的评测报告。</div>
+                  <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">datasets/l1 + datasets/l2 + datasets/l3</div>
+                </button>
+                <button type="button" class="benchmark-profile-card text-left rounded-lg p-3 transition-colors" :class="form.benchmark_profile === 'custom' ? 'active' : ''" style="border:1px solid var(--border);background:var(--bg-overlay)" @click="applyBenchmarkProfile('custom')">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="font-mono text-[13px] font-bold">custom</div>
+                    <span class="text-[11px]" style="color:var(--accent)">editable</span>
+                  </div>
+                  <div class="text-[12px] mt-1" style="color:var(--fg)">自定义规格</div>
+                  <div class="text-[11px] mt-1" style="color:var(--fg-muted)">手动配置语言、数据集筛选、样本上限与 mutation 策略。</div>
+                  <div class="text-[11px] mt-2 font-mono" style="color:var(--fg-subtle)">manual filters</div>
+                </button>
+              </div>
+              <div class="mt-3 text-[12px] rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border);color:var(--fg-muted)">
+                <div>当前规格：<b style="color:var(--fg)" x-text="form.benchmark_profile || 'custom'"></b> · <span x-text="benchmarkProfileSummary"></span></div>
+                <div x-show="form.dataset_manifest" class="font-mono mt-1" x-text="'manifest=' + form.dataset_manifest"></div>
+                <div x-show="!form.dataset_manifest && form.level" class="font-mono mt-1" x-text="'levels=' + form.level"></div>
+                <div x-show="isPresetBenchmarkProfileLocked" class="mt-1" style="color:var(--accent)">已选择固定规格：语言、数据集筛选、样本上限和 mutation 已锁定。如需修改，请先切换到 custom。</div>
+                <div x-show="form.benchmark_profile === 'custom'" class="mt-1" style="color:var(--yellow)">custom 规格允许手动修改语言、数据集筛选、样本上限和 mutation 配置。</div>
+                <div x-show="benchmarkMutationHint" class="mt-1" style="color:var(--yellow)" x-text="benchmarkMutationHint"></div>
+              </div>
+            </div>
+
+            <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
+              <div class="section-title">语言</div>
+              <div class="flex flex-wrap gap-2.5">
+                <template x-for="lang in config?.languages ?? []" :key="lang">
+                  <label :class="form.languages.includes(lang) ? 'active' : ''" class="chip" :style="isPresetBenchmarkProfileLocked ? 'opacity:.65;cursor:not-allowed' : ''">
+                    <input type="checkbox" :value="lang" x-model="form.languages" class="w-3.5 h-3.5" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom()">
+                    <span x-text="lang"></span>
+                  </label>
+                </template>
+              </div>
+            </div>
+
+            <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
+              <div class="section-title">数据集筛选</div>
+              <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                  <label class="label-text">类型</label>
+                  <select x-model="form.class" class="input-base" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom(); normalizeDatasetScenario()">
+                    <option value="">全部</option>
+                    <template x-for="c in config?.classes ?? []" :key="c"><option :value="c" x-text="c"></option></template>
+                  </select>
                 </div>
-              </label>
-              <div x-show="form.mutation_enabled">
-                <label class="label-text">变异超时（秒）</label>
-                <input x-model.number="form.mutation_timeout" type="number" min="60" class="input-base" :disabled="isPresetBenchmarkProfileLocked">
+                <div>
+                  <label class="label-text">场景</label>
+                  <select x-model="form.scenario" class="input-base" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom(); normalizeDatasetProject()">
+                    <option value="">全部场景</option>
+                    <template x-for="sc in datasetScenariosForClass(form.class)" :key="sc"><option :value="sc" x-text="sc"></option></template>
+                  </select>
+                </div>
+                <div x-show="form.class === 'repo_level'">
+                  <label class="label-text">项目</label>
+                  <select x-model="form.project" class="input-base" :disabled="isPresetBenchmarkProfileLocked || !form.scenario" @change="markBenchmarkCustom()">
+                    <option value="">全部项目</option>
+                    <template x-for="p in datasetProjectsForSelection()" :key="p.name">
+                      <option :value="p.name" x-text="datasetProjectLabel(p)"></option>
+                    </template>
+                  </select>
+                </div>
+                <div>
+                  <label class="label-text">等级</label>
+                  <input x-model="form.level" type="text" placeholder="l1, l2..." class="input-base" :disabled="isPresetBenchmarkProfileLocked || form.class === 'repo_level'" @input="markBenchmarkCustom()">
+                </div>
+              </div>
+              <div x-show="form.class === 'repo_level'" class="mt-3 text-[12px] rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border);color:var(--fg-muted)">
+                <span x-show="!form.scenario">项目级数据集需要先选择场景，再选择具体项目；不指定项目时会评测该场景下的全部项目。</span>
+                <span x-show="form.scenario && !form.project">当前场景包含 <b style="color:var(--fg)" x-text="datasetProjectsForSelection().length"></b> 个项目，预计可展开 <b style="color:var(--fg)" x-text="selectedDatasetProjectTotalSamples()"></b> 个 target file。</span>
+                <span x-show="form.project">当前项目可展开 <b style="color:var(--fg)" x-text="selectedDatasetProjectSampleCount"></b> 个 target file；样本上限会作用在展开后的文件级对象上。</span>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="section-title">执行设置</div>
+              <div class="run-form-grid compact-2">
+                <div>
+                  <label class="label-text">每语言 / 场景样本上限 <span class="font-normal" style="color:var(--fg-subtle)">（0 = 无限制）</span></label>
+                  <input x-model.number="form.max_samples" type="number" min="0" class="input-base" :disabled="isPresetBenchmarkProfileLocked" @input="markBenchmarkCustom()">
+                  <div class="text-[11px] mt-1" style="color:var(--fg-subtle)">
+                    预计生成任务：<span style="color:var(--fg)" x-text="estimatedTaskCount"></span>
+                    <span x-text="estimatedTaskFormula"></span>
+                  </div>
+                </div>
+                <div>
+                  <label class="label-text">并发数 <span class="font-normal" style="color:var(--fg-subtle)">（0 = 自动）</span></label>
+                  <input x-model.number="form.workers" type="number" min="0" class="input-base">
+                </div>
+              </div>
+            </div>
+
+            <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
+              <div class="section-title">被测对象 Subject（自由组合）</div>
+              <div class="text-[12px] mb-3" style="color:var(--fg-muted)">自由组合 Framework、Model 和 Skill。每一行都会生成一个 Subject，可批量构造多套实验对象。</div>
+
+              <div x-show="config?.agents_config_error" class="mb-3 rounded-lg p-3 text-[12px]" style="background:var(--badge-bg);border:1px solid var(--border);color:var(--fg-muted)">
+                <strong>Agents Config:</strong> <span x-text="config?.agents_config_error"></span>
+                <br>当前仅支持 `model_api`（纯 API 模式）。如需使用 Framework 或 Skill，请确认启动参数中已经提供 <code class="font-mono">--agents-config</code>。
+              </div>
+
+              <div class="space-y-2" id="combo-rows" x-html="renderCombinationRows()" @change="handleComboRowsChange($event)" @click="handleComboRowsClick($event)"></div>
+
+              <button type="button" class="btn-pill mt-2" style="background:var(--accent);color:var(--accent-fg)" @click="addCombination()">+ 添加组合</button>
+
+              <div class="mt-4 rounded-lg p-3" style="background:var(--bg-overlay);border:1px solid var(--border)">
+                <div class="flex flex-wrap items-center gap-2 text-[12px]">
+                  <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">已选 Subject <span x-text="selectedSubjectCount"></span></span>
+                  <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">有效被测对象 <span x-text="selectedExecutionTargetCount"></span></span>
+                  <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">Framework <span x-text="selectedFrameworkCount"></span></span>
+                  <span class="tag-pill" style="background:var(--badge-bg);color:var(--fg)">Skill <span x-text="selectedSkillCount"></span></span>
+                </div>
+                <div class="mt-2 text-[12px]" style="color:var(--fg-muted)" x-text="subjectPlanHint"></div>
+              </div>
+            </div>
+
+            <div class="form-section" x-show="form.phase === 'full' || form.phase === 'generate'">
+              <div class="section-title">模型检测</div>
+              <div class="text-[12px] mb-3" style="color:var(--fg-muted)">
+                这里仅用于检查已注册模型的 API Key 可用性；真正参与执行的对象仍由上方 Subject 组合决定。
+              </div>
+              <div class="flex flex-wrap gap-2.5">
+                <template x-for="m in config?.models ?? []" :key="m.name">
+                  <div class="chip" :class="m.api_key_set ? 'active' : ''" :title="m.api_key_set ? 'API Key 已配置' : 'API Key 未配置: ' + m.api_key_env">
+                    <span class="inline-block w-2 h-2 rounded-full shrink-0" :style="m.api_key_set ? 'background:var(--green)' : 'background:var(--red)'"></span>
+                    <span x-text="m.name" class="font-medium"></span>
+                    <span x-text="m.model_id" class="text-[11px]" style="color:var(--fg-muted)"></span>
+                    <span class="text-[11px]" :style="m.api_key_set ? 'color:var(--green)' : 'color:var(--red)'" x-text="m.api_key_set ? '可用' : '缺密钥'"></span>
+                  </div>
+                </template>
+              </div>
+              <div x-show="hasMissingConfiguredModelKey()" class="mt-2 text-[11px]" style="color:var(--yellow)">
+                <span class="inline-block w-2 h-2 rounded-full mr-1" style="background:var(--red)"></span>红点表示 API Key 未配置，运行时会失败。请在 <span class="font-mono">.env</span> 中设置对应变量，或到“模型管理”页面补全。
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="section-title">高级选项</div>
+              <div class="grid grid-cols-2 gap-x-5 gap-y-3">
+                <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
+                  <input type="checkbox" x-model="form.dry_run" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)">
+                  <div>
+                    <div class="text-[13px] font-medium">空跑模式</div>
+                    <div class="text-[12px]" style="color:var(--fg-muted)">跳过真实 API 调用，仅验证任务编排链路。</div>
+                  </div>
+                </label>
+                <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
+                  <input type="checkbox" x-model="form.mutation_enabled" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)" :disabled="isPresetBenchmarkProfileLocked" @change="markBenchmarkCustom()">
+                  <div>
+                    <div class="text-[13px] font-medium">Mutation 测试</div>
+                    <div class="text-[12px]" style="color:var(--fg-muted)">启用变异分析，衡量测试对真实缺陷的识别强度。</div>
+                  </div>
+                </label>
+                <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
+                  <input type="checkbox" x-model="form.ingest" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)">
+                  <div>
+                    <div class="text-[13px] font-medium">入库保存</div>
+                    <div class="text-[12px]" style="color:var(--fg-muted)">完成后写入 SQLite，供资产管理与跨运行对比报告使用。</div>
+                  </div>
+                </label>
+                <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
+                  <input type="checkbox" x-model="form.reuse_generated" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)">
+                  <div>
+                    <div class="text-[13px] font-medium">复用历史生成</div>
+                    <div class="text-[12px]" style="color:var(--fg-muted)">同模型、同源码、同 prompt 版本时复用数据库中的生成测试。</div>
+                  </div>
+                </label>
+                <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors">
+                  <input type="checkbox" x-model="form.reuse_evaluation" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)">
+                  <div>
+                    <div class="text-[13px] font-medium">复用历史评测</div>
+                    <div class="text-[12px]" style="color:var(--fg-muted)">同 generated test、同 evaluator 环境和同 mutation 配置时复用评测结果。</div>
+                  </div>
+                </label>
+                <label class="flex items-start gap-3 cursor-pointer p-2 -m-2 rounded-lg hover-surface transition-colors" :class="(env && !env.docker_available) ? 'opacity-50 pointer-events-none' : ''">
+                  <input type="checkbox" x-model="form.use_docker" class="w-4 h-4 mt-0.5" style="accent-color:var(--accent)" :disabled="env && !env.docker_available">
+                  <div>
+                    <div class="text-[13px] font-medium flex items-center gap-2">
+                      Docker 执行
+                      <span x-show="env && !env.image_present && env.docker_available" class="text-[10px] px-1.5 py-0.5 rounded" style="background:var(--warn-bg);color:var(--yellow)">需镜像</span>
+                    </div>
+                    <div class="text-[12px]" style="color:var(--fg-muted)">在 <code class="font-mono text-[11px]">utbench:latest</code> 容器中运行，适合 Windows 上的 mutation 工具链。</div>
+                  </div>
+                </label>
+                <div x-show="form.mutation_enabled">
+                  <label class="label-text">变异超时（秒）</label>
+                  <input x-model.number="form.mutation_timeout" type="number" min="60" class="input-base" :disabled="isPresetBenchmarkProfileLocked">
+                </div>
               </div>
             </div>
           </div>
-          </div>
 
-          <aside class="cloud-side">
-            <section class="cloud-card">
+          <aside class="run-form-side">
+            <section class="summary-block">
               <div class="cloud-card-head">
                 <div>
                   <div class="cloud-card-title">执行摘要</div>
-                  <div class="cloud-card-sub">提交前确认关键资源与策略。</div>
+                  <div class="cloud-card-sub">提交前再次确认运行策略、样本规模和 Subject 组织方式。</div>
                 </div>
               </div>
               <div class="cloud-card-body">
@@ -320,17 +324,18 @@
                   </div>
                 </div>
                 <div x-show="formError" class="mt-3 text-[12px] rounded p-2.5" style="background:var(--error-bg);color:var(--red);border:1px solid var(--error-border)" x-text="formError"></div>
-                <button type="submit" :disabled="formSubmitting || submitDisabled" class="btn-primary w-full justify-center mt-4">
+                <button type="submit" :disabled="formSubmitting || submitDisabled" class="btn-primary run-submit w-full justify-center mt-4">
                   <span x-show="!formSubmitting" x-text="submitButtonText"></span>
                   <span x-show="formSubmitting">启动中...</span>
                 </button>
               </div>
             </section>
-            <section class="cloud-card">
+
+            <section class="summary-block">
               <div class="cloud-card-head">
                 <div>
                   <div class="cloud-card-title">环境状态</div>
-                  <div class="cloud-card-sub">影响 Docker 运行和 mutation 工具链。</div>
+                  <div class="cloud-card-sub">重点检查 Docker 与评测镜像是否具备发车条件。</div>
                 </div>
               </div>
               <div class="cloud-card-body cloud-panel-stack">
@@ -348,8 +353,41 @@
                   <button x-show="env?.docker_available && !env?.eval_image_present" type="button" @click="openBuildImage('eval', false)" class="btn-ghost mt-3">构建镜像</button>
                 </div>
                 <button type="button" @click="recheckEnv()" :disabled="envChecking" class="btn-ghost">
-                  <span x-text="envChecking ? '检测中...' : '重新检测环境'"></span>
+                  <span x-text="envChecking ? '检测中...' : '重新检查环境'"></span>
                 </button>
+              </div>
+            </section>
+
+            <section class="summary-block">
+              <div class="summary-block-head">
+                <div class="summary-block-title">运行计划</div>
+                <div class="summary-block-meta">plan</div>
+              </div>
+              <div class="run-kpi-grid">
+                <div class="run-kpi">
+                  <span>subjects</span>
+                  <strong x-text="selectedSubjectCount"></strong>
+                  <em x-text="'Framework ' + selectedFrameworkCount + ' / Skill ' + selectedSkillCount"></em>
+                </div>
+                <div class="run-kpi">
+                  <span>task volume</span>
+                  <strong x-text="estimatedTaskCount"></strong>
+                  <em x-text="estimatedTaskFormula || benchmarkProfileSummary"></em>
+                </div>
+                <div class="run-kpi">
+                  <span>execution</span>
+                  <strong x-text="form.use_docker ? 'docker' : 'local'"></strong>
+                  <em x-text="form.mutation_enabled ? 'mutation on' : 'mutation off'"></em>
+                </div>
+                <div class="run-kpi">
+                  <span>phase</span>
+                  <strong x-text="form.phase || 'full'"></strong>
+                  <em x-text="'mode ' + form.mode"></em>
+                </div>
+              </div>
+              <div class="run-callout mt-3">
+                <strong>调度说明</strong>
+                <div x-text="subjectPlanHint"></div>
               </div>
             </section>
           </aside>

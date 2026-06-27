@@ -3,113 +3,139 @@
         <div class="cloud-page-head">
           <div class="cloud-page-head-main">
             <h2 class="page-title">总览</h2>
-            <p class="page-subtitle">单元测试基准平台运行概览，聚合任务、模型、环境和数据资产状态。</p>
+            <p class="page-subtitle">单元测试基准平台的运行总控台，集中查看任务、执行面、环境和评测资产的实时状态。</p>
           </div>
           <div class="cloud-page-head-actions">
-            <button @click="loadRuns()" class="btn-ghost">刷新</button>
-            <button @click="goto('new-run')" class="btn-primary">新建任务</button>
+            <button @click="goto('new-run')" class="btn-primary">新建评测任务</button>
           </div>
         </div>
 
         <div class="cloud-summary-grid">
           <div class="cloud-stat-card">
-            <span>任务总量</span>
+            <span>total runs</span>
             <strong x-text="runs.length"></strong>
-            <span>当前工作区已创建的评测任务</span>
+            <span>当前工作区已创建的基准任务总量</span>
           </div>
           <div class="cloud-stat-card">
-            <span>运行中</span>
+            <span>active queue</span>
             <strong class="kpi-running" x-text="runCountByStatus('running')"></strong>
-            <span>包含暂停中的执行任务</span>
+            <span>包含正在执行与暂停中的任务</span>
           </div>
           <div class="cloud-stat-card">
-            <span>已完成</span>
+            <span>completed</span>
             <strong class="kpi-completed" x-text="runCountByStatus('completed')"></strong>
-            <span>可查看报告或补录入库</span>
+            <span>可进入报告、资产或复用分析流程</span>
           </div>
           <div class="cloud-stat-card">
-            <span>失败/取消</span>
+            <span>attention</span>
             <strong class="kpi-failed" x-text="runCountByStatus('failed', 'canceled')"></strong>
-            <span>建议优先进入详情查看日志</span>
+            <span>建议优先排查失败或被取消的运行</span>
+          </div>
+        </div>
+
+        <div class="control-strip">
+          <div class="control-metric">
+            <div class="control-metric-label">execution mode</div>
+            <span class="control-metric-value" x-text="env?.docker_available ? 'docker' : 'local'"></span>
+            <div class="control-metric-meta" x-text="env?.docker_available ? (env?.docker_version || 'Docker ready') : '使用本地工具链执行'"></div>
+          </div>
+          <div class="control-metric">
+            <div class="control-metric-label">eval image</div>
+            <span class="control-metric-value" x-text="env?.eval_image_present ? 'ready' : 'pending'"></span>
+            <div class="control-metric-meta" x-text="env?.eval_image_name || 'utbench:latest'"></div>
+          </div>
+          <div class="control-metric">
+            <div class="control-metric-label">run focus</div>
+            <span class="control-metric-value" x-text="runs.length ? fmtTime(runs[0].started_at) : '--'"></span>
+            <div class="control-metric-meta" x-text="runs.length ? runSubjectSummary(runs[0]) : '暂无最近运行任务'"></div>
           </div>
         </div>
 
         <div class="cloud-layout cloud-layout-wide">
-          <section class="cloud-main cloud-card">
-            <div class="cloud-card-head">
-              <div>
-                <div class="cloud-card-title">最近任务</div>
-                <div class="cloud-card-sub">按启动时间展示最近 10 个运行资源，点击行进入详情。</div>
-              </div>
-              <button @click="goto('runs')" class="btn-link">查看全部</button>
-            </div>
-            <div x-show="runs.length === 0" class="cloud-empty m-4">
-              暂无任务。<button @click="goto('new-run')" style="color:var(--accent)" class="ml-1">新建任务</button>
-            </div>
-            <div class="overflow-x-auto" x-show="runs.length > 0">
-              <table class="data-table">
-                <thead><tr><th>任务 ID</th><th>状态</th><th>被测对象</th><th>语言</th><th>启动时间</th><th style="width:80px"></th></tr></thead>
-                <tbody>
-                  <template x-for="run in runs.slice(0,10)" :key="run.run_id">
-                    <tr @click="openRun(run.run_id)">
-                      <td class="font-mono text-[12px]" style="color:var(--fg-muted)" x-text="run.run_id"></td>
-                      <td>
-                        <span :class="'status-' + run.status" class="inline-flex items-center text-[12px] font-medium px-2.5 py-0.5 rounded-full" style="background:var(--badge-bg)">
-                          <span class="status-dot"></span><span x-text="statusText(run.status, run.paused)"></span>
-                        </span>
-                        <span x-show="run.paused" class="ml-1 text-[10px] px-1.5 py-0.5 rounded" style="background:var(--warn-bg);color:var(--yellow)">暂停</span>
-                      </td>
-                      <td style="color:var(--fg-muted)" x-text="runSubjectSummary(run)"></td>
-                      <td style="color:var(--fg-muted)" x-text="(run.spec?.languages ?? []).join(', ') || '—'"></td>
-                      <td style="color:var(--fg-muted)" x-text="fmtTime(run.started_at)"></td>
-                      <td class="text-right"><span style="color:var(--accent)" class="text-[12px]">详情</span></td>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <aside class="cloud-side">
+          <div class="cloud-main console-stack">
             <section class="cloud-card">
               <div class="cloud-card-head">
                 <div>
-                  <div class="cloud-card-title">快速操作</div>
-                  <div class="cloud-card-sub">常用控制台入口</div>
+                  <div class="cloud-card-title">最近任务</div>
+                  <div class="cloud-card-sub">按启动时间展示最近 10 个运行任务，点击任意一行可以进入任务详情。</div>
                 </div>
+                <button @click="goto('runs')" class="btn-link">查看全部</button>
               </div>
-              <div class="cloud-card-body cloud-panel-stack">
+              <div x-show="runs.length === 0" class="cloud-empty m-4">
+                暂无运行任务。<button @click="goto('new-run')" style="color:var(--accent)" class="ml-1">立即创建</button>
+              </div>
+              <div x-show="runs.length > 0" class="dashboard-table-shell overflow-x-auto">
+                <table class="data-table">
+                  <thead><tr><th>任务 ID</th><th>状态</th><th>被测对象</th><th>语言</th><th>启动时间</th><th style="width:80px"></th></tr></thead>
+                  <tbody>
+                    <template x-for="run in runs.slice(0,10)" :key="run.run_id">
+                      <tr @click="openRun(run.run_id)">
+                        <td class="font-mono text-[12px]" style="color:var(--fg-muted)" x-text="run.run_id"></td>
+                        <td>
+                          <span :class="'status-' + run.status" class="inline-flex items-center text-[12px] font-medium px-2.5 py-0.5 rounded-full" style="background:var(--badge-bg)">
+                            <span class="status-dot"></span><span x-text="statusText(run.status, run.paused)"></span>
+                          </span>
+                          <span x-show="run.paused" class="ml-1 text-[10px] px-1.5 py-0.5 rounded" style="background:var(--warn-bg);color:var(--yellow)">暂停</span>
+                        </td>
+                        <td style="color:var(--fg-muted)" x-text="runSubjectSummary(run)"></td>
+                        <td style="color:var(--fg-muted)" x-text="(run.spec?.languages ?? []).join(', ') || '—'"></td>
+                        <td style="color:var(--fg-muted)" x-text="fmtTime(run.started_at)"></td>
+                        <td class="text-right"><span style="color:var(--accent)" class="text-[12px]">详情</span></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <div class="console-note">
+              <strong>Control Surface</strong>
+              这里优先呈现运行态信号，而不是把所有功能堆成普通后台入口。先看执行面、镜像状态和最新任务，再决定是发起新实验还是进入排障与复用流程。
+            </div>
+          </div>
+
+          <aside class="cloud-side console-summary">
+            <section class="summary-block">
+              <div class="summary-block-head">
+                <div class="summary-block-title">快速操作</div>
+                <div class="summary-block-meta">launch</div>
+              </div>
+              <div class="cloud-panel-stack">
                 <button @click="goto('new-run')" class="btn-primary w-full justify-center">创建评测任务</button>
                 <button @click="goto('models')" class="btn-ghost w-full justify-center">管理模型注册表</button>
                 <button @click="goto('database')" class="btn-ghost w-full justify-center">进入资产工作台</button>
                 <button @click="goto('environment')" class="btn-ghost w-full justify-center">检查运行环境</button>
               </div>
             </section>
-            <section class="cloud-card">
-              <div class="cloud-card-head">
-                <div>
-                  <div class="cloud-card-title">运行环境</div>
-                  <div class="cloud-card-sub">Docker 与评测镜像状态</div>
+
+            <section class="summary-block">
+              <div class="summary-block-head">
+                <div class="summary-block-title">运行环境</div>
+                <div class="summary-block-meta">readiness</div>
+              </div>
+              <div class="summary-grid">
+                <div class="summary-stat">
+                  <span>docker</span>
+                  <strong x-text="env?.docker_available ? 'ready' : 'missing'"></strong>
+                  <em x-text="env?.docker_version || '尚未检测到 Docker'"></em>
+                </div>
+                <div class="summary-stat">
+                  <span>eval image</span>
+                  <strong x-text="env?.eval_image_present ? 'online' : 'build'"></strong>
+                  <em x-text="env?.eval_image_name || 'utbench:latest'"></em>
                 </div>
               </div>
-              <div class="cloud-card-body">
-                <div class="cloud-resource-list">
-                  <div class="cloud-resource-item">
-                    <div class="cloud-resource-title">
-                      <strong>Docker</strong>
-                      <span class="tag-pill" :style="env?.docker_available ? 'background:var(--success-bg);color:var(--green)' : 'background:var(--error-bg);color:var(--red)'" x-text="env?.docker_available ? '可用' : '不可用'"></span>
-                    </div>
-                    <div class="cloud-panel-note mt-2" x-text="env?.docker_version || '尚未检测版本'"></div>
-                  </div>
-                  <div class="cloud-resource-item">
-                    <div class="cloud-resource-title">
-                      <strong>评测镜像</strong>
-                      <span class="tag-pill" :style="env?.eval_image_present ? 'background:var(--success-bg);color:var(--green)' : 'background:var(--warn-bg);color:var(--yellow)'" x-text="env?.eval_image_present ? '已就绪' : '未构建'"></span>
-                    </div>
-                    <div class="cloud-panel-note mt-2" x-text="env?.eval_image_name || 'utbench:latest'"></div>
-                  </div>
-                </div>
-                <button x-show="env?.docker_available && !env?.eval_image_present" @click="openBuildImage('eval', false)" class="btn-primary mt-3">构建评测镜像</button>
+              <button x-show="env?.docker_available && !env?.eval_image_present" @click="openBuildImage('eval', false)" class="btn-primary mt-3 w-full justify-center">构建评测镜像</button>
+            </section>
+
+            <section class="summary-block">
+              <div class="summary-block-head">
+                <div class="summary-block-title">实验建议</div>
+                <div class="summary-block-meta">ops</div>
+              </div>
+              <div class="console-note">
+                <strong>Benchmark Routine</strong>
+                先确认 Docker 与评测镜像，再进入新建任务页配置 Subject 和评测规格；如果是横向对比实验，优先开启 mutation 并固定 manifest。
               </div>
             </section>
           </aside>

@@ -12,7 +12,6 @@
 </head>
 <body class="h-screen flex overflow-hidden" x-data="app()" x-cloak>
 
-  <!-- Sidebar -->
   <aside class="app-sidebar w-60 flex-shrink-0 flex flex-col">
     <div class="app-brand px-4 py-4 flex items-center gap-3 border-b">
       <div class="brand-mark" aria-hidden="true">
@@ -22,11 +21,14 @@
           <path class="brand-mark-signal" d="M5.75 4.75h-1.3a1.7 1.7 0 0 0-1.7 1.7v12.1a1.7 1.7 0 0 0 1.7 1.7h12.1a1.7 1.7 0 0 0 1.7-1.7v-1.2" />
         </svg>
       </div>
-      <div>
-        <div class="font-semibold text-[15px] tracking-tight" style="font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">UTBench</div>
-        <div class="text-[11px]" style="color:var(--fg-muted)">单元测试基准平台</div>
+      <div class="brand-copy">
+        <div class="brand-title-row">
+          <div class="font-semibold text-[15px] tracking-tight" style="font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">UTBench</div>
+        </div>
+        <div class="brand-subtitle" style="color:var(--fg-muted)">单元测试基准平台</div>
       </div>
     </div>
+
     <nav class="app-nav flex-1 py-2 px-2">
       <template x-for="item in nav" :key="item.id">
         <div @click="goto(item.id)" :class="page === item.id ? 'active' : ''" class="nav-item">
@@ -35,37 +37,49 @@
         </div>
       </template>
     </nav>
+
     <div class="app-sidebar-footer px-4 py-3 border-t">
-      <!-- Environment status -->
       <template x-if="env">
         <div class="flex flex-wrap gap-1.5 mb-2">
           <span class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded" :style="`background:${env.docker_available ? 'rgba(7,193,96,.08)' : 'rgba(227,77,89,.08)'};color:${env.docker_available ? 'var(--green)' : 'var(--red)'}`">
             <span class="w-1 h-1 rounded-full" :style="`background:${env.docker_available ? 'var(--green)' : 'var(--red)'}`"></span>
-            <span x-text="env.docker_available ? 'Docker' : '无Docker'"></span>
+            <span x-text="env.docker_available ? 'Docker 已连接' : 'Docker 缺失'"></span>
           </span>
           <span class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded" :style="envImageStatusStyle(env.eval_image_present)">
-            <span x-text="env.eval_image_present ? '镜像就绪' : '无镜像'"></span>
+            <span x-text="env.eval_image_present ? '评测镜像已就绪' : '评测镜像待构建'"></span>
           </span>
           <button x-show="env.docker_available && !env.eval_image_present" @click="openBuildImage('eval', false)" class="text-[10px] px-1.5 py-0.5 rounded" style="color:var(--accent);background:var(--accent-bg)">构建</button>
-          <button @click="recheckEnv()" :disabled="envChecking" class="text-[10px] px-1.5 py-0.5 rounded" style="color:var(--fg-muted)" title="重新检测">
+          <button @click="recheckEnv()" :disabled="envChecking" class="text-[10px] px-1.5 py-0.5 rounded" style="color:var(--fg-muted)" title="重新检查环境">
             <svg :class="envChecking ? 'animate-spin' : ''" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M21 3v6h-6"/></svg>
           </button>
         </div>
       </template>
-      <!-- Env recommendation -->
       <template x-if="env && env.recommendation">
         <div class="text-[10px] mb-2 leading-tight" style="color:var(--yellow)" x-text="env.recommendation"></div>
       </template>
-      <div class="truncate text-[11px]" style="color:var(--fg-muted)">配置: <span x-text="config?.config_path ?? '...'" class="font-mono" style="color:var(--fg-subtle)"></span></div>
+      <div class="truncate text-[11px]" style="color:var(--fg-muted)">配置文件: <span x-text="config?.config_path ?? '...'" class="font-mono" style="color:var(--fg-subtle)"></span></div>
     </div>
   </aside>
-  <!-- Main -->
-  <main class="flex-1 flex flex-col overflow-hidden" style="background-color:var(--bg)">
 
-    <!-- Header -->
+  <main class="flex-1 flex flex-col overflow-hidden" style="background-color:var(--bg)">
     <header class="app-header h-14 border-b flex items-center px-6 flex-shrink-0">
-      <h1 class="text-[16px] font-semibold" style="color:var(--fg)" x-text="pageTitle"></h1>
+      <div class="app-header-title-group">
+        <h1 class="text-[16px] font-semibold" style="color:var(--fg)" x-text="pageTitle"></h1>
+        <div class="app-header-sub">benchmark control plane</div>
+      </div>
       <div class="ml-auto flex items-center gap-2">
+        <template x-if="env">
+          <div class="app-header-signal-strip">
+            <span class="app-signal-pill" :style="env.docker_available ? 'border-color:rgba(0,168,112,.18);color:var(--green);background:var(--success-bg)' : 'border-color:var(--error-border);color:var(--red);background:var(--error-bg)'">
+              <span class="app-signal-dot" :style="`background:${env.docker_available ? 'var(--green)' : 'var(--red)'}`"></span>
+              <span x-text="env.docker_available ? 'Docker Ready' : 'Docker Missing'"></span>
+            </span>
+            <span class="app-signal-pill" :style="env.eval_image_present ? 'border-color:rgba(0,168,112,.18);color:var(--green);background:var(--success-bg)' : 'border-color:var(--warn-border);color:var(--yellow);background:var(--warn-bg)'">
+              <span class="app-signal-dot" :style="`background:${env.eval_image_present ? 'var(--green)' : 'var(--yellow)'}`"></span>
+              <span x-text="env.eval_image_present ? 'Eval Image' : 'Image Pending'"></span>
+            </span>
+          </div>
+        </template>
         <button @click="loadRuns()" class="btn-ghost text-[12px]">刷新</button>
         <div class="w-px h-4" style="background:var(--border)"></div>
         <button @click="toggleTheme()" class="btn-ghost text-[12px] p-1.5" :title="theme==='dark'?'切换日间模式':'切换夜间模式'">
@@ -75,14 +89,12 @@
       </div>
     </header>
 
-    <!-- Toast notification -->
     <template x-if="toast">
       <div class="px-6 py-2 text-[12px] border-b flex items-center gap-2" :style="toastStyle">
         <span x-text="toast"></span>
       </div>
     </template>
 
-    <!-- Content -->
     <div class="app-content flex-1 overflow-y-auto p-6">
       <div id="partial-dashboard" data-partial="dashboard" x-ignore></div>
       <div id="partial-new-run" data-partial="new-run" x-ignore></div>
@@ -97,6 +109,7 @@
       <div id="partial-environment-install-modal" data-partial="environment-install-modal" x-ignore></div>
     </div>
   </main>
+
   <div id="partial-model-form-modal" data-partial="model-form-modal" x-ignore></div>
   <div id="partial-agent-form-modal" data-partial="agent-form-modal" x-ignore></div>
   <div id="partial-skill-form-modal" data-partial="skill-form-modal" x-ignore></div>
@@ -105,4 +118,3 @@
 
 </body>
 </html>
-
