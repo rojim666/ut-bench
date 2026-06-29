@@ -2656,6 +2656,87 @@ func diskRunEndedAt(raw diskRunSummary) *time.Time {
 	return nil
 }
 
+func diskRunSummaryItem(raw diskRunSummary) (runSummaryItem, bool) {
+	runID := strings.TrimSpace(raw.RunID)
+	if runID == "" {
+		return runSummaryItem{}, false
+	}
+	return runSummaryItem{
+		RunID:          runID,
+		Label:          raw.Label,
+		Status:         StatusCompleted,
+		StartedAt:      diskRunStartedAt(raw),
+		EndedAt:        diskRunEndedAt(raw),
+		Spec:           raw.Spec,
+		UseDocker:      strings.EqualFold(strings.TrimSpace(raw.Backend), "docker"),
+		IsMergedReport: raw.IsMergedReport,
+		SourceRunIDs:   raw.SourceRunIDs,
+		ResultCount:    raw.ResultCount,
+	}, true
+}
+
+func shouldPreferDiskCompletedRun(active runSummaryItem, disk runSummaryItem) bool {
+	if disk.Status != StatusCompleted || disk.EndedAt == nil {
+		return false
+	}
+	if active.Status != StatusRunning && active.Status != StatusPending && active.Status != StatusPaused {
+		return false
+	}
+	if active.StartedAt.IsZero() {
+		return true
+	}
+	// 允许少量时钟/序列化误差，但避免同一个 run_id 被用户重跑时，
+	// 旧 run_summary.json 抢先覆盖正在进行的新任务。
+	return !disk.EndedAt.Before(active.StartedAt.Add(-2 * time.Second))
+}
+
+func (s *Server) loadDiskRunSummaryItem(runID string) (runSummaryItem, bool) {
+	summaryPath := filepath.Join(s.outputRoot, "runs", runID, "run_summary.json")
+	data, err := os.ReadFile(summaryPath)
+	if err != nil {
+		return runSummaryItem{}, false
+	}
+	raw, err := decodeDiskRunSummary(data)
+	if err != nil {
+		return runSummaryItem{}, false
+	}
+	return diskRunSummaryItem(raw)
+}
+
+func runEntrySummaryItem(entry *RunEntry) runSummaryItem {
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+	return runSummaryItem{
+		RunID:     entry.RunID,
+		Status:    entry.Status,
+		Paused:    entry.Paused,
+		StartedAt: entry.StartedAt,
+		EndedAt:   entry.EndedAt,
+		Error:     entry.Error,
+		Spec:      entry.Spec,
+		UseDocker: entry.UseDocker,
+	}
+}
+
+func (s *Server) reconcileRunEntryWithDisk(entry *RunEntry, diskItem runSummaryItem, hasDisk bool) runSummaryItem {
+	active := runEntrySummaryItem(entry)
+	if !hasDisk || !shouldPreferDiskCompletedRun(active, diskItem) {
+		return active
+	}
+	entry.mu.Lock()
+	if entry.Status == StatusRunning || entry.Status == StatusPending || entry.Status == StatusPaused {
+		entry.Status = StatusCompleted
+		entry.Paused = false
+		entry.EndedAt = diskItem.EndedAt
+		entry.Error = ""
+		if diskItem.Spec.RunID != "" {
+			entry.Spec = diskItem.Spec
+		}
+	}
+	entry.mu.Unlock()
+	return diskItem
+}
+
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -2687,18 +2768,13 @@ func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request) {
 			merged[item.RunID] = item
 		}
 		for _, entry := range activeRuns {
-			entry.mu.RLock()
-			merged[entry.RunID] = runSummaryItem{
-				RunID:     entry.RunID,
-				Status:    entry.Status,
-				Paused:    entry.Paused,
-				StartedAt: entry.StartedAt,
-				EndedAt:   entry.EndedAt,
-				Error:     entry.Error,
-				Spec:      entry.Spec,
-				UseDocker: entry.UseDocker,
+			diskItem, hasDisk := merged[entry.RunID]
+			if !hasDisk || diskItem.Status != StatusCompleted {
+				if freshDiskItem, freshHasDisk := s.loadDiskRunSummaryItem(entry.RunID); freshHasDisk {
+					diskItem, hasDisk = freshDiskItem, true
+				}
 			}
-			entry.mu.RUnlock()
+			merged[entry.RunID] = s.reconcileRunEntryWithDisk(entry, diskItem, hasDisk)
 		}
 		out := make([]runSummaryItem, 0, len(merged))
 		for _, v := range merged {
@@ -2730,51 +2806,33 @@ func (s *Server) listRunsFromDisk(w http.ResponseWriter, activeRuns []*RunEntry,
 		if err != nil {
 			continue
 		}
-		runID := strings.TrimSpace(raw.RunID)
-		if runID == "" {
+		item, ok := diskRunSummaryItem(raw)
+		if !ok {
 			continue
 		}
-		if _, exists := byID[runID]; !exists {
-			byID[runID] = runSummaryItem{
-				RunID:          runID,
-				Label:          raw.Label,
-				Status:         StatusCompleted,
-				StartedAt:      diskRunStartedAt(raw),
-				EndedAt:        diskRunEndedAt(raw),
-				Spec:           raw.Spec,
-				UseDocker:      strings.EqualFold(strings.TrimSpace(raw.Backend), "docker"),
-				IsMergedReport: raw.IsMergedReport,
-				SourceRunIDs:   raw.SourceRunIDs,
-				ResultCount:    raw.ResultCount,
-			}
+		if _, exists := byID[item.RunID]; !exists {
+			byID[item.RunID] = item
 		}
+	}
+
+	if updateCache {
+		// 只缓存磁盘状态。内存中的 running/pending 条目必须每次实时合并，
+		// 否则已结束任务可能被旧缓存继续显示为“运行中”。
+		diskItems := make([]runSummaryItem, 0, len(byID))
+		for _, v := range byID {
+			diskItems = append(diskItems, v)
+		}
+		s.cacheMu.Lock()
+		s.runsCache = &runsCacheEntry{data: diskItems, loadedAt: time.Now()}
+		s.cacheMu.Unlock()
 	}
 
 	// Override / add active in-memory runs
 	for _, entry := range activeRuns {
-		entry.mu.RLock()
-		item := runSummaryItem{
-			RunID:     entry.RunID,
-			Status:    entry.Status,
-			Paused:    entry.Paused,
-			StartedAt: entry.StartedAt,
-			EndedAt:   entry.EndedAt,
-			Error:     entry.Error,
-			Spec:      entry.Spec,
-			UseDocker: entry.UseDocker,
-		}
-		entry.mu.RUnlock()
+		diskItem, hasDisk := byID[entry.RunID]
+		item := s.reconcileRunEntryWithDisk(entry, diskItem, hasDisk)
 		byID[entry.RunID] = item
 	}
-
-	// 缓存已完成任务（不含活跃任务的实时状态）
-	diskItems := make([]runSummaryItem, 0, len(byID))
-	for _, v := range byID {
-		diskItems = append(diskItems, v)
-	}
-	s.cacheMu.Lock()
-	s.runsCache = &runsCacheEntry{data: diskItems, loadedAt: time.Now()}
-	s.cacheMu.Unlock()
 
 	out := make([]runSummaryItem, 0, len(byID))
 	for _, v := range byID {
@@ -2936,6 +2994,13 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		CreatedAtUTC:     time.Now().UTC(),
 	}
 	spec = dataset.ApplyBenchmarkProfile(spec)
+	spec = normalizeCustomDatasetLevel(spec)
+	if phase == "full" || phase == "generate" {
+		if _, err := dataset.NewService().DiscoverSamples(spec); err != nil {
+			errJSON(w, http.StatusBadRequest, "dataset selection is empty: "+err.Error())
+			return
+		}
+	}
 	opts := orchestrator.Options{
 		Ingest:         req.Ingest,
 		DBPath:         s.mgr.dbPath,
@@ -3194,16 +3259,22 @@ func (s *Server) handleRunReevaluate(w http.ResponseWriter, r *http.Request, run
 			case <-reevalCtx.Done():
 			}
 		}()
+		s.logReevaluation(runID, "started: evaluation will overwrite evaluation_result.json and regenerate report")
 		out, err := runEvaluateInDocker(reevalCtx, runID, spec, dockerManifestPath, s.dockerCfg)
 		if err != nil {
 			if reevalCtx.Err() != nil {
-				fmt.Printf("[reevaluate] run=%s canceled (server shutdown)\n", runID)
+				s.logReevaluation(runID, "canceled (server shutdown)")
 				return
 			}
-			fmt.Printf("[reevaluate] run=%s failed: %v\n%s\n", runID, err, tailString(string(out), 500))
+			s.logReevaluation(runID, fmt.Sprintf("evaluation failed: %v\n%s", err, tailString(string(out), 500)))
 			return
 		}
-		fmt.Printf("[reevaluate] run=%s completed\n", runID)
+		result, err := s.finalizeReevaluation(reevalCtx, runID, spec)
+		if err != nil {
+			s.logReevaluation(runID, "post-evaluation failed: "+err.Error())
+			return
+		}
+		s.logReevaluation(runID, fmt.Sprintf("completed: evaluation=%s report=%s ingested=%t", result.EvaluationPath, result.ReportJSONPath, result.Ingested))
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"run_id":               runID,
@@ -3211,8 +3282,95 @@ func (s *Server) handleRunReevaluate(w http.ResponseWriter, r *http.Request, run
 		"docker_manifest_path": dockerManifestPath,
 		"evaluation_path":      filepath.Join(s.outputRoot, "runs", runID, "evaluation", "evaluation_result.json"),
 		"status":               "reevaluation_started",
-		"message":              "Re-evaluation is running in the background. Check run status for completion.",
+		"message":              "Re-evaluation is running in the background. It will overwrite evaluation_result.json, regenerate report files, and refresh SQLite ingest when possible.",
 	})
+}
+
+type reevaluationFinalizeResult struct {
+	EvaluationPath string
+	ReportJSONPath string
+	ReportHTMLPath string
+	Ingested       bool
+	IngestError    string
+}
+
+func (s *Server) finalizeReevaluation(ctx context.Context, runID string, spec contracts.RunSpec) (reevaluationFinalizeResult, error) {
+	evaluationPath := filepath.Join(s.outputRoot, "runs", runID, "evaluation", "evaluation_result.json")
+	if _, err := os.Stat(evaluationPath); err != nil {
+		return reevaluationFinalizeResult{}, fmt.Errorf("evaluation JSON not found after reevaluate: %w", err)
+	}
+	s.logReevaluation(runID, "evaluation overwritten: "+evaluationPath)
+
+	logDir := filepath.Join(s.outputRoot, "runs", runID, "logs")
+	logger := obs.NewLogger(true, logDir)
+	out, err := reporter.NewService(logger, &runner.DefaultPromptMetaProvider{}).Generate(ctx, spec, evaluationPath)
+	if err != nil {
+		return reevaluationFinalizeResult{}, fmt.Errorf("regenerate report: %w", err)
+	}
+	s.logReevaluation(runID, "report regenerated: "+out.ReportJSONPath)
+
+	result := reevaluationFinalizeResult{
+		EvaluationPath: evaluationPath,
+		ReportJSONPath: out.ReportJSONPath,
+		ReportHTMLPath: out.ReportHTMLPath,
+	}
+	if s.db != nil {
+		sum, err := s.db.IngestRun(ctx, store.IngestRunOptions{RunDir: filepath.Join(s.outputRoot, "runs", runID)})
+		if err != nil {
+			result.IngestError = err.Error()
+			s.logReevaluation(runID, "db ingest failed after reevaluate: "+err.Error())
+		} else {
+			result.Ingested = true
+			s.logReevaluation(runID, fmt.Sprintf("db ingest ok: run=%s generated=%d evaluated=%d artifacts=%d",
+				sum.RunID, sum.GenerationCases, sum.EvaluationResults, sum.ArtifactsIndexed))
+		}
+	}
+
+	if err := s.updateRunSummaryAfterReevaluation(runID, spec, result); err != nil {
+		s.logReevaluation(runID, "run_summary update failed after reevaluate: "+err.Error())
+	}
+	s.invalidateRunsCache()
+	return result, nil
+}
+
+func (s *Server) updateRunSummaryAfterReevaluation(runID string, spec contracts.RunSpec, result reevaluationFinalizeResult) error {
+	summaryPath := filepath.Join(s.outputRoot, "runs", runID, "run_summary.json")
+	raw := map[string]any{}
+	if data, err := os.ReadFile(summaryPath); err == nil {
+		_ = json.Unmarshal(data, &raw)
+	}
+	now := time.Now().UTC()
+	raw["schema_version"] = contracts.SchemaVersion
+	raw["run_id"] = runID
+	raw["spec"] = spec
+	raw["phase"] = "full"
+	raw["reevaluated_at_utc"] = now
+	raw["completed_at_utc"] = now
+	raw["evaluation_path"] = result.EvaluationPath
+	raw["report_json_path"] = result.ReportJSONPath
+	raw["report_html_path"] = result.ReportHTMLPath
+	raw["ingested"] = result.Ingested
+	raw["db_path"] = s.mgr.dbPath
+	if result.IngestError != "" {
+		raw["ingest_error"] = result.IngestError
+	} else {
+		delete(raw, "ingest_error")
+	}
+	return contracts.WriteJSON(summaryPath, raw)
+}
+
+func (s *Server) logReevaluation(runID, msg string) {
+	line := fmt.Sprintf("[%s] reevaluate: %s", logTS(), msg)
+	if entry, ok := s.mgr.Get(runID); ok {
+		entry.appendLog(line)
+	}
+	fmt.Printf("[reevaluate] run=%s %s\n", runID, msg)
+}
+
+func (s *Server) invalidateRunsCache() {
+	s.cacheMu.Lock()
+	s.runsCache = nil
+	s.cacheMu.Unlock()
 }
 
 func tailString(s string, max int) string {
@@ -3332,39 +3490,12 @@ func (s *Server) handleRunRegenerateReport(w http.ResponseWriter, r *http.Reques
 // handleRunDelete 删除一个已完成的 run 及其磁盘数据。
 // 只允许删除终态（completed/failed/canceled）的 run，运行中的不能删。
 func (s *Server) handleRunDelete(w http.ResponseWriter, r *http.Request, runID string) {
-	// 检查内存中的活跃 run
-	if entry, ok := s.mgr.Get(runID); ok {
-		entry.mu.RLock()
-		status := entry.Status
-		entry.mu.RUnlock()
-		if status == StatusRunning || status == StatusPending {
-			errJSON(w, http.StatusConflict, "cannot delete a running or pending task")
-			return
-		}
-	}
-
-	runDir := filepath.Join(s.outputRoot, "runs", runID)
-	if _, err := os.Stat(runDir); os.IsNotExist(err) {
-		errJSON(w, http.StatusNotFound, "run not found: "+runID)
+	resp, code, err := s.deleteRunAssets(r.Context(), runID, parseForceDelete(r))
+	if err != nil {
+		errJSON(w, code, err.Error())
 		return
 	}
-
-	if err := os.RemoveAll(runDir); err != nil {
-		errJSON(w, http.StatusInternalServerError, "delete failed: "+err.Error())
-		return
-	}
-
-	// 从内存中移除
-	s.mgr.mu.Lock()
-	delete(s.mgr.runs, runID)
-	s.mgr.mu.Unlock()
-
-	// 清除列表缓存
-	s.cacheMu.Lock()
-	s.runsCache = nil
-	s.cacheMu.Unlock()
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "run_id": runID})
+	writeJSON(w, code, resp)
 }
 
 // handleRunRename 为 run 设置/更新自定义标签名。
@@ -3459,6 +3590,8 @@ func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request, runID stri
 		})
 		return
 	}
+	diskItem, hasDisk := s.loadDiskRunSummaryItem(runID)
+	s.reconcileRunEntryWithDisk(entry, diskItem, hasDisk)
 	entry.mu.RLock()
 	resp := runDetailResponse{
 		RunID:     entry.RunID,
@@ -3478,9 +3611,27 @@ func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request, runID stri
 func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID string) {
 	entry, ok := s.mgr.Get(runID)
 	if !ok {
-		errJSON(w, http.StatusNotFound, "run not found: "+runID)
+		diskItem, hasDisk := s.loadDiskRunSummaryItem(runID)
+		if !hasDisk {
+			errJSON(w, http.StatusNotFound, "run not found: "+runID)
+			return
+		}
+		flusher, canFlush := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		b, _ := json.Marshal(map[string]any{"type": "snapshot", "payload": []string{}})
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		pb, _ := json.Marshal(string(diskItem.Status))
+		fmt.Fprintf(w, "data: {\"type\":\"done\",\"payload\":%s}\n\n", pb)
+		if canFlush {
+			flusher.Flush()
+		}
 		return
 	}
+	diskItem, hasDisk := s.loadDiskRunSummaryItem(runID)
+	s.reconcileRunEntryWithDisk(entry, diskItem, hasDisk)
 
 	flusher, canFlush := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -3511,6 +3662,13 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 	}
 
 	sendSnapshot(snap)
+	entry.mu.RLock()
+	initialStatus := entry.Status
+	entry.mu.RUnlock()
+	if initialStatus == StatusCompleted || initialStatus == StatusFailed || initialStatus == StatusCanceled {
+		sendEvent("done", string(initialStatus))
+		return
+	}
 
 	ctx := r.Context()
 	for {
@@ -3706,6 +3864,79 @@ func (s *Server) handleRunReportHTML(w http.ResponseWriter, r *http.Request, run
 
 func normalizeBenchmarkProfile(value string) string {
 	return dataset.NormalizeBenchmarkProfile(value)
+}
+
+func normalizeCustomDatasetLevel(spec contracts.RunSpec) contracts.RunSpec {
+	if spec.BenchmarkProfile != "custom" ||
+		strings.TrimSpace(spec.DatasetManifest) != "" ||
+		strings.TrimSpace(spec.DatasetLevel) == "" {
+		return spec
+	}
+	levels := splitTrim(spec.DatasetLevel)
+	if len(levels) == 0 {
+		spec.DatasetLevel = ""
+		return spec
+	}
+	langs := append([]string{}, spec.Languages...)
+	if len(langs) == 0 {
+		langs = append(langs, contracts.SupportedLanguages...)
+	}
+	classes := append([]string{}, spec.DatasetClasses...)
+	if len(classes) == 0 {
+		classes = []string{"self_contained", "repo_level"}
+	}
+
+	kept := make([]string, 0, len(levels))
+	for _, level := range levels {
+		level = strings.ToLower(strings.TrimSpace(level))
+		if level == "" {
+			continue
+		}
+		if datasetLevelHasSelection(spec.DatasetRoot, level, langs, classes) {
+			kept = append(kept, level)
+		}
+	}
+	spec.DatasetLevel = strings.Join(kept, ",")
+	return spec
+}
+
+func datasetLevelHasSelection(datasetRoot, level string, langs, classes []string) bool {
+	levelRoot := filepath.Join(datasetRoot, level)
+	if _, err := os.Stat(levelRoot); err != nil {
+		return false
+	}
+	for _, lang := range langs {
+		lang = strings.ToLower(strings.TrimSpace(lang))
+		if lang == "" {
+			continue
+		}
+		for _, class := range classes {
+			for _, classDir := range dataset.DatasetClassDirCandidates(lang, class) {
+				if hasDatasetFiles(filepath.Join(levelRoot, lang, classDir)) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasDatasetFiles(root string) bool {
+	found := false
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			if d.Name() != "." && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		found = true
+		return filepath.SkipAll
+	})
+	return found
 }
 
 func splitTrim(s string) []string {

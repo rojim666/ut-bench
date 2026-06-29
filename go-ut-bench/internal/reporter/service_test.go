@@ -237,6 +237,77 @@ func TestScoreEligibilityExcludesNonModelFailuresFromRanking(t *testing.T) {
 	}
 }
 
+func TestCalculateCompositeScoreUsesDocumentedWeightedSum(t *testing.T) {
+	got := calculateCompositeScore(0.5, 0.375, 0.947191, 1.683059, 0.415923)
+	want := 53.51228
+	if diff := got - want; diff < -0.000001 || diff > 0.000001 {
+		t.Fatalf("calculateCompositeScore()=%v, want %v", got, want)
+	}
+
+	gotWithDifferentAssertionDensity := calculateCompositeScore(0.5, 0.375, 0.947191, 99, 0.415923)
+	if gotWithDifferentAssertionDensity != got {
+		t.Fatalf("assertion density should not affect composite score: got %v and %v", got, gotWithDifferentAssertionDensity)
+	}
+}
+
+func TestGenerationAPITimeoutIsExcludedAndReportedAsGenerateFailure(t *testing.T) {
+	eligible := true
+	rows := []contracts.EvaluationResult{
+		{
+			Model:         "model_api__mimo-v2.5-pro__no_skill",
+			Language:      "go",
+			SampleID:      "boundary_000",
+			CompilePass:   false,
+			CompileError:  `generation failed (timeout): Post "https://token-plan-cn.xiaomimimo.com/v1/chat/completions": net/http: TLS handshake timeout`,
+			FailureOrigin: "model",
+			ScoreEligible: &eligible,
+		},
+	}
+
+	summary := buildSummary(rows)
+	if summary.TotalSamples != 1 || summary.EligibleSamples != 0 || summary.ExcludedSamples != 1 {
+		t.Fatalf("expected API timeout to be excluded from scoring, got %+v", summary)
+	}
+	if summary.RawCompilePassRate != 0 || summary.CompilePassRate != 0 {
+		t.Fatalf("unexpected compile rates: %+v", summary)
+	}
+
+	dims := buildDimensions(rows, nil)
+	if len(dims.ByModel) != 0 {
+		t.Fatalf("expected excluded API timeout to be omitted from model dimensions, got %+v", dims.ByModel)
+	}
+
+	exclusions := buildScoreExclusions(rows)
+	if len(exclusions) != 1 || exclusions[0].Origin != "environment" || exclusions[0].Count != 1 {
+		t.Fatalf("unexpected score exclusions: %+v", exclusions)
+	}
+
+	failures := buildFailureRows(rows)
+	if len(failures) != 1 || failures[0].Stage != "generate" || failures[0].ErrorType != "api_timeout" || failures[0].Count != 1 {
+		t.Fatalf("unexpected failure rows: %+v", failures)
+	}
+
+	diagnosis := buildErrorDiagnosis(rows)
+	if len(diagnosis.CompileErrors) != 1 || diagnosis.CompileErrors[0].Type != "api_timeout" {
+		t.Fatalf("unexpected error diagnosis: %+v", diagnosis.CompileErrors)
+	}
+
+	insights := buildInsights(buildTopModels(dims.ByModel), dims, summary, failures)
+	if insights.BestModel.Category != "" {
+		t.Fatalf("did not expect best model insight when all samples are excluded, got %+v", insights.BestModel)
+	}
+	if len(insights.Recommendations) == 0 {
+		t.Fatalf("expected recommendations for excluded API timeout")
+	}
+}
+
+func TestBuildInsightsSkipsBestModelForZeroSignal(t *testing.T) {
+	insights := buildInsights([]contracts.ModelRank{{Model: "m1", TotalSamples: 1}}, contracts.Dimensions{}, contracts.ReportSummary{TotalSamples: 1, EligibleSamples: 1}, nil)
+	if insights.BestModel.Category != "" {
+		t.Fatalf("did not expect best model insight for a zero-signal model, got %+v", insights.BestModel)
+	}
+}
+
 func TestToolMutationFailureStillContributesDisplayMetrics(t *testing.T) {
 	pass := true
 	excluded := false

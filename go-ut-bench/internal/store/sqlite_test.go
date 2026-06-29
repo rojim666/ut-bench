@@ -58,6 +58,7 @@ func TestIngestEvaluationUpsertV2(t *testing.T) {
 	set.Results[0].TestPassCount = &pc2
 	set.Results[0].TestTotalCount = &tc2
 	set.Results[0].TestPassRate = &pr2
+	set.EvaluatedAtUTC = set.EvaluatedAtUTC.Add(time.Minute)
 	if err := s.IngestEvaluation(ctx, set); err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +75,13 @@ func TestIngestEvaluationUpsertV2(t *testing.T) {
 	}
 	if cnt != 1 {
 		t.Fatalf("expected one upserted row, got %d", cnt)
+	}
+
+	if err := db.QueryRow(`SELECT COUNT(*) FROM evaluation_runs WHERE run_id='run_1'`).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatalf("expected one upserted evaluation run, got %d", cnt)
 	}
 
 	var gotRate float64
@@ -516,6 +524,180 @@ func TestIngestManifestDatasetSampleUIDConflicts(t *testing.T) {
 	}
 	if legacyRows != 0 {
 		t.Fatalf("expected legacy sample uid to be merged, got %d rows", legacyRows)
+	}
+}
+
+func TestIngestRunReplacesPriorEvaluationAndReportForSameRun(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "utbench.db")
+
+	s, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	runID := "run_replace"
+	runDir := filepath.Join(tmp, "artifacts", "runs", runID)
+	evalPath := filepath.Join(runDir, "evaluation", "evaluation_result.json")
+	reportPath := filepath.Join(runDir, "report", "report_summary.json")
+	reportHTMLPath := filepath.Join(runDir, "report", "report.html")
+
+	writeEvaluationAndReport := func(pass bool, sampleIDs []string, generatedAt time.Time) {
+		t.Helper()
+		testPass := pass
+		results := make([]contracts.EvaluationResult, 0, len(sampleIDs))
+		for _, sampleID := range sampleIDs {
+			results = append(results, contracts.EvaluationResult{
+				Model:             "deepseek",
+				Language:          "python",
+				SampleID:          sampleID,
+				GeneratedTestPath: filepath.Join(runDir, "generated", "tests", sampleID+"_test.py"),
+				SourcePath:        filepath.Join(tmp, "datasets", "python", "self_contained", sampleID+".py"),
+				CompilePass:       pass,
+				TestPass:          &testPass,
+			})
+		}
+		set := contracts.EvaluationResultSet{
+			SchemaVersion:  contracts.SchemaVersion,
+			RunID:          runID,
+			EvaluatedAtUTC: generatedAt,
+			Results:        results,
+		}
+		if err := contracts.WriteJSON(evalPath, set); err != nil {
+			t.Fatal(err)
+		}
+		report := contracts.ReportPayload{
+			SchemaVersion:    contracts.SchemaVersion,
+			RunID:            runID,
+			GeneratedAtUTC:   generatedAt,
+			SourceEvaluation: evalPath,
+			Summary: contracts.ReportSummary{
+				TotalSamples:     len(sampleIDs),
+				CompilePassCount: map[bool]int{true: 1, false: 0}[pass],
+				CompilePassRate:  map[bool]float64{true: 1, false: 0}[pass],
+			},
+		}
+		if err := contracts.WriteJSON(reportPath, report); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(reportHTMLPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(reportHTMLPath, []byte(generatedAt.Format(time.RFC3339Nano)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeEvaluationAndReport(false, []string{"s1", "s2"}, time.Date(2026, 6, 28, 7, 0, 0, 0, time.UTC))
+	if _, err := s.IngestRun(ctx, IngestRunOptions{RunDir: runDir}); err != nil {
+		t.Fatal(err)
+	}
+	writeEvaluationAndReport(true, []string{"s1"}, time.Date(2026, 6, 28, 8, 0, 0, 0, time.UTC))
+	if _, err := s.IngestRun(ctx, IngestRunOptions{RunDir: runDir}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, table := range []string{"evaluation_runs", "evaluation_results", "report_snapshots"} {
+		var count int
+		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE run_id=?", runID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("expected one current row in %s, got %d", table, count)
+		}
+	}
+
+	var compilePass int
+	if err := s.db.QueryRowContext(ctx, `SELECT compile_pass FROM evaluation_results WHERE run_id=?`, runID).Scan(&compilePass); err != nil {
+		t.Fatal(err)
+	}
+	if compilePass != 1 {
+		t.Fatalf("expected latest evaluation result to replace old one, got compile_pass=%d", compilePass)
+	}
+
+	var reportCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM report_result_members`).Scan(&reportCount); err != nil {
+		t.Fatal(err)
+	}
+	if reportCount != 0 {
+		t.Fatalf("expected stale report members to be removed, got %d", reportCount)
+	}
+}
+
+func TestDeleteRunRemovesIndexedRows(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "utbench.db")
+
+	s, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO generation_runs(run_id, schema_version, created_at_utc, spec_json, created_db_at_utc, updated_db_at_utc)
+		VALUES('run_delete', ?, ?, '{}', ?, ?)`, contracts.SchemaVersion, now, now, now)
+	exec(`INSERT INTO prompt_renderings(prompt_rendering_id, run_id, model, language, sample_id, created_at_utc)
+		VALUES('prompt_delete', 'run_delete', 'deepseek', 'python', 's1', ?)`, now)
+	exec(`INSERT INTO generated_cases(generated_case_id, run_id, model, language, sample_id, success, created_db_at_utc, updated_db_at_utc)
+		VALUES('case_delete', 'run_delete', 'deepseek', 'python', 's1', 1, ?, ?)`, now, now)
+	exec(`INSERT INTO evaluation_runs(evaluation_run_id, run_id, schema_version, evaluated_at_utc, created_db_at_utc, updated_db_at_utc)
+		VALUES('eval_delete', 'run_delete', ?, ?, ?, ?)`, contracts.SchemaVersion, now, now, now)
+	exec(`INSERT INTO evaluation_results(evaluation_result_id, evaluation_run_id, run_id, model, language, sample_id, compile_pass, created_db_at_utc, updated_db_at_utc)
+		VALUES('result_delete', 'eval_delete', 'run_delete', 'deepseek', 'python', 's1', 1, ?, ?)`, now, now)
+	exec(`INSERT INTO evaluation_stage_results(stage_result_id, evaluation_result_id, stage, status, created_at_utc)
+		VALUES('stage_delete', 'result_delete', 'compile', 'passed', ?)`, now)
+	exec(`INSERT INTO report_snapshots(report_id, run_id, generated_at_utc, created_db_at_utc)
+		VALUES('report_delete', 'run_delete', ?, ?)`, now, now)
+	exec(`INSERT INTO report_result_members(report_id, evaluation_result_id)
+		VALUES('report_delete', 'result_delete')`)
+	exec(`INSERT INTO artifacts(artifact_id, kind, path, size_bytes, sha256, created_at_utc)
+		VALUES('artifact_delete', 'report_html', 'artifacts/runs/run_delete/report/report.html', 1, 'sha-delete', ?)`, now)
+	exec(`INSERT INTO run_artifacts(run_id, artifact_id, role, created_at_utc)
+		VALUES('run_delete', 'artifact_delete', 'report_html', ?)`, now)
+
+	if err := s.DeleteRun(ctx, "run_delete"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{
+		"generation_runs",
+		"prompt_renderings",
+		"generated_cases",
+		"evaluation_runs",
+		"evaluation_results",
+		"evaluation_stage_results",
+		"report_snapshots",
+		"report_result_members",
+		"run_artifacts",
+	} {
+		var count int
+		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("expected %s to be empty, got %d", table, count)
+		}
+	}
+	var deletedAt string
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(deleted_at_utc, '') FROM artifacts WHERE artifact_id='artifact_delete'`).Scan(&deletedAt); err != nil {
+		t.Fatal(err)
+	}
+	if deletedAt == "" {
+		t.Fatal("expected artifact to be marked deleted")
 	}
 }
 

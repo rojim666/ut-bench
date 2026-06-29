@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"go-ut-bench/internal/contracts"
+	"go-ut-bench/internal/orchestrator"
 )
 
 func (m *RunManager) prepareDockerGeneratedManifest(spec contracts.RunSpec) (string, error) {
@@ -22,10 +23,14 @@ func (m *RunManager) writeDockerGeneratedManifest(spec contracts.RunSpec, source
 	}
 
 	root := strings.TrimRight(m.dockerCfg.ProjectRoot, `/\`)
-	mapper := newDockerPathMapper(root, spec.DatasetRoot)
+	mapper := newDockerPathMapper(root, spec)
+	configPath := dockerConfigPath(spec.ConfigPath)
+	if strings.TrimSpace(configPath) == "" {
+		configPath = "/app/configs/models.yaml"
+	}
 	manifest.Spec.DatasetRoot = "/app/datasets"
 	manifest.Spec.OutputRoot = "/app/artifacts"
-	manifest.Spec.ConfigPath = "/app/configs/models.yaml"
+	manifest.Spec.ConfigPath = configPath
 	if strings.TrimSpace(manifest.Spec.AgentsConfigPath) != "" {
 		manifest.Spec.AgentsConfigPath = pathpkg.Join("/app/configs", filepath.Base(manifest.Spec.AgentsConfigPath))
 	}
@@ -53,18 +58,9 @@ func (m *RunManager) writeDockerGeneratedManifest(spec contracts.RunSpec, source
 	return target, nil
 }
 
-func newDockerPathMapper(projectRoot, datasetRoot string) func(string) string {
+func newDockerPathMapper(projectRoot string, spec contracts.RunSpec) func(string) string {
 	root := filepath.ToSlash(filepath.Clean(projectRoot))
-	hostDataset := resolveDockerHostPath(root, datasetRoot, "datasets")
-	mounts := []struct {
-		host      string
-		container string
-	}{
-		{host: hostDataset, container: "/app/datasets"},
-		{host: filepath.ToSlash(filepath.Join(root, "artifacts")), container: "/app/artifacts"},
-		{host: filepath.ToSlash(filepath.Join(root, "configs")), container: "/app/configs"},
-		{host: filepath.ToSlash(filepath.Join(root, "storage")), container: "/app/storage"},
-	}
+	mounts := buildDockerMountSet(spec, orchestrator.Options{}, DockerConfig{ProjectRoot: root})
 
 	return func(value string) string {
 		raw := strings.TrimSpace(value)
@@ -77,7 +73,7 @@ func newDockerPathMapper(projectRoot, datasetRoot string) func(string) string {
 		}
 
 		clean := filepath.Clean(raw)
-		if !filepath.IsAbs(clean) {
+		if !isDockerHostAbsPath(clean) {
 			if strings.HasPrefix(filepath.ToSlash(clean), "artifacts/") {
 				clean = filepath.Join(root, clean)
 			} else {
@@ -89,7 +85,7 @@ func newDockerPathMapper(projectRoot, datasetRoot string) func(string) string {
 		}
 
 		slash := filepath.ToSlash(filepath.Clean(clean))
-		for _, mount := range mounts {
+		for _, mount := range mounts.mountPairs() {
 			host := strings.TrimRight(filepath.ToSlash(filepath.Clean(mount.host)), "/")
 			if slash == host {
 				return mount.container

@@ -338,7 +338,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 
 	commandErrorDetail := ""
 	if runErr != nil {
-		commandErrorDetail = fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stderr, runErr.Error(), 1000))
+		commandErrorDetail = fmt.Sprintf("agent command failed: %s", summarizeAgentCommandError(runOutput.Stdout, runOutput.Stderr, runErr.Error(), 1000))
 	}
 
 	// 17. 拦截环境漂移行为
@@ -370,7 +370,7 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 	generatedPath := findGeneratedTestStrict(workRoot, outputFile, changes, sample.Language)
 	if generatedPath == "" {
 		errorKind := "agent_output_error"
-		failureDetail := summarizeAgentCommandError(runOutput.Stderr, "", 1200)
+		failureDetail := summarizeAgentCommandError(runOutput.Stdout, runOutput.Stderr, "", 1200)
 		if commandErrorDetail != "" {
 			errorKind = "agent_execution_error"
 			failureDetail = commandErrorDetail
@@ -482,10 +482,13 @@ func generateCLIAgent(ctx context.Context, sandboxRunner SandboxRunner, req Agen
 
 // parseAgentOutput 从 Agent 的 stdout/stderr 中解析结构化信息。
 // 支持解析 OpenCode、Claude Code、CodeBuddy 等 CLI Agent 的日志格式。
-func summarizeAgentCommandError(stderr, errText string, max int) string {
-	combined := strings.TrimSpace(strings.TrimSpace(stderr) + "\n" + strings.TrimSpace(errText))
+func summarizeAgentCommandError(stdout, stderr, errText string, max int) string {
+	combined := strings.TrimSpace(strings.TrimSpace(stdout) + "\n" + strings.TrimSpace(stderr) + "\n" + strings.TrimSpace(errText))
 	if combined == "" {
 		return ""
+	}
+	if detail := summarizeStructuredAgentAPIError(combined, max); detail != "" {
+		return detail
 	}
 
 	lines := strings.Split(combined, "\n")
@@ -493,6 +496,8 @@ func summarizeAgentCommandError(stderr, errText string, max int) string {
 		"ERROR",
 		"error:",
 		"failed",
+		"authentication_failed",
+		"Invalid API Key",
 		"Unauthorized",
 		"401",
 		"403",
@@ -521,6 +526,100 @@ func summarizeAgentCommandError(stderr, errText string, max int) string {
 	}
 
 	return tailText(combined, max)
+}
+
+func summarizeStructuredAgentAPIError(output string, max int) string {
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if nested, ok := event["line"].(string); ok && strings.HasPrefix(strings.TrimSpace(nested), "{") {
+			var inner map[string]any
+			if err := json.Unmarshal([]byte(nested), &inner); err == nil {
+				event = inner
+			}
+		}
+		detail := structuredAPIErrorDetail(event)
+		if detail == "" {
+			continue
+		}
+		return trimText(detail, max)
+	}
+	return ""
+}
+
+func structuredAPIErrorDetail(event map[string]any) string {
+	errorStatus := intFromAny(event["api_error_status"])
+	if errorStatus == 0 {
+		errorStatus = intFromAny(event["error_status"])
+	}
+	errorCode := stringFromAny(event["error"])
+	if errorCode == "" {
+		errorCode = stringFromAny(event["error_code"])
+	}
+	message := stringFromAny(event["result"])
+	if message == "" {
+		message = stringFromAny(event["message"])
+	}
+	if message == "" {
+		if msg, ok := event["message"].(map[string]any); ok {
+			if parts, ok := msg["content"].([]any); ok {
+				for _, part := range parts {
+					partMap, ok := part.(map[string]any)
+					if !ok {
+						continue
+					}
+					if text := stringFromAny(partMap["text"]); text != "" {
+						message = text
+						break
+					}
+				}
+			}
+		}
+	}
+
+	isAPIError := errorStatus >= 400 || strings.Contains(strings.ToLower(errorCode), "auth") || strings.Contains(strings.ToLower(message), "api error")
+	if !isAPIError {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if errorStatus > 0 {
+		parts = append(parts, fmt.Sprintf("API error %d", errorStatus))
+	}
+	if errorCode != "" {
+		parts = append(parts, errorCode)
+	}
+	if message != "" {
+		parts = append(parts, message)
+	}
+	return strings.Join(parts, ": ")
+}
+
+func intFromAny(value any) int {
+	if value == nil {
+		return 0
+	}
+	if out, ok := asInt(value); ok {
+		return out
+	}
+	return 0
+}
+
+func stringFromAny(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case json.Number:
+		return strings.TrimSpace(v.String())
+	default:
+		return ""
+	}
 }
 
 func buildNoGeneratedFileMessage(detail string) string {

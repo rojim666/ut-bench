@@ -431,17 +431,10 @@ func buildTopModels(models []contracts.ModelDim) []contracts.ModelRank {
 }
 
 func calculateCompositeScore(compilePassRate, testPassRate, lineCoverage, assertionDensity, mutationScore float64) float64 {
-	aNorm := assertionDensity / contracts.DefaultWeights.AssertSat
-	if aNorm > 1.0 {
-		aNorm = 1.0
-	}
-	if aNorm < 0 {
-		aNorm = 0
-	}
-	composite := compilePassRate * testPassRate *
-		(lineCoverage*contracts.DefaultWeights.Coverage +
-			aNorm*contracts.DefaultWeights.Assertion +
-			mutationScore*contracts.DefaultWeights.Mutation) * 100
+	composite := (compilePassRate*contracts.DefaultWeights.Compile +
+		testPassRate*contracts.DefaultWeights.Test +
+		lineCoverage*contracts.DefaultWeights.Coverage +
+		mutationScore*contracts.DefaultWeights.Mutation) * 100
 	return round(composite, 6)
 }
 
@@ -460,7 +453,13 @@ func buildFailureRows(rows []contracts.EvaluationResult) []contracts.FailureRow 
 			}
 		}
 		if row.CompileError != "" {
-			k := failureKey{stage: "compile", errType: classifyError(row.CompileError)}
+			stage := "compile"
+			errType := classifyError(row.CompileError)
+			if isGenerationFailureMessage(row.CompileError) {
+				stage = "generate"
+				errType = classifyGenerationFailureError(row.CompileError)
+			}
+			k := failureKey{stage: stage, errType: errType}
 			agg := getOrCreateFailureAgg(m, k)
 			agg.count++
 			if agg.exampleModel == "" {
@@ -555,7 +554,33 @@ func classifyMutationError(msg string) string {
 	}
 }
 
+func effectiveFailureOrigin(row contracts.EvaluationResult) string {
+	if isGenerationInfrastructureFailure(row) {
+		return "environment"
+	}
+	return strings.TrimSpace(row.FailureOrigin)
+}
+
+func effectiveScoreExclusionReason(row contracts.EvaluationResult) string {
+	if isGenerationInfrastructureFailure(row) {
+		return shortErrText(firstNonEmpty(row.CompileError, row.TestError, row.CoverageError, row.MutationError))
+	}
+	return strings.TrimSpace(row.ScoreExclusionReason)
+}
+
+func isGenerationInfrastructureFailure(row contracts.EvaluationResult) bool {
+	for _, msg := range []string{row.CompileError, row.TestError, row.CoverageError, row.MutationError} {
+		if isGenerationInfrastructureFailureMessage(msg) {
+			return true
+		}
+	}
+	return false
+}
+
 func isScoreEligible(row contracts.EvaluationResult) bool {
+	if isGenerationInfrastructureFailure(row) {
+		return false
+	}
 	if row.ScoreEligible == nil {
 		return true
 	}
@@ -566,7 +591,7 @@ func includeInDisplayMetrics(row contracts.EvaluationResult) bool {
 	if isScoreEligible(row) {
 		return true
 	}
-	if !strings.EqualFold(strings.TrimSpace(row.FailureOrigin), "tool") {
+	if !strings.EqualFold(effectiveFailureOrigin(row), "tool") {
 		return false
 	}
 	return row.CompilePass ||
@@ -592,11 +617,11 @@ func buildScoreExclusions(rows []contracts.EvaluationResult) []contracts.ScoreEx
 		if isScoreEligible(row) {
 			continue
 		}
-		origin := strings.TrimSpace(row.FailureOrigin)
+		origin := effectiveFailureOrigin(row)
 		if origin == "" {
 			origin = "unknown"
 		}
-		reason := strings.TrimSpace(row.ScoreExclusionReason)
+		reason := effectiveScoreExclusionReason(row)
 		if reason == "" {
 			reason = "non-model failure"
 		}
@@ -681,6 +706,80 @@ func classifyError(msg string) string {
 	default:
 		return "other"
 	}
+}
+
+func isGenerationFailureMessage(msg string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg)), "generation failed")
+}
+
+func classifyGenerationFailureError(msg string) string {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	kind := generationFailureKind(msg)
+	switch {
+	case isAPITimeoutFailure(msg, kind):
+		return "api_timeout"
+	case kind == "network_error":
+		return "api_network_error"
+	case kind == "http_error" || strings.Contains(msg, "http 429") || strings.Contains(msg, "too many requests") || strings.Contains(msg, "rate limit"):
+		return "api_http_error"
+	case kind == "response_parse_error" || kind == "response_extract_error":
+		return "api_response_error"
+	case kind == "sample_env_prepare_error" || kind == "sandbox_preflight_error":
+		return "generation_environment_error"
+	case kind == "quality_error":
+		return "generation_quality_error"
+	case kind != "":
+		return "generation_" + kind
+	default:
+		return "generation_error"
+	}
+}
+
+func isGenerationInfrastructureFailureMessage(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	if !isGenerationFailureMessage(msg) {
+		return false
+	}
+	kind := generationFailureKind(msg)
+	switch kind {
+	case "timeout", "network_error", "http_error", "response_parse_error", "response_extract_error", "request_build_error", "sample_env_prepare_error", "sandbox_preflight_error":
+		return true
+	}
+	return isAPITimeoutFailure(msg, kind) ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "temporary failure") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "http 429") ||
+		strings.Contains(msg, "http 5") ||
+		strings.Contains(msg, "server error") ||
+		strings.Contains(msg, "service unavailable")
+}
+
+func isAPITimeoutFailure(msg, kind string) bool {
+	return kind == "timeout" ||
+		strings.Contains(msg, "tls handshake timeout") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "client.timeout") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "timed out") ||
+		strings.Contains(msg, "gateway timeout")
+}
+
+func generationFailureKind(msg string) string {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	const prefix = "generation failed ("
+	if !strings.HasPrefix(msg, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(msg, prefix)
+	end := strings.Index(rest, ")")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end])
 }
 
 func shortErrText(v string) string {

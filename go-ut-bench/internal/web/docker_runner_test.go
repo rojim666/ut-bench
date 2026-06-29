@@ -47,6 +47,46 @@ func TestBuildDockerRunArgsUsesSpecDatasetRootMount(t *testing.T) {
 	mustContain(t, joined, "-v /repo/datasets:/app/datasets")
 }
 
+func TestBuildDockerRunArgsUsesSpecMountRoots(t *testing.T) {
+	spec := contracts.RunSpec{
+		RunID:          "run-1",
+		Models:         []string{"deepseek"},
+		Languages:      []string{"java", "cpp"},
+		DatasetRoot:    "../datasets",
+		OutputRoot:     "../artifacts-alt",
+		ConfigPath:     "../config-alt/custom-models.yaml",
+		DBPath:         "../storage-alt/bench.sqlite",
+		ReuseGenerated: true,
+	}
+	cfg := DockerConfig{EvalImageName: "utbench:latest", ProjectRoot: "/repo/go-ut-bench"}
+
+	args := buildDockerRunArgs(spec, orchestrator.Options{}, cfg)
+	joined := strings.Join(args, " ")
+
+	mustContain(t, joined, "-v /repo/datasets:/app/datasets")
+	mustContain(t, joined, "-v /repo/artifacts-alt:/app/artifacts")
+	mustContain(t, joined, "-v /repo/config-alt:/app/configs")
+	mustContain(t, joined, "-v /repo/storage-alt:/app/storage")
+	mustContain(t, joined, "--config /app/configs/custom-models.yaml")
+	mustContain(t, joined, "--db-path /app/storage/bench.sqlite")
+}
+
+func TestBuildDockerEvaluateArgsMapsCustomOutputRootManifest(t *testing.T) {
+	spec := contracts.RunSpec{
+		RunID:      "run-1",
+		OutputRoot: "../artifacts-alt",
+	}
+	cfg := DockerConfig{EvalImageName: "utbench:latest", ProjectRoot: "/repo/go-ut-bench"}
+
+	args := buildDockerRunArgs(spec, orchestrator.Options{
+		Phase:        "evaluate",
+		ManifestPath: "/repo/artifacts-alt/runs/source-run/generated/generated_manifest.json",
+	}, cfg)
+	joined := strings.Join(args, " ")
+
+	mustContain(t, joined, "--manifest /app/artifacts/runs/source-run/generated/generated_manifest.json")
+}
+
 func TestBuildDockerEvaluateArgsUsesSourceRunManifest(t *testing.T) {
 	spec := contracts.RunSpec{
 		RunID:           "run-1",
@@ -104,7 +144,7 @@ func TestBuildDockerRunArgsPassesReuseGeneratedWithDBPath(t *testing.T) {
 	joined := strings.Join(args, " ")
 
 	mustContain(t, joined, "--reuse-generated")
-	mustContain(t, joined, "--db-path /tmp/utbench.db")
+	mustContain(t, joined, "--db-path /app/storage/utbench.db")
 }
 
 func TestBuildDockerRunArgsDoesNotDuplicateDBPath(t *testing.T) {
@@ -123,7 +163,7 @@ func TestBuildDockerRunArgsDoesNotDuplicateDBPath(t *testing.T) {
 	if got := strings.Count(joined, "--db-path"); got != 1 {
 		t.Fatalf("expected one --db-path, got %d in %q", got, joined)
 	}
-	mustContain(t, joined, "--db-path /tmp/utbench.db")
+	mustContain(t, joined, "--db-path /app/storage/utbench.db")
 }
 
 func TestBuildDockerRunArgsMapsHostAbsoluteDBPath(t *testing.T) {
@@ -140,7 +180,8 @@ func TestBuildDockerRunArgsMapsHostAbsoluteDBPath(t *testing.T) {
 	}, cfg)
 	joined := strings.Join(args, " ")
 
-	mustContain(t, joined, "--db-path /app/custom/utbench.db")
+	mustContain(t, joined, "-v /repo/custom:/app/storage")
+	mustContain(t, joined, "--db-path /app/storage/utbench.db")
 }
 
 func TestBuildDockerRunArgsPassesBenchmarkManifestAndMutationFalse(t *testing.T) {
@@ -194,6 +235,7 @@ func TestDockerEvaluateOptionsPreparesContainerManifest(t *testing.T) {
 			DatasetRoot: filepath.Join(root, "datasets"),
 			OutputRoot:  filepath.Join(root, "artifacts"),
 			ConfigPath:  filepath.Join(root, "configs", "models.yaml"),
+			DBPath:      filepath.Join(root, "storage", "utbench.db"),
 		},
 		Cases: []contracts.GeneratedCase{{
 			Model:             "deepseek",
@@ -222,6 +264,9 @@ func TestDockerEvaluateOptionsPreparesContainerManifest(t *testing.T) {
 	}
 	if got := dockerManifest.Cases[0].SamplePath; got != "/app/datasets/go/go_code_files_repo_level/oss/demo/demo.go" {
 		t.Fatalf("expected container sample path, got %q", got)
+	}
+	if got := dockerManifest.Spec.DBPath; got != "/app/storage/utbench.db" {
+		t.Fatalf("expected mounted db path, got %q", got)
 	}
 }
 

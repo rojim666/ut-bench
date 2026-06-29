@@ -113,7 +113,7 @@ func defaultDBPath() string {
 		return v
 	}
 	if isLikelyContainerRuntime() {
-		return "/tmp/utbench.db"
+		return "/app/storage/utbench.db"
 	}
 	return "./storage/utbench.db"
 }
@@ -850,6 +850,7 @@ func runGenerate(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "Dry run")
 	reuseGenerated := fs.Bool("reuse-generated", true, "Reuse matching generated tests from SQLite before calling models")
 	dbPath := fs.String("db-path", defaultDBPath(), "SQLite database path")
+	workers := fs.Int("workers", 0, "Number of concurrent generation workers")
 	models := fs.String("models", "", "Comma-separated models")
 	subjects := fs.String("subjects", "", "Comma-separated subjects (framework__model__skill)")
 	langs := fs.String("langs", "", "Comma-separated languages")
@@ -876,6 +877,7 @@ func runGenerate(args []string) error {
 		DryRun:           *dryRun,
 		ReuseGenerated:   *reuseGenerated,
 		DBPath:           *dbPath,
+		Workers:          *workers,
 		Models:           parseCommaList(*models),
 		Subjects:         parseCommaList(*subjects),
 		Languages:        parseCommaList(*langs),
@@ -994,9 +996,16 @@ func runEvaluate(args []string) error {
 	if err != nil {
 		return fmt.Errorf("evaluate: %w", err)
 	}
+	reporterSvc := reporter.NewService(logger, &runner.DefaultPromptMetaProvider{})
+	reportOutput, err := reporterSvc.Generate(ctx, spec, output.ResultPath)
+	if err != nil {
+		return fmt.Errorf("regenerate report after evaluate: %w", err)
+	}
 
 	fmt.Printf("Evaluated %d results\n", len(output.Result.Results))
 	fmt.Printf("Result: %s\n", output.ResultPath)
+	fmt.Printf("Report JSON: %s\n", reportOutput.ReportJSONPath)
+	fmt.Printf("Report HTML: %s\n", reportOutput.ReportHTMLPath)
 	return nil
 }
 

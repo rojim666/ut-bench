@@ -33,7 +33,8 @@ type EnvStatus struct {
 }
 
 // detectTimeout bounds every external command we shell out to.
-const detectTimeout = 4 * time.Second
+// Docker Desktop on Windows can take tens of seconds to answer while waking up.
+const detectTimeout = 30 * time.Second
 
 const defaultAgentImageName = "utbench-agent-base:latest"
 

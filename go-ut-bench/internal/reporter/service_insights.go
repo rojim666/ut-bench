@@ -15,7 +15,7 @@ func buildInsights(topModels []contracts.ModelRank, dims contracts.Dimensions, s
 	insights := contracts.Insights{}
 
 	// 最佳模型洞察
-	if len(topModels) > 0 {
+	if len(topModels) > 0 && hasPositiveModelSignal(topModels[0]) {
 		best := topModels[0]
 		gapToSecond := 0.0
 		if len(topModels) > 1 {
@@ -71,7 +71,26 @@ func buildInsights(topModels []contracts.ModelRank, dims contracts.Dimensions, s
 	}
 
 	// 改进建议
-	if len(failures) > 0 {
+	if summary.EligibleSamples == 0 && summary.TotalSamples > 0 {
+		insights.Recommendations = append(insights.Recommendations, contracts.InsightItem{
+			Category: "recommendation",
+			Title:    "本次没有可评分样本",
+			Detail:   fmt.Sprintf("本次 %d 个样本都被判定为非模型能力失败，综合评分和模型排名已跳过。请优先检查生成阶段的 API、网络或运行环境。", summary.TotalSamples),
+			Icon:     "fix",
+			Priority: 1,
+		})
+	}
+	if len(failures) > 0 && isGenerationFailureCategory(failures[0]) {
+		topFailure := failures[0]
+		insights.Recommendations = append(insights.Recommendations, contracts.InsightItem{
+			Category: "recommendation",
+			Title:    fmt.Sprintf("关注生成阶段 %s", topFailure.ErrorType),
+			Detail:   fmt.Sprintf("该错误出现 %d 次，主要发生在生成阶段。请优先检查模型 API 连通性、鉴权、限流或服务可用性；这类失败已从模型能力评分中剔除。", topFailure.Count),
+			Icon:     "fix",
+			Priority: 2,
+		})
+	}
+	if len(failures) > 0 && !isGenerationFailureCategory(failures[0]) {
 		topFailure := failures[0]
 		insights.Recommendations = append(insights.Recommendations, contracts.InsightItem{
 			Category: "recommendation",
@@ -81,7 +100,7 @@ func buildInsights(topModels []contracts.ModelRank, dims contracts.Dimensions, s
 			Priority: 3,
 		})
 	}
-	if summary.CompilePassRate < 0.8 {
+	if summary.EligibleSamples > 0 && summary.CompilePassRate < 0.8 {
 		insights.Recommendations = append(insights.Recommendations, contracts.InsightItem{
 			Category: "recommendation",
 			Title:    "提升编译通过率",
@@ -101,6 +120,21 @@ func buildInsights(topModels []contracts.ModelRank, dims contracts.Dimensions, s
 	})
 
 	return insights
+}
+
+func hasPositiveModelSignal(model contracts.ModelRank) bool {
+	return model.CompositeScore > 0 ||
+		model.CompilePassRate > 0 ||
+		model.AvgTestPassRate > 0 ||
+		model.AvgTestCasePassRate > 0 ||
+		model.AvgLineCoverage > 0 ||
+		model.AvgMutationScore > 0
+}
+
+func isGenerationFailureCategory(row contracts.FailureRow) bool {
+	return strings.EqualFold(row.Stage, "generate") ||
+		strings.HasPrefix(row.ErrorType, "api_") ||
+		strings.HasPrefix(row.ErrorType, "generation_")
 }
 
 type scenarioInsight struct {
@@ -414,6 +448,9 @@ type errorTypeAgg struct {
 }
 
 func categorizeCompileError(err string) string {
+	if isGenerationFailureMessage(err) {
+		return classifyGenerationFailureError(err)
+	}
 	errLower := strings.ToLower(err)
 	if strings.Contains(errLower, "cannot find symbol") || strings.Contains(errLower, "undefined") || strings.Contains(errLower, "not found") || strings.Contains(errLower, "import") {
 		return "import_error"
@@ -450,6 +487,16 @@ func categorizeTestError(err string) string {
 func getErrorAdvice(errorType, stage string) string {
 	if stage == "compile" {
 		switch errorType {
+		case "api_timeout":
+			return "生成阶段调用模型 API 超时，优先检查网络连通性、服务可用性和接口超时配置；该类失败不代表模型生成能力。"
+		case "api_network_error":
+			return "生成阶段出现模型 API 网络错误，优先检查 DNS、代理、出口网络和服务端连接状态。"
+		case "api_http_error":
+			return "生成阶段返回 HTTP 错误，优先检查鉴权、限流、额度、模型名和服务端状态。"
+		case "api_response_error":
+			return "生成阶段 API 响应无法解析，优先检查 provider 适配、接口协议和服务端返回格式。"
+		case "generation_environment_error":
+			return "生成前置环境准备失败，优先检查沙箱、依赖预热或样本运行环境。"
 		case "import_error":
 			return "检查模型是否正确生成了 import/require 语句，确保引用了被测代码的包和类。"
 		case "syntax_error":
@@ -481,6 +528,9 @@ func generateErrorRecommendations(diagnosis contracts.ErrorDiagnosis) []string {
 	var recs []string
 	if len(diagnosis.CompileErrors) > 0 && diagnosis.CompileErrors[0].Rate > 0.5 {
 		rec := fmt.Sprintf("编译错误主要集中在 %s 类型，建议优先解决。", diagnosis.CompileErrors[0].Type)
+		if strings.HasPrefix(diagnosis.CompileErrors[0].Type, "api_") || strings.HasPrefix(diagnosis.CompileErrors[0].Type, "generation_") {
+			rec = fmt.Sprintf("生成阶段错误主要集中在 %s 类型，建议优先检查模型 API、网络、鉴权、限流或服务可用性。", diagnosis.CompileErrors[0].Type)
+		}
 		recs = append(recs, rec)
 	}
 	if len(diagnosis.TestErrors) > 0 && diagnosis.TestErrors[0].Rate > 0.3 {

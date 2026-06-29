@@ -358,17 +358,20 @@ func (s *SQLiteStore) ingestEvaluationTx(ctx context.Context, tx *sql.Tx, path s
 		envID, envFingerprint, envJSON, now); err != nil {
 		return fmt.Errorf("upsert evaluation env: %w", err)
 	}
-	policyID := stableID("score_policy", "default-v2")
-	policyJSON := fmt.Sprintf(`{"formula":"scene_c","coverage":%.2f,"assertion":%.2f,"mutation":%.2f,"assert_sat":%.1f,"excludes_score_eligible_false":true}`,
-		contracts.DefaultWeights.Coverage, contracts.DefaultWeights.Assertion, contracts.DefaultWeights.Mutation, contracts.DefaultWeights.AssertSat)
+	policyID := stableID("score_policy", "default-v3")
+	policyJSON := fmt.Sprintf(`{"formula":"weighted_sum_v1","compile":%.2f,"test":%.2f,"coverage":%.2f,"mutation":%.2f,"excludes_score_eligible_false":true}`,
+		contracts.DefaultWeights.Compile, contracts.DefaultWeights.Test, contracts.DefaultWeights.Coverage, contracts.DefaultWeights.Mutation)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO score_policies(score_policy_id, name, policy_json, created_at_utc)
 		VALUES(?, ?, ?, ?)
 		ON CONFLICT(score_policy_id) DO UPDATE SET policy_json=excluded.policy_json`,
-		policyID, "default-v2", policyJSON, now); err != nil {
+		policyID, "default-v3", policyJSON, now); err != nil {
 		return fmt.Errorf("upsert score policy: %w", err)
 	}
-	evalRunID := stableID("evaluation_run", set.RunID, formatTime(set.EvaluatedAtUTC), path)
+	evalRunID := evaluationRunIDFor(set.RunID, path, ictx)
+	if err := cleanupSupersededEvaluationRuns(ctx, tx, set.RunID, evalRunID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO evaluation_runs(evaluation_run_id, run_id, experiment_id, generation_run_id, schema_version,
 			evaluated_at_utc, manifest_path, result_artifact_id, env_id, score_policy_id, created_db_at_utc, updated_db_at_utc)
@@ -386,6 +389,9 @@ func (s *SQLiteStore) ingestEvaluationTx(ctx context.Context, tx *sql.Tx, path s
 		return fmt.Errorf("upsert evaluation run: %w", err)
 	}
 	if err := s.ensureExperiment(ctx, tx, defaultExperimentID(set.RunID), set.RunID); err != nil {
+		return err
+	}
+	if err := cleanupCurrentEvaluationResults(ctx, tx, evalRunID); err != nil {
 		return err
 	}
 	for _, row := range set.Results {
@@ -553,9 +559,12 @@ func (s *SQLiteStore) ingestReportTx(ctx context.Context, tx *sql.Tx, path strin
 	reportHTMLArtifactID, _ := s.putOptionalArtifact(ctx, tx, ictx, "report_html", htmlPath, "report_html")
 	evalRunID := ""
 	if payload.SourceEvaluation != "" {
-		evalRunID = stableID("evaluation_run", payload.RunID, "", ictx.resolvePath(payload.SourceEvaluation))
+		evalRunID = evaluationRunIDFor(payload.RunID, payload.SourceEvaluation, ictx)
 	}
 	reportID := stableID("report", payload.RunID, formatTime(payload.GeneratedAtUTC), path)
+	if err := cleanupSupersededReportSnapshots(ctx, tx, payload.RunID, reportID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO report_snapshots(report_id, run_id, evaluation_run_id, generated_at_utc, source_evaluation,
 			report_json_artifact_id, report_html_artifact_id, summary_json, filters_json, created_db_at_utc)
@@ -809,6 +818,102 @@ func (s *SQLiteStore) putArtifact(ctx context.Context, tx *sql.Tx, ictx *ingestC
 		}
 	}
 	return artifactID, nil
+}
+
+func evaluationRunIDFor(runID, path string, ictx *ingestContext) string {
+	identity := "inline"
+	if strings.TrimSpace(path) != "" {
+		identity = path
+		if ictx != nil {
+			identity = ictx.resolvePath(path)
+		}
+		identity = filepath.Clean(identity)
+	}
+	return stableID("evaluation_run", runID, identity)
+}
+
+func cleanupSupersededEvaluationRuns(ctx context.Context, tx *sql.Tx, runID, keepEvaluationRunID string) error {
+	if strings.TrimSpace(runID) == "" || strings.TrimSpace(keepEvaluationRunID) == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM report_result_members
+		WHERE evaluation_result_id IN (
+			SELECT evaluation_result_id FROM evaluation_results
+			WHERE run_id = ? AND evaluation_run_id <> ?
+		)`, runID, keepEvaluationRunID); err != nil {
+		return fmt.Errorf("delete superseded report result members: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM evaluation_stage_results
+		WHERE evaluation_result_id IN (
+			SELECT evaluation_result_id FROM evaluation_results
+			WHERE run_id = ? AND evaluation_run_id <> ?
+		)`, runID, keepEvaluationRunID); err != nil {
+		return fmt.Errorf("delete superseded evaluation stage results: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM evaluation_results
+		WHERE evaluation_run_id IN (
+			SELECT evaluation_run_id FROM evaluation_runs
+			WHERE run_id = ? AND evaluation_run_id <> ?
+		)`, runID, keepEvaluationRunID); err != nil {
+		return fmt.Errorf("delete superseded evaluation results: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM evaluation_runs
+		WHERE run_id = ? AND evaluation_run_id <> ?`, runID, keepEvaluationRunID); err != nil {
+		return fmt.Errorf("delete superseded evaluation runs: %w", err)
+	}
+	return nil
+}
+
+func cleanupCurrentEvaluationResults(ctx context.Context, tx *sql.Tx, evaluationRunID string) error {
+	if strings.TrimSpace(evaluationRunID) == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM report_result_members
+		WHERE evaluation_result_id IN (
+			SELECT evaluation_result_id FROM evaluation_results
+			WHERE evaluation_run_id = ?
+		)`, evaluationRunID); err != nil {
+		return fmt.Errorf("delete current report result members: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM evaluation_stage_results
+		WHERE evaluation_result_id IN (
+			SELECT evaluation_result_id FROM evaluation_results
+			WHERE evaluation_run_id = ?
+		)`, evaluationRunID); err != nil {
+		return fmt.Errorf("delete current evaluation stage results: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM evaluation_results
+		WHERE evaluation_run_id = ?`, evaluationRunID); err != nil {
+		return fmt.Errorf("delete current evaluation results: %w", err)
+	}
+	return nil
+}
+
+func cleanupSupersededReportSnapshots(ctx context.Context, tx *sql.Tx, runID, keepReportID string) error {
+	if strings.TrimSpace(runID) == "" || strings.TrimSpace(keepReportID) == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM report_result_members
+		WHERE report_id IN (
+			SELECT report_id FROM report_snapshots
+			WHERE run_id = ? AND report_id <> ?
+		)`, runID, keepReportID); err != nil {
+		return fmt.Errorf("delete superseded report result members: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM report_snapshots
+		WHERE run_id = ? AND report_id <> ?`, runID, keepReportID); err != nil {
+		return fmt.Errorf("delete superseded report snapshots: %w", err)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) ensureExperiment(ctx context.Context, tx *sql.Tx, id, runID string) error {

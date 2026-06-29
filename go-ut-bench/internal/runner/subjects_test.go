@@ -13,6 +13,15 @@ import (
 	"go-ut-bench/internal/contracts"
 )
 
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGenerateWithCLIAgentLocalFake(t *testing.T) {
 	tmp := t.TempDir()
 	samplePath := filepath.Join(tmp, "sample.py")
@@ -194,6 +203,89 @@ func main() {
 		if !strings.Contains(payload["config"], part) {
 			t.Fatalf("expected config to contain %s, got %s", part, payload["config"])
 		}
+	}
+}
+
+func TestBuildAgentEnvInjectsStableModelAPIKeyAlias(t *testing.T) {
+	t.Setenv("MIMO_V2.5_PRO_API_KEY", "mimo-secret")
+	env, envFromHost, err := buildAgentEnv(agentconfig.FrameworkSpec{
+		Name: "opencode",
+		Kind: agentconfig.KindCLIAgent,
+		Env: map[string]string{
+			"OPENCODE_CONFIG_CONTENT": `{"apiKey":"{env:UTBENCH_MODEL_API_KEY}","original":"{{.ModelAPIKeyEnv}}"}`,
+		},
+	}, modelConfig{
+		Name:      "mimo-v2.5-pro",
+		Model:     "mimo-v2.5-pro",
+		Endpoint:  "https://token-plan-cn.xiaomimimo.com/v1",
+		APIKeyEnv: "MIMO_V2.5_PRO_API_KEY",
+	}, commandTemplateData{
+		ModelAPIKeyEnv: "MIMO_V2.5_PRO_API_KEY",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["UTBENCH_MODEL_API_KEY"] != "mimo-secret" {
+		t.Fatalf("UTBENCH_MODEL_API_KEY = %q, want injected secret", env["UTBENCH_MODEL_API_KEY"])
+	}
+	if !strings.Contains(env["OPENCODE_CONFIG_CONTENT"], "{env:UTBENCH_MODEL_API_KEY}") {
+		t.Fatalf("config did not use stable alias: %s", env["OPENCODE_CONFIG_CONTENT"])
+	}
+	foundOriginal := false
+	for _, key := range envFromHost {
+		if key == "MIMO_V2.5_PRO_API_KEY" {
+			foundOriginal = true
+			break
+		}
+	}
+	if !foundOriginal {
+		t.Fatalf("env_from_host missing original key env: %v", envFromHost)
+	}
+}
+
+func TestBuildAgentEnvOverridesClaudeCodeAuthWithCurrentModelKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "wrong-host-token")
+	t.Setenv("ANTHROPIC_API_KEY", "wrong-host-key")
+	t.Setenv("MIMO_V2.5_PRO_API_KEY", "mimo-secret")
+
+	env, envFromHost, err := buildAgentEnv(agentconfig.FrameworkSpec{
+		Name: "claudecode",
+		Kind: agentconfig.KindCLIAgent,
+		EnvFromHost: []string{
+			"ANTHROPIC_API_KEY",
+			"ANTHROPIC_AUTH_TOKEN",
+			"ANTHROPIC_CUSTOM_HEADERS",
+		},
+	}, modelConfig{
+		Name:      "mimo-v2.5-pro",
+		Model:     "mimo-v2.5-pro",
+		Endpoint:  "https://token-plan-cn.xiaomimimo.com/v1",
+		APIKeyEnv: "MIMO_V2.5_PRO_API_KEY",
+	}, commandTemplateData{
+		ModelAPIKeyEnv: "MIMO_V2.5_PRO_API_KEY",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["UTBENCH_MODEL_API_KEY"] != "mimo-secret" {
+		t.Fatalf("UTBENCH_MODEL_API_KEY = %q, want current model key", env["UTBENCH_MODEL_API_KEY"])
+	}
+	if env["ANTHROPIC_AUTH_TOKEN"] != "mimo-secret" {
+		t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q, want current model key", env["ANTHROPIC_AUTH_TOKEN"])
+	}
+	if env["ANTHROPIC_API_KEY"] != "mimo-secret" {
+		t.Fatalf("ANTHROPIC_API_KEY = %q, want current model key", env["ANTHROPIC_API_KEY"])
+	}
+	for _, key := range envFromHost {
+		if key == "ANTHROPIC_AUTH_TOKEN" || key == "ANTHROPIC_API_KEY" {
+			t.Fatalf("env_from_host should not pass through stale Claude auth key %q: %v", key, envFromHost)
+		}
+	}
+	if !containsString(envFromHost, "ANTHROPIC_CUSTOM_HEADERS") {
+		t.Fatalf("env_from_host should keep non-auth Claude settings: %v", envFromHost)
+	}
+	if !containsString(envFromHost, "MIMO_V2.5_PRO_API_KEY") {
+		t.Fatalf("env_from_host missing original model key env: %v", envFromHost)
 	}
 }
 

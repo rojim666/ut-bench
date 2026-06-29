@@ -1,10 +1,12 @@
 package runner
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStripMarkdownFence_RemovesTrailingFenceOnly(t *testing.T) {
@@ -15,6 +17,45 @@ func TestStripMarkdownFence_RemovesTrailingFenceOnly(t *testing.T) {
 	}
 	if out == "" {
 		t.Fatalf("expected non-empty output")
+	}
+}
+
+func TestNewAPIClientUsesStableNetworkDefaults(t *testing.T) {
+	t.Setenv("UTBENCH_API_RETRIES", "")
+	t.Setenv("UTBENCH_API_TIMEOUT_SECONDS", "")
+	t.Setenv("UTBENCH_API_TLS_HANDSHAKE_TIMEOUT_SECONDS", "")
+
+	client := newAPIClient()
+	if client.retries != 5 {
+		t.Fatalf("expected 5 retries, got %d", client.retries)
+	}
+	if client.client.Timeout != 300*time.Second {
+		t.Fatalf("unexpected client timeout: %s", client.client.Timeout)
+	}
+	tr, ok := client.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.client.Transport)
+	}
+	if tr.TLSHandshakeTimeout != 60*time.Second {
+		t.Fatalf("expected 60s TLS handshake timeout, got %s", tr.TLSHandshakeTimeout)
+	}
+}
+
+func TestNewAPIClientHonorsTimeoutEnv(t *testing.T) {
+	t.Setenv("UTBENCH_API_RETRIES", "7")
+	t.Setenv("UTBENCH_API_TIMEOUT_SECONDS", "120")
+	t.Setenv("UTBENCH_API_TLS_HANDSHAKE_TIMEOUT_SECONDS", "45")
+
+	client := newAPIClient()
+	if client.retries != 7 {
+		t.Fatalf("expected env retries, got %d", client.retries)
+	}
+	if client.client.Timeout != 120*time.Second {
+		t.Fatalf("expected env timeout, got %s", client.client.Timeout)
+	}
+	tr := client.client.Transport.(*http.Transport)
+	if tr.TLSHandshakeTimeout != 45*time.Second {
+		t.Fatalf("expected env TLS timeout, got %s", tr.TLSHandshakeTimeout)
 	}
 }
 

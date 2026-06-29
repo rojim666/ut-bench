@@ -514,17 +514,17 @@ Claude Code 支持通过 Anthropic 兼容端点接入非 Claude 模型（如 Dee
    - `api_endpoint` — OpenAI 兼容端点（OpenCode/CodeBuddy 使用）
    - `anthropic_endpoint` — Anthropic 兼容端点（Claude Code 使用，如 `https://api.deepseek.com/anthropic`）
    - `api_key_env` — API key 环境变量名
-2. 在 `.env` 中设置 `ANTHROPIC_AUTH_TOKEN` 为对应 provider 的 API key：
+2. 在 `.env` 中设置对应模型自己的 API key 变量（即 `api_key_env` 指向的变量）：
 
 ```bash
 # 例如使用 DeepSeek
-export ANTHROPIC_AUTH_TOKEN=$DEEPSEEK_API_KEY
+export DEEPSEEK_API_KEY=<your-deepseek-api-key>
 ```
 
 UT-Bench 会自动：
 - 将 `models.yaml` 中的 `endpoint` 注入为 `ANTHROPIC_BASE_URL`
 - 将 `models.yaml` 中的 `model_id` 注入为 `ANTHROPIC_MODEL`
-- 将模型的 API key 映射到 `ANTHROPIC_AUTH_TOKEN`（当宿主机未显式设置时）
+- 将当前模型的 API key 映射到 `ANTHROPIC_AUTH_TOKEN` 和 `ANTHROPIC_API_KEY`
 
 ### 运行示例
 
@@ -539,7 +539,7 @@ UT-Bench 会自动：
 ### 注意事项
 
 - `compatible_models` 限制已移除，任何有 Anthropic 兼容端点的模型都可通过 Claude Code 使用
-- `ANTHROPIC_AUTH_TOKEN` 优先级高于自动映射；如果宿主机已设置，不会被覆盖
+- UT-Bench 会按当前模型覆盖 Claude Code 的认证变量，避免宿主机残留的全局 `ANTHROPIC_AUTH_TOKEN` 串到其他 provider
 - Docker 沙箱中 Claude Code 使用 `bypassPermissions` 模式，无需交互式授权
 - **`--bare` 标志**：无 skill 基线测试时自动启用（加快启动），有 skill 测试时自动跳过（确保 skill 被发现和加载）
 

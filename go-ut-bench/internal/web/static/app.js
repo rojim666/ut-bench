@@ -735,12 +735,12 @@
     },
 
     async deleteAsset(runId) {
-      if (!confirm(`确定删除资产 ${runId}？\n会删除磁盘上该 run 的所有文件（生成、评测、报告），不可恢复。`)) return
+      if (!confirm(`确定删除资产 ${runId}？\n会删除磁盘上该 run 的所有文件（生成、评测、报告），并停止可能残留的孤儿容器，不可恢复。`)) return
       try {
-        const r = await fetch('/api/runs/' + encodeURIComponent(runId), { method: 'DELETE' })
+        const r = await fetch('/api/runs/' + encodeURIComponent(runId) + '?force=true', { method: 'DELETE' })
         const data = await r.json().catch(() => ({}))
         if (!r.ok) { this.showToast('删除失败：' + (data.error || 'HTTP ' + r.status), 'err'); return }
-        this.showToast('已删除 ' + runId, 'ok')
+        this.showToast(data.delete_pending ? '已移入后台清理 ' + runId : '已删除 ' + runId, data.delete_pending ? 'warn' : 'ok')
         await this.loadAssets()
       } catch (e) { this.showToast('删除失败：' + e.message, 'err') }
     },
@@ -752,7 +752,7 @@
       let ok = 0, fail = 0
       for (const id of ids) {
         try {
-          const r = await fetch('/api/runs/' + encodeURIComponent(id), { method: 'DELETE' })
+          const r = await fetch('/api/runs/' + encodeURIComponent(id) + '?force=true', { method: 'DELETE' })
           if (r.ok) ok++; else fail++
         } catch { fail++ }
       }
@@ -1355,6 +1355,9 @@
       if (!profile) return
       if (profile.key === 'custom') {
         this.form.benchmark_profile = 'custom'
+        this.form.dataset_manifest = ''
+        this.form.level = ''
+        this.normalizeDatasetScenario()
         return
       }
       this.form.benchmark_profile = profile.key
@@ -1374,6 +1377,12 @@
       if (['small', 'medium', 'large'].includes(this.form.benchmark_profile)) {
         this.form.benchmark_profile = 'custom'
       }
+      this.normalizeCustomDatasetLevel()
+    },
+
+    normalizeCustomDatasetLevel() {
+      if (this.form.benchmark_profile !== 'custom') return
+      if (this.form.class === 'repo_level') this.form.level = ''
     },
 
     datasetScenariosForClass(className) {
@@ -1415,6 +1424,7 @@
     normalizeDatasetScenario() {
       const scenarios = this.datasetScenariosForClass(this.form.class)
       if (this.form.scenario && !scenarios.includes(this.form.scenario)) this.form.scenario = ''
+      this.normalizeCustomDatasetLevel()
       this.normalizeDatasetProject()
     },
 
@@ -3275,14 +3285,14 @@
     },
 
     async reevaluateRun(runID) {
-      if (!confirm('重新运行 evaluator？会重新编译、运行测试、覆盖率和变异测试，并覆盖当前 evaluation_result.json。')) return
+      if (!confirm('重新运行 evaluator？会重新编译、运行测试、覆盖率和变异测试，并覆盖当前 evaluation_result.json，同时重新生成报告并刷新入库。')) return
       this.runActionBusy = 'reevaluate'
       try {
         const r = await fetch('/api/runs/' + encodeURIComponent(runID) + '/reevaluate', { method: 'POST' })
         const data = await r.json()
         if (!r.ok) { this.showToast('重新评测失败：' + (data.error || 'HTTP ' + r.status), 'err', 6000); return }
         this.currentReport = null
-        this.showToast('evaluator 重新运行已启动：' + (data.evaluation_path || ''), 'ok', 6000)
+        this.showToast('重新评测已启动，完成后会自动刷新报告：' + (data.evaluation_path || ''), 'ok', 6000)
         await this.refreshDetail()
       } catch (e) {
         this.showToast('重新评测失败：' + e.message, 'err', 6000)
