@@ -558,19 +558,12 @@ function initRawColumnToggles() {
   });
 }
 
-function normalizedAssertionDensity(value) {
-  const raw = Number(value || 0);
-  const A_SAT = 3.0;
-  return Math.max(0, Math.min(1, raw / A_SAT));
-}
-
 function qualityScore(item) {
   const c = Number(item.compile_pass_rate || 0);
   const p = Number(item.avg_test_pass_rate || 0);
   const v = Number(item.avg_line_coverage || 0);
   const m = Number(item.avg_mutation_score || 0);
-  const aNorm = normalizedAssertionDensity(item.avg_assertion_density);
-  return c * p * (v * 0.20 + aNorm * 0.20 + m * 0.60) * 100;
+  return (c * 0.30 + p * 0.30 + v * 0.20 + m * 0.20) * 100;
 }
 
 function modelColor(index) {

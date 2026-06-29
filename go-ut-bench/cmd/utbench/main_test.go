@@ -14,6 +14,15 @@ func TestDoctorCanarySourceCoversSupportedLanguages(t *testing.T) {
 	}
 }
 
+func TestDefaultDBPathUsesMountedStorageInContainer(t *testing.T) {
+	t.Setenv("UTBENCH_DB_PATH", "")
+	t.Setenv("UTBENCH_SANDBOX_CONTAINER_PROJECT_ROOT", "/app")
+
+	if got := defaultDBPath(); got != "/app/storage/utbench.db" {
+		t.Fatalf("expected mounted storage db path, got %q", got)
+	}
+}
+
 func TestWriteDoctorCanaryFilesBuildsCases(t *testing.T) {
 	root := t.TempDir()
 	cases, err := writeDoctorCanaryFiles(root, []string{"python", "go"})

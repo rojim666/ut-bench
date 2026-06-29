@@ -341,12 +341,27 @@ func TestSummarizeAgentCommandErrorPrefersActionableTail(t *testing.T) {
 		"ERROR: Reconnecting... 5/5",
 	}, "\n")
 
-	got := summarizeAgentCommandError(stderr, "exit status 1", 300)
+	got := summarizeAgentCommandError("", stderr, "exit status 1", 300)
 	if strings.Contains(got, "Reading additional input") {
 		t.Fatalf("summary kept startup prefix: %q", got)
 	}
 	if !strings.Contains(got, "401 Unauthorized") {
 		t.Fatalf("summary = %q, want actionable 401 detail", got)
+	}
+}
+
+func TestSummarizeAgentCommandErrorExtractsClaudeCodeJSONLAuthFailure(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"line":"{\"type\":\"system\",\"subtype\":\"api_retry\",\"error_status\":401,\"error\":\"authentication_failed\"}","line_no":1,"stream":"stdout"}`,
+		`{"line":"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"api_error_status\":401,\"result\":\"Failed to authenticate. API Error: 401 Invalid API Key\"}","line_no":2,"stream":"stdout"}`,
+	}, "\n")
+
+	got := summarizeAgentCommandError(stdout, "", "", 300)
+	if !strings.Contains(got, "API error 401") {
+		t.Fatalf("summary = %q, want API status", got)
+	}
+	if !strings.Contains(got, "Invalid API Key") {
+		t.Fatalf("summary = %q, want invalid key detail", got)
 	}
 }
 

@@ -24,7 +24,7 @@ type DockerConfig struct {
 	EvalCPUs      string // optional Docker CPU limit for eval containers, e.g. "4"
 }
 
-const containerDefaultDBPath = "/tmp/utbench.db"
+const containerDefaultDBPath = "/app/storage/utbench.db"
 
 func (c DockerConfig) EffectiveEvalImage() string {
 	if strings.TrimSpace(c.EvalImageName) != "" {
@@ -43,6 +43,9 @@ func (c DockerConfig) EffectiveEvalImage() string {
 // working unchanged.
 func runInDocker(ctx context.Context, entry *RunEntry, spec contracts.RunSpec, opts orchestrator.Options, cfg DockerConfig) error {
 	args := buildDockerRunArgs(spec, opts, cfg)
+	if err := appendDockerMountDiagnostics(entry, spec, opts, cfg); err != nil {
+		return err
+	}
 	// 注入稳定容器名，使 docker pause/unpause/kill 可以定位到本次运行。
 	// `--name` 必须紧跟在 `docker run` 之后、镜像名之前。
 	if entry.container != "" {
@@ -72,6 +75,17 @@ func runInDocker(ctx context.Context, entry *RunEntry, spec contracts.RunSpec, o
 			return fmt.Errorf("docker run failed: %w; last output:\n%s", err, t)
 		}
 		return fmt.Errorf("docker run failed: %w", err)
+	}
+	return nil
+}
+
+func appendDockerMountDiagnostics(entry *RunEntry, spec contracts.RunSpec, opts orchestrator.Options, cfg DockerConfig) error {
+	mounts := buildDockerMountSet(spec, opts, cfg)
+	entry.appendLog(fmt.Sprintf("[%s] docker mounts dataset=%s output=%s config=%s storage=%s",
+		logTS(), mounts.datasetRoot, mounts.outputRoot, mounts.configRoot, mounts.storageRoot))
+	if !fileExists(mounts.datasetRoot) {
+		return fmt.Errorf("docker dataset mount source not found: %s (dataset_root=%q project_root=%q)",
+			mounts.datasetRoot, spec.DatasetRoot, mounts.projectRoot)
 	}
 	return nil
 }
@@ -129,21 +143,25 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 	// Mounts: datasets (read-only is safer but writable matches current UX),
 	// artifacts, configs, storage. Paths on the container side are fixed and
 	// mirror those used in STARTUP_GUIDE.md.
-	root := strings.TrimRight(cfg.ProjectRoot, `/\`)
-	datasetRoot := resolveDockerHostPath(root, spec.DatasetRoot, "datasets")
-	dbPath := dockerDBPath(root, spec, opts)
+	mounts := buildDockerMountSet(spec, opts, cfg)
+	root := mounts.projectRoot
+	dbPath := dockerDBPath(mounts, spec, opts)
+	configPath := dockerConfigPath(spec.ConfigPath)
+	if strings.TrimSpace(configPath) == "" {
+		configPath = "/app/configs/models.yaml"
+	}
 	a = append(a,
 		"-e", "UTBENCH_SANDBOX_HOST_PROJECT_ROOT="+filepath.ToSlash(root),
 		"-e", "UTBENCH_SANDBOX_CONTAINER_PROJECT_ROOT=/app",
-		"-e", "UTBENCH_SANDBOX_HOST_OUTPUT_ROOT="+filepath.ToSlash(filepath.Join(root, "artifacts")),
+		"-e", "UTBENCH_SANDBOX_HOST_OUTPUT_ROOT="+filepath.ToSlash(mounts.outputRoot),
 		"-e", "UTBENCH_SANDBOX_CONTAINER_OUTPUT_ROOT=/app/artifacts",
-		"-e", "UTBENCH_SANDBOX_HOST_DATASET_ROOT="+filepath.ToSlash(datasetRoot),
+		"-e", "UTBENCH_SANDBOX_HOST_DATASET_ROOT="+filepath.ToSlash(mounts.datasetRoot),
 		"-e", "UTBENCH_SANDBOX_CONTAINER_DATASET_ROOT=/app/datasets",
 		"-e", "UTBENCH_DB_PATH="+dbPath,
-		"-v", datasetRoot+`:/app/datasets`,
-		"-v", root+`/artifacts:/app/artifacts`,
-		"-v", root+`/configs:/app/configs`,
-		"-v", root+`/storage:/app/storage`,
+		"-v", mounts.datasetRoot+`:/app/datasets`,
+		"-v", mounts.outputRoot+`:/app/artifacts`,
+		"-v", mounts.configRoot+`:/app/configs`,
+		"-v", mounts.storageRoot+`:/app/storage`,
 		// 持久化 Maven 本地仓库，避免每次容器运行都重新下载依赖。
 		// Docker 镜像已预下载关键依赖，但此 mount 可缓存运行时新增的依赖。
 		"-v", root+`/.m2-cache:/root/.m2/repository`,
@@ -190,7 +208,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 			"--models", strings.Join(spec.Models, ","),
 			"--langs", strings.Join(spec.Languages, ","),
 			"--dataset-root", "/app/datasets",
-			"--config", "/app/configs/models.yaml",
+			"--config", configPath,
 		)
 		if spec.AgentsConfigPath != "" {
 			a = append(a, "--agents-config", path.Join("/app/configs", filepath.Base(spec.AgentsConfigPath)))
@@ -263,7 +281,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 			"--models", strings.Join(spec.Models, ","),
 			"--langs", strings.Join(spec.Languages, ","),
 			"--dataset-root", "/app/datasets",
-			"--config", "/app/configs/models.yaml",
+			"--config", configPath,
 		)
 		if spec.AgentsConfigPath != "" {
 			a = append(a, "--agents-config", path.Join("/app/configs", filepath.Base(spec.AgentsConfigPath)))
@@ -311,7 +329,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if manifestPath == "" {
 			manifestPath = path.Join("/app/artifacts", "runs", sourceRunID, "generated", "generated_manifest.json")
 		} else {
-			manifestPath = dockerContainerPathForMountedFile(root, manifestPath)
+			manifestPath = mounts.containerPathForMountedFile(manifestPath)
 		}
 		a = append(a, "--manifest", manifestPath)
 		a = append(a, fmt.Sprintf("--mutation-enabled=%t", spec.MutationEnabled))
@@ -334,7 +352,7 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 		if evaluationPath == "" {
 			evaluationPath = path.Join("/app/artifacts", "runs", sourceRunID, "evaluation", "evaluation_result.json")
 		} else {
-			evaluationPath = dockerContainerPathForMountedFile(root, evaluationPath)
+			evaluationPath = mounts.containerPathForMountedFile(evaluationPath)
 		}
 		a = append(a, "--evaluation", evaluationPath)
 	}
@@ -342,24 +360,141 @@ func buildDockerRunArgs(spec contracts.RunSpec, opts orchestrator.Options, cfg D
 	return wrapDockerSourceCommand(a, cfg)
 }
 
-func dockerDBPath(projectRoot string, spec contracts.RunSpec, opts orchestrator.Options) string {
+type dockerMountSet struct {
+	projectRoot string
+	datasetRoot string
+	outputRoot  string
+	configRoot  string
+	storageRoot string
+}
+
+func buildDockerMountSet(spec contracts.RunSpec, opts orchestrator.Options, cfg DockerConfig) dockerMountSet {
+	root := cleanDockerHostPath(cfg.ProjectRoot)
+	return dockerMountSet{
+		projectRoot: root,
+		datasetRoot: resolveDockerHostPath(root, spec.DatasetRoot, "datasets"),
+		outputRoot:  resolveDockerHostPath(root, spec.OutputRoot, "artifacts"),
+		configRoot:  resolveDockerConfigRoot(root, spec.ConfigPath),
+		storageRoot: resolveDockerStorageRoot(root, spec, opts),
+	}
+}
+
+func cleanDockerHostPath(value string) string {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		raw = "."
+	}
+	return filepath.ToSlash(strings.TrimRight(filepath.Clean(raw), `/\`))
+}
+
+func resolveDockerConfigRoot(projectRoot, configPath string) string {
+	raw := strings.TrimSpace(configPath)
+	if raw == "" || isContainerAppPath(raw) {
+		return resolveDockerHostPath(projectRoot, "", "configs")
+	}
+	clean := filepath.Clean(raw)
+	if !isDockerHostAbsPath(clean) {
+		clean = filepath.Join(projectRoot, clean)
+	}
+	return filepath.ToSlash(filepath.Dir(clean))
+}
+
+func resolveDockerStorageRoot(projectRoot string, spec contracts.RunSpec, opts orchestrator.Options) string {
+	raw := strings.TrimSpace(os.Getenv("UTBENCH_DB_PATH"))
+	if raw == "" {
+		raw = strings.TrimSpace(opts.DBPath)
+	}
+	if raw == "" {
+		raw = strings.TrimSpace(spec.DBPath)
+	}
+	if raw == "" || isContainerDBPath(raw) || isDefaultDockerHostDBPath(projectRoot, raw) {
+		return resolveDockerHostPath(projectRoot, "", "storage")
+	}
+	clean := filepath.Clean(raw)
+	if !isDockerHostAbsPath(clean) {
+		clean = filepath.Join(projectRoot, clean)
+	}
+	return filepath.ToSlash(filepath.Dir(clean))
+}
+
+func (m dockerMountSet) mountPairs() []struct {
+	host      string
+	container string
+} {
+	return []struct {
+		host      string
+		container string
+	}{
+		{host: m.datasetRoot, container: "/app/datasets"},
+		{host: m.outputRoot, container: "/app/artifacts"},
+		{host: m.configRoot, container: "/app/configs"},
+		{host: m.storageRoot, container: "/app/storage"},
+		{host: m.projectRoot, container: "/app"},
+	}
+}
+
+func (m dockerMountSet) containerPathForMountedFile(filePath string) string {
+	raw := strings.TrimSpace(filePath)
+	if raw == "" {
+		return filePath
+	}
+	slashRaw := filepath.ToSlash(raw)
+	if isContainerAppPath(slashRaw) {
+		return path.Clean(slashRaw)
+	}
+
+	clean := filepath.Clean(raw)
+	if !isDockerHostAbsPath(clean) {
+		clean = filepath.Join(m.projectRoot, clean)
+	}
+	slash := filepath.ToSlash(filepath.Clean(clean))
+	for _, mount := range m.mountPairs() {
+		host := strings.TrimRight(filepath.ToSlash(filepath.Clean(mount.host)), "/")
+		if slash == host {
+			return mount.container
+		}
+		if strings.HasPrefix(slash, host+"/") {
+			return path.Join(mount.container, slash[len(host)+1:])
+		}
+	}
+	return slashRaw
+}
+
+func dockerDBPath(mounts dockerMountSet, spec contracts.RunSpec, opts orchestrator.Options) string {
 	if v := strings.TrimSpace(os.Getenv("UTBENCH_DB_PATH")); v != "" {
 		if isContainerDBPath(v) {
 			return path.Clean(filepath.ToSlash(v))
 		}
-		return dockerContainerPathForMountedFile(projectRoot, v)
+		return mounts.containerPathForMountedFile(v)
 	}
 	raw := strings.TrimSpace(opts.DBPath)
 	if raw == "" {
 		raw = strings.TrimSpace(spec.DBPath)
 	}
-	if isDefaultDockerHostDBPath(projectRoot, raw) {
+	if raw == "" || isDefaultDockerHostDBPath(mounts.projectRoot, raw) {
 		return containerDefaultDBPath
 	}
 	if isContainerDBPath(raw) {
 		return path.Clean(filepath.ToSlash(raw))
 	}
-	return dockerContainerPathForMountedFile(projectRoot, raw)
+	return mounts.containerPathForMountedFile(raw)
+}
+
+func isContainerAppPath(p string) bool {
+	slash := filepath.ToSlash(strings.TrimSpace(p))
+	return strings.HasPrefix(slash, "/app/")
+}
+
+func isDockerHostAbsPath(p string) bool {
+	raw := strings.TrimSpace(p)
+	if raw == "" {
+		return false
+	}
+	slash := filepath.ToSlash(raw)
+	if filepath.IsAbs(raw) || path.IsAbs(slash) {
+		return true
+	}
+	return len(slash) >= 3 && slash[1] == ':' && slash[2] == '/'
 }
 
 func isContainerDBPath(dbPath string) bool {
@@ -380,7 +515,7 @@ func isDefaultDockerHostDBPath(projectRoot, dbPath string) bool {
 	}
 	root := strings.TrimRight(filepath.ToSlash(filepath.Clean(projectRoot)), "/")
 	clean := filepath.Clean(raw)
-	if !filepath.IsAbs(clean) {
+	if !isDockerHostAbsPath(clean) {
 		clean = filepath.Join(projectRoot, clean)
 	}
 	slash := filepath.ToSlash(filepath.Clean(clean))
@@ -407,7 +542,7 @@ func dockerContainerPathForMountedFile(projectRoot, filePath string) string {
 	}
 
 	clean := filepath.Clean(raw)
-	if !filepath.IsAbs(clean) {
+	if !isDockerHostAbsPath(clean) {
 		clean = filepath.Join(projectRoot, clean)
 	}
 	slash := filepath.ToSlash(filepath.Clean(clean))
@@ -441,7 +576,7 @@ func resolveDockerHostPath(projectRoot, requested, fallbackName string) string {
 		return strings.TrimRight(projectRoot, `/\`) + `/` + fallbackName
 	}
 	requested = filepath.Clean(requested)
-	if filepath.IsAbs(requested) {
+	if isDockerHostAbsPath(requested) {
 		return filepath.ToSlash(requested)
 	}
 	return filepath.ToSlash(filepath.Clean(filepath.Join(projectRoot, requested)))
@@ -492,12 +627,12 @@ func buildDockerBaseArgs(cfg DockerConfig) []string {
 	if cpus := strings.TrimSpace(cfg.EvalCPUs); cpus != "" {
 		a = append(a, "--cpus", cpus)
 	}
-	root := strings.TrimRight(cfg.ProjectRoot, `/\`)
+	mounts := buildDockerMountSet(contracts.RunSpec{}, orchestrator.Options{}, cfg)
 	return append(a,
-		"-v", root+`/datasets:/app/datasets`,
-		"-v", root+`/artifacts:/app/artifacts`,
-		"-v", root+`/configs:/app/configs`,
-		"-v", root+`/storage:/app/storage`,
+		"-v", mounts.datasetRoot+`:/app/datasets`,
+		"-v", mounts.outputRoot+`:/app/artifacts`,
+		"-v", mounts.configRoot+`:/app/configs`,
+		"-v", mounts.storageRoot+`:/app/storage`,
 	)
 }
 

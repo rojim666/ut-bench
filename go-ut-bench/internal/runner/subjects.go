@@ -607,18 +607,25 @@ func buildAgentEnv(fw agentconfig.FrameworkSpec, model modelConfig, data command
 		out[key] = value
 	}
 	envFromHost := append([]string{}, fw.EnvFromHost...)
+	modelKey := ""
 	if model.APIKeyEnv != "" {
 		envFromHost = append(envFromHost, model.APIKeyEnv)
+		if keyVal, ok := os.LookupEnv(model.APIKeyEnv); ok {
+			modelKey = keyVal
+			// 给 CLI agent 一个稳定的 API key 别名。部分 agent 配置语法
+			// 无法可靠解析包含点号的环境变量名（例如 MIMO_V2.5_PRO_API_KEY），
+			// 所以 agent 命令优先读取这个别名，原变量名仍透传以保持兼容。
+			out["UTBENCH_MODEL_API_KEY"] = keyVal
+		}
 	}
 	// Claude Code 使用 Anthropic 兼容端点接入非 Claude 模型时，
-	// 需要将模型的 API key 映射到 ANTHROPIC_AUTH_TOKEN。
-	// 仅当宿主机尚未设置 ANTHROPIC_AUTH_TOKEN 时进行映射，
-	// 避免覆盖用户显式配置的 Anthropic 原生 key。
+	// 必须按当前 subject 的模型强制注入认证，避免宿主机残留的全局
+	// ANTHROPIC_* token 串到 MIMO/DeepSeek 等其他 provider 上。
 	if strings.EqualFold(fw.Kind, "cli_agent") && strings.Contains(strings.ToLower(fw.Name), "claude") {
-		if model.APIKeyEnv != "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			if keyVal, ok := os.LookupEnv(model.APIKeyEnv); ok {
-				out["ANTHROPIC_AUTH_TOKEN"] = keyVal
-			}
+		if modelKey != "" {
+			out["ANTHROPIC_AUTH_TOKEN"] = modelKey
+			out["ANTHROPIC_API_KEY"] = modelKey
+			envFromHost = removeEnvKeys(envFromHost, "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 		}
 	}
 	if strings.EqualFold(fw.Kind, "cli_agent") &&
@@ -1039,6 +1046,24 @@ func uniqueSortedStrings(values []string) []string {
 		out = append(out, value)
 	}
 	sort.Strings(out)
+	return out
+}
+
+func removeEnvKeys(values []string, keys ...string) []string {
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			blocked[key] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, skip := blocked[strings.TrimSpace(value)]; skip {
+			continue
+		}
+		out = append(out, value)
+	}
 	return out
 }
 

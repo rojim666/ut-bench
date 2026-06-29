@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,13 +43,48 @@ var (
 )
 
 // newAPIClient 创建新的 API 客户端
-// 使用默认配置：300秒超时、3次重试、2秒退避
+// 使用默认配置：300秒总超时、60秒 TLS 握手超时、5次重试、2秒退避。
 func newAPIClient() *apiClient {
 	return &apiClient{
-		client:  &http.Client{Timeout: 300 * time.Second},
-		retries: 3,
+		client:  newAPIHTTPClient(),
+		retries: apiEnvInt("UTBENCH_API_RETRIES", 5),
 		backoff: 2 * time.Second,
 	}
+}
+
+func newAPIHTTPClient() *http.Client {
+	timeout := apiEnvDurationSeconds("UTBENCH_API_TIMEOUT_SECONDS", 300*time.Second)
+	tlsTimeout := apiEnvDurationSeconds("UTBENCH_API_TLS_HANDSHAKE_TIMEOUT_SECONDS", 60*time.Second)
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSHandshakeTimeout = tlsTimeout
+	tr.ResponseHeaderTimeout = timeout
+	tr.IdleConnTimeout = 120 * time.Second
+	tr.MaxIdleConns = 100
+	tr.MaxIdleConnsPerHost = 16
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: tr,
+	}
+}
+
+func apiEnvDurationSeconds(name string, fallback time.Duration) time.Duration {
+	seconds := apiEnvInt(name, int(fallback/time.Second))
+	if seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func apiEnvInt(name string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 // waitModelInterval 确保对同一模型的调用是错开的

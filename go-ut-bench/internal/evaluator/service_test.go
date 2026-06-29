@@ -217,6 +217,18 @@ func TestClassifyFailureOriginMarksGenerationPrepareErrorAsEnvironment(t *testin
 	}
 }
 
+func TestClassifyFailureOriginMarksGenerationAPITimeoutAsEnvironment(t *testing.T) {
+	row := contracts.EvaluationResult{
+		CompilePass:  false,
+		CompileError: `generation failed (timeout): Post "https://token-plan-cn.xiaomimimo.com/v1/chat/completions": net/http: TLS handshake timeout`,
+	}
+
+	origin, reason := classifyFailureOrigin(row)
+	if origin != "environment" || reason == "" {
+		t.Fatalf("expected generation API timeout to be environment origin, got origin=%q reason=%q", origin, reason)
+	}
+}
+
 func TestClassifyFailureOriginKeepsSandboxPolicyAsModel(t *testing.T) {
 	row := contracts.EvaluationResult{
 		CompilePass:  false,

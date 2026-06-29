@@ -167,7 +167,7 @@ func (s *Service) DiscoverSamples(spec contracts.RunSpec) ([]contracts.SampleRef
 		all = applyMaxSamplesPerLanguageScenario(all, spec.MaxSamples)
 	}
 	if len(all) == 0 {
-		return nil, fmt.Errorf("no dataset samples found (langs=%v classes=%v)", langs, spec.DatasetClasses)
+		return nil, fmt.Errorf("no dataset samples found (langs=%v classes=%v levels=%q root=%q)", langs, spec.DatasetClasses, spec.DatasetLevel, spec.DatasetRoot)
 	}
 
 	return all, nil

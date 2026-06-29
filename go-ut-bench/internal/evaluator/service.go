@@ -735,6 +735,9 @@ func isDatasetFailureMessage(msg string) bool {
 //   - bool: 是否为环境失败
 func isEnvironmentFailureMessage(msg string) bool {
 	msg = strings.ToLower(msg)
+	if isGenerationInfrastructureFailureMessage(msg) {
+		return true
+	}
 	if strings.Contains(msg, "pitest") || strings.Contains(msg, "junit 5 plugin") {
 		return false
 	}
@@ -764,6 +767,54 @@ func isEnvironmentFailureMessage(msg string) bool {
 //
 // 返回值:
 //   - bool: 是否为工具失败
+func isGenerationInfrastructureFailureMessage(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	if !strings.HasPrefix(msg, "generation failed") {
+		return false
+	}
+	switch generationFailureKind(msg) {
+	case "timeout", "network_error", "http_error", "response_parse_error", "response_extract_error", "request_build_error", "sample_env_prepare_error", "sandbox_preflight_error":
+		return true
+	}
+	for _, marker := range []string{
+		"tls handshake timeout",
+		"context deadline exceeded",
+		"client.timeout",
+		"i/o timeout",
+		"connection refused",
+		"connection reset",
+		"no such host",
+		"temporary failure",
+		"timed out",
+		"rate limit",
+		"too many requests",
+		"http 429",
+		"http 5",
+		"server error",
+		"service unavailable",
+		"gateway timeout",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func generationFailureKind(msg string) string {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	const prefix = "generation failed ("
+	if !strings.HasPrefix(msg, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(msg, prefix)
+	end := strings.Index(rest, ")")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
 func isToolFailureMessage(msg string) bool {
 	msg = strings.ToLower(msg)
 	if strings.Contains(msg, "all tests failed") ||

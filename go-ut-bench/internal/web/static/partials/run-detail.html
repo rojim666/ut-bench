@@ -47,7 +47,7 @@
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
                   </button>
                   <div x-show="open" class="btn-dropdown-menu">
-                    <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="open=false;reevaluateRun(currentRun.run_id)" :disabled="runActionBusy === 'reevaluate'" x-text="runActionBusy === 'reevaluate' ? '评测中...' : '重新评测'"></button>
+                    <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="open=false;reevaluateRun(currentRun.run_id)" :disabled="runActionBusy === 'reevaluate'" x-text="runActionBusy === 'reevaluate' ? '评测中...' : '重新评测并刷新报告'"></button>
                     <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="open=false;regenerateReport(currentRun.run_id)" :disabled="runActionBusy === 'report'" x-text="runActionBusy === 'report' ? '生成中...' : '从JSON生成报告'"></button>
                     <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="open=false;ingestRunToDB(currentRun.run_id)" :disabled="dbIngesting" x-text="dbIngesting ? '入库中...' : '入库'"></button>
                     <button x-show="currentRun.status !== 'running' && currentRun.status !== 'pending'" @click="open=false;promoteRunToGeneratedSet(currentRun.run_id)" :disabled="generatedSetSaving" x-text="generatedSetSaving ? '保存中...' : '保存为生成集'"></button>
@@ -209,7 +209,7 @@
                             <td class="text-right text-[12px]" :class="pctColor(m.avg_mutation_score)" x-text="pct(m.avg_mutation_score)"></td>
                             <td class="text-right text-[12px] font-mono" style="color:var(--fg-muted)" x-text="fmtInt(m.tokens_per_pass)"></td>
                             <td class="text-right text-[12px] font-mono" style="color:var(--fg-muted)" x-text="fmtMs(m.ms_per_pass)"></td>
-                            <td class="text-right text-[13px] font-bold" style="color:var(--accent)" x-text="((m.composite_score||0)*100).toFixed(1)"></td>
+                            <td class="text-right text-[13px] font-bold" style="color:var(--accent)" x-text="Number(m.composite_score||0).toFixed(1)"></td>
                           </tr>
                         </template>
                       </tbody>
@@ -332,7 +332,7 @@
                                     <td class="text-right text-[12px]" :class="pctColor(e.avg_test_pass_rate)" x-text="pct(e.avg_test_pass_rate)"></td>
                                     <td class="text-right text-[12px]" :class="pctColor(e.avg_line_coverage)" x-text="pct(e.avg_line_coverage)"></td>
                                     <td class="text-right text-[12px]" :class="pctColor(e.avg_mutation_score)" x-text="pct(e.avg_mutation_score)"></td>
-                                    <td class="text-right text-[13px] font-bold" style="color:var(--accent)" x-text="((e.composite_score||0)*100).toFixed(1)"></td>
+                                    <td class="text-right text-[13px] font-bold" style="color:var(--accent)" x-text="Number(e.composite_score||0).toFixed(1)"></td>
                                   </tr>
                                 </template>
                               </tbody>

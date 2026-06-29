@@ -3,6 +3,8 @@ package web
 import (
 	"path/filepath"
 	"testing"
+
+	"go-ut-bench/internal/contracts"
 )
 
 func TestDefaultBuildProfileFastEvalUsesAppDockerfile(t *testing.T) {
@@ -32,7 +34,7 @@ func TestSuppressRuntimeLogLine(t *testing.T) {
 func TestDockerPathMapperMapsDatasetAndArtifacts(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "go-ut-bench")
 	datasets := filepath.Join(filepath.Dir(root), "datasets")
-	mapper := newDockerPathMapper(root, datasets)
+	mapper := newDockerPathMapper(root, contracts.RunSpec{DatasetRoot: datasets})
 	if got := mapper(filepath.Join(datasets, "go", "sample.go")); got != "/app/datasets/go/sample.go" {
 		t.Fatalf("unexpected dataset path: %s", got)
 	}

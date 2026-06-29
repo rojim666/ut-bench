@@ -1,17 +1,5 @@
 models:
-    chat-gpt:
-        config:
-            anthropic_endpoint: ""
-            api_endpoint: https://api.onefaka.com/v1
-            api_key_env: CHAT_GPT_API_KEY
-            model: gpt-5.5
-            parameters:
-                max_tokens: 4096
-                temperature: 0.7
-                top_p: 0.9
-        enabled: true
-        provider: openai
-    deepseek:
+    deepseek-v4-flash:
         config:
             anthropic_endpoint: https://api.deepseek.com/anthropic
             api_endpoint: https://api.deepseek.com
@@ -23,19 +11,31 @@ models:
                 top_p: 0.9
         enabled: true
         provider: deepseek
-    deepsleep:
+    gpt-5.5:
         config:
             anthropic_endpoint: ""
-            api_endpoint: https://apiai.sztu.edu.cn/v1
-            api_key_env: DEEPSLEEP_API_KEY
-            model: deepseek-v4-pro
+            api_endpoint: https://api.onefaka.com/v1
+            api_key_env: CHAT_GPT_API_KEY
+            model: gpt-5.5
             parameters:
                 max_tokens: 4096
                 temperature: 0.7
                 top_p: 0.9
         enabled: true
-        provider: 学校
-    minimax:
+        provider: openai
+    mimo-v2.5-pro:
+        config:
+            anthropic_endpoint: https://token-plan-cn.xiaomimimo.com/anthropic
+            api_endpoint: https://token-plan-cn.xiaomimimo.com/v1
+            api_key_env: MIMO_V2.5_PRO_API_KEY
+            model: mimo-v2.5-pro
+            parameters:
+                max_tokens: 4096
+                temperature: 0.7
+                top_p: 0.9
+        enabled: true
+        provider: mimo
+    minimax-m2.7:
         config:
             anthropic_endpoint: https://api.minimaxi.com/anthropic
             api_endpoint: https://api.minimax.chat/v1
@@ -47,26 +47,3 @@ models:
                 top_p: 0.9
         enabled: true
         provider: minimax
-    minimax2.5:
-        config:
-            anthropic_endpoint: https://api.minimaxi.com/anthropic
-            api_endpoint: https://api.minimax.chat/v1
-            api_key_env: MINIMAX2.5_API_KEY
-            model: minimax-M2.5
-            parameters:
-                max_tokens: 4096
-                temperature: 0.7
-                top_p: 0.9
-        enabled: true
-        provider: minimax
-    qwen:
-        config:
-            api_endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1
-            api_key_env: DASHSCOPE_API_KEY
-            model: qwen3.6-flash
-            parameters:
-                max_tokens: 4096
-                temperature: 0.7
-                top_p: 0.9
-        enabled: true
-        provider: dashscope
